@@ -1,0 +1,23 @@
+# build artifacts
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+clubtagger
+build/
+dist/
+
+# audio captures
+*.wav
+*.part
+
+# editor cruft
+*~
+*.swp
+.*.swp
+.DS_Store
+
+# core dumps
+core
+core.*
