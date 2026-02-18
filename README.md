@@ -11,8 +11,9 @@ and identifies songs via Shazam-compatible lookup — without uploading raw audi
 - 🔎 **Local fingerprinting** via `libvibra` (no audio leaves the system)
 - 🧠 **Smart matching** — requires 3 consecutive confirmations to reduce false positives
 - 🎵 **Vinyl-friendly** — tolerates pitch variations from turntables, different pressings
-- 🕒 **Accurate timestamps** and configurable prebuffer/thresholds
-- 💾 **WAV recording** with seamless file splitting (10-minute segments by default)
+- 🕒 **Accurate timestamps** with configurable thresholds
+- 💾 **WAV/FLAC recording** with seamless file splitting (10-minute segments by default)
+- 🔄 **Fixed-size ring buffer** — constant memory usage, gapless recording
 - 🗄️ **SQLite logging** — track plays with timestamps, ISRC codes, and WAV file references
 - 🔇 **Noise-resistant**: only queries when RMS exceeds `--min-rms`
 - ⚙️ Lightweight C implementation
@@ -46,15 +47,15 @@ make            # builds without ALSA support
 
 ### ALSA capture (Linux)
 ```bash
-./clubtagger --device hw:2,0 --rate 48000 --channels 2 \
-  --threshold 50 --prebuffer-sec 5 --silence-sec 15 \
+./clubtagger --source alsa --device hw:2,0 --rate 48000 --channels 2 \
+  --threshold 50 --silence-sec 15 \
   --db tracks.db --verbose
 ```
 
 ### SLink capture (Allen & Heath SQ)
 ```bash
 ./clubtagger --source slink --device en0 --rate 96000 --channels 2 \
-  --threshold 50 --prebuffer-sec 5 --silence-sec 15 \
+  --threshold 50 --silence-sec 15 --format flac \
   --db tracks.db --verbose
 ```
 
@@ -62,21 +63,21 @@ make            # builds without ALSA support
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--source` | Audio source: `alsa` or `slink` | `alsa` |
+| `--source` | Audio source: `alsa` or `slink` | (required) |
 | `--device` | ALSA device or network interface | `default` |
 | `--rate` | Sample rate (Hz) | `48000` |
 | `--channels` | Audio channels | `2` |
 | `--bits` | Bit depth (16 or 24) | `16` (auto 24 for SLink) |
 | `--frames` | Frames per read | `1024` |
-| `--ring-sec` | Ring buffer duration | `20` |
+| `--ring-sec` | Ring buffer size (must be > max-file-sec) | `max-file-sec + 60` |
 | `--fingerprint-sec` | Fingerprint length | `12` |
 | `--interval` | Seconds between recognition checks | `2` |
 | `--min-rms` | Minimum RMS to trigger recognition | `300` |
 | `--threshold` | Amplitude threshold for recording | `50` |
-| `--sustain-sec` | Seconds above threshold to start writing WAV | `1.0` |
-| `--prebuffer-sec` | Audio included before trigger | `5` |
+| `--sustain-sec` | Seconds above threshold to start recording | `1.0` |
 | `--silence-sec` | Silence duration to stop recording | `15` |
-| `--max-file-sec` | Max seconds per WAV file (0 = no limit) | `600` |
+| `--max-file-sec` | Max seconds per WAV/FLAC file (0 = no limit) | `600` |
+| `--format` | Output format: `wav` or `flac` | `wav` |
 | `--shazam-gap-sec` | Minimum seconds between lookups | `10` |
 | `--same-track-hold-sec` | Skip new lookups for same track | `90` |
 | `--prefix` | Filename prefix for WAV files | `capture` |
@@ -110,9 +111,18 @@ SELECT timestamp, artist, title, quality FROM plays ORDER BY timestamp DESC LIMI
 
 ---
 
-## SLink Protocol
+## Architecture
 
-SLink is Allen & Heath's network audio protocol used by SQ-series mixers. clubtagger captures packets with EtherType `0x04ee` containing 24-bit stereo samples at positions 24-29 (big-endian). The audio is converted to little-endian for WAV output.
+### Ring Buffer
+
+Audio is captured into a fixed-size ring buffer (`--ring-sec`, defaults to `--max-file-sec` + 60s). The buffer must be larger than `--max-file-sec` to allow headroom for async writes. Oldest samples are automatically overwritten. When recording triggers, all buffered audio becomes the "prebuffer". This provides:
+- **Constant memory usage** regardless of how long silence lasts
+- **Gapless recording** when music briefly dips below threshold
+- **No lost samples** as long as silence gaps are shorter than the ring buffer
+
+### SLink Protocol
+
+SLink is Allen & Heath's network audio protocol used by SQ-series mixers. clubtagger captures packets with EtherType `0x04ee` containing 24-bit stereo samples at positions 24-29 (big-endian). The audio is converted to little-endian for WAV/FLAC output.
 
 To capture SLink traffic, run clubtagger with root privileges or configure libpcap permissions.
 

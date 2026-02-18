@@ -21,3 +21,4 @@ dist/
 # core dumps
 core
 core.*
+test.db

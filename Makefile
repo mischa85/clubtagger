@@ -34,10 +34,18 @@ PCAP_LIBS    := $(shell pkg-config --libs libpcap 2>/dev/null)
 ifeq ($(PCAP_LIBS),)
   PCAP_LIBS := -lpcap
 endif
+PCAP_CFLAGS += -DHAVE_PCAP
 SQLITE_CFLAGS := $(shell pkg-config --cflags sqlite3 2>/dev/null)
 SQLITE_LIBS   := $(shell pkg-config --libs sqlite3 2>/dev/null)
 ifeq ($(SQLITE_LIBS),)
   SQLITE_LIBS := -lsqlite3
+endif
+
+# FLAC encoding support (optional)
+FLAC_CFLAGS  := $(shell pkg-config --cflags flac 2>/dev/null)
+FLAC_LIBS    := $(shell pkg-config --libs flac 2>/dev/null)
+ifneq ($(FLAC_LIBS),)
+  FLAC_CFLAGS += -DHAVE_FLAC
 endif
 
 # Required libraries; vibra usually doesn't ship a pkg-config file
@@ -45,8 +53,9 @@ endif
 VIBRA_LIBS  ?= -lvibra -lstdc++
 MATH_LIBS   ?= -lm
 
-CFLAGS   ?= $(CSTD) $(OPT) $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS)
-LDFLAGS  ?= $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib
+# Build flags - use := to override any environment LDFLAGS
+CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS)
+LDFLAGS  := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib
 
 # Extra flags opt-in
 CFLAGS   += $(CFLAGS_EXTRA)
@@ -54,8 +63,8 @@ LDFLAGS  += $(LDFLAGS_EXTRA)
 
 all: $(APP)
 
-debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(CFLAGS_EXTRA)
-debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
+debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(CFLAGS_EXTRA)
+debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
 debug: clean $(APP)
 
 $(APP): $(OBJ)

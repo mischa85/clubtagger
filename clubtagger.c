@@ -1,6 +1,12 @@
 #ifdef HAVE_ALSA
 #include <alsa/asoundlib.h>
 #endif
+#ifdef HAVE_FLAC
+#include <FLAC/stream_encoder.h>
+#endif
+#ifdef HAVE_PCAP
+#include <pcap.h>
+#endif
 #include <curl/curl.h>
 #include <errno.h>
 #include <inttypes.h>
@@ -18,7 +24,6 @@
 #include <sys/stat.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <pcap.h>
 #include <sqlite3.h>
 
 typedef struct Fingerprint Fingerprint;
@@ -59,13 +64,7 @@ static void now_timestamp(char *out, size_t out_sz) {
              tm.tm_hour, tm.tm_min, tm.tm_sec);
 }
 
-typedef struct {
-    char isrc[64];
-    char artist[256];
-    char title[256];
-    time_t t;
-    int valid;
-} Vote;
+
 
 typedef struct {
     char isrc[64];
@@ -103,36 +102,12 @@ static int same_track(const TrackID *a, const TrackID *b) {
     snprintf(bb, sizeof(bb), "%s", b->title); normalize_str(bb);
     return strcmp(aa,bb)==0;
 }
-static TrackID majority_vote(Vote v[5]) {
-    TrackID r = {0};
-    TrackID tracks[5] = {0};
-    for (int i = 0; i < 5; i++) {
-        if (v[i].valid) {
-            tracks[i].valid = 1;
-            snprintf(tracks[i].isrc, sizeof(tracks[i].isrc), "%s", v[i].isrc);
-            snprintf(tracks[i].artist, sizeof(tracks[i].artist), "%s", v[i].artist);
-            snprintf(tracks[i].title, sizeof(tracks[i].title), "%s", v[i].title);
-            tracks[i].has_isrc = tracks[i].isrc[0] != 0;
-        }
-    }
-    /* Count matches for each track, require 3 matching */
-    for (int i = 0; i < 5; i++) {
-        if (!tracks[i].valid) continue;
-        int count = 1;
-        for (int j = i + 1; j < 5; j++) {
-            if (same_track(&tracks[i], &tracks[j])) count++;
-        }
-        if (count >= 3) return tracks[i];
-    }
-    return r;
-}
 
 typedef struct {
     const char *device;
     unsigned    rate;
     unsigned    channels;
     unsigned    frames_per_read;
-    unsigned    ring_sec;
     unsigned    fingerprint_sec;
     unsigned    min_rms;
     unsigned    identify_interval_sec;
@@ -142,99 +117,330 @@ typedef struct {
     unsigned    same_track_hold_sec;
     unsigned    threshold;
     float       sustain_sec;
-    unsigned    prebuffer_sec;
     float       silence_sec;
     const char *prefix;
     const char *source;        /* "alsa" or "slink" */
     int         bytes_per_sample;  /* 2 for 16-bit, 3 for 24-bit */
-    int         source_big_endian; /* 1 if source is big-endian (slink), 0 for little-endian (alsa) */
     unsigned    max_file_sec;      /* max seconds per WAV file (0 = no limit) */
+    unsigned    ring_sec;          /* ring buffer size in seconds */
     const char *db_path;       /* SQLite database path for track logging */
+    const char *outdir;        /* output directory for audio files */
+    const char *format;        /* output format: "wav" or "flac" */
 } Config;
 
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AudioBuffer - descriptor for atomic file writing (WAV/FLAC)
+ * ───────────────────────────────────────────────────────────────────────────── */
 typedef struct {
-    uint8_t        *data;
-    size_t          frames_capacity;
-    size_t          channels;
-    int             bytes_per_sample;
-    size_t          frame_bytes;     /* channels * bytes_per_sample */
-    size_t          write_pos;
-    size_t          read_pos;
-    size_t          total_written;
-    pthread_mutex_t mu;
-} Ring;
+    uint8_t *data;
+    size_t   frames;
+    size_t   capacity_frames;
+    size_t   frame_bytes;
+    unsigned channels;
+    unsigned rate;
+    int      bytes_per_sample;
+    time_t   start_time;
+} AudioBuffer;
 
-static int ring_init(Ring *r, size_t frames_capacity, size_t channels, int bytes_per_sample) {
-    r->bytes_per_sample = bytes_per_sample;
-    r->frame_bytes = channels * bytes_per_sample;
-    r->data = (uint8_t*)calloc(frames_capacity, r->frame_bytes);
-    if (!r->data) return -1;
-    r->frames_capacity = frames_capacity;
-    r->channels = channels;
-    r->write_pos = 0;
-    r->read_pos  = 0;
-    r->total_written = 0;
-    pthread_mutex_init(&r->mu, NULL);
+static int audiobuf_write(const AudioBuffer *ab, const char *outdir, const char *prefix, const char *format);
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AsyncWriter - fixed-size ring buffer with async disk writes
+ * 
+ * Capture thread continuously writes samples (overwrites oldest when full).
+ * Writer thread copies ranges from ring and writes to disk asynchronously.
+ * ───────────────────────────────────────────────────────────────────────────── */
+typedef struct {
+    /* Ring buffer (fixed size) */
+    uint8_t        *data;
+    size_t          capacity;       /* fixed capacity in frames */
+    size_t          head;           /* write position (wraps modulo capacity) */
+    size_t          total_written;  /* monotonic counter: total frames ever written */
+    size_t          frame_bytes;
+    unsigned        channels;
+    unsigned        rate;
+    int             bytes_per_sample;
+    
+    /* Async write state */
+    uint8_t        *write_buf;      /* snapshot buffer for async writes */
+    size_t          write_capacity;
+    size_t          write_frames;
+    size_t          write_from;
+    size_t          write_to;
+    time_t          write_start_time;
+    int             write_pending;
+    
+    /* Config */
+    const char     *outdir;
+    const char     *prefix;
+    const char     *format;
+    
+    /* Threading */
+    pthread_mutex_t mu;
+    pthread_cond_t  cv;
+    pthread_t       thread;
+    int             shutdown;
+    int             initialized;
+} AsyncWriter;
+
+static int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
+                        int bytes_per_sample, size_t capacity_frames,
+                        const char *outdir, const char *prefix, const char *format);
+static void asyncwr_free(AsyncWriter *aw);
+static int asyncwr_append(AsyncWriter *aw, const uint8_t *samples, size_t nframes);
+static size_t asyncwr_position(AsyncWriter *aw);
+static size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes);
+static void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time);
+static void asyncwr_wait_pending(AsyncWriter *aw);
+
+/* Helper to write buffer to disk */
+static void asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframes,
+                             size_t from, size_t to, time_t start_time) {
+    AudioBuffer ab = {
+        .data = (uint8_t*)data,
+        .frames = nframes,
+        .capacity_frames = nframes,
+        .frame_bytes = aw->frame_bytes,
+        .channels = aw->channels,
+        .rate = aw->rate,
+        .bytes_per_sample = aw->bytes_per_sample,
+        .start_time = start_time
+    };
+    
+    audiobuf_write(&ab, aw->outdir, aw->prefix, aw->format);
+    logmsg("wrt", "wrote frames %zu-%zu (%zu frames, %.1f sec)", 
+           from, to, nframes, (double)nframes / aw->rate);
+}
+
+static void *asyncwr_thread_main(void *arg) {
+    AsyncWriter *aw = (AsyncWriter*)arg;
+    
+    pthread_mutex_lock(&aw->mu);
+    while (!aw->shutdown) {
+        while (!aw->write_pending && !aw->shutdown) {
+            pthread_cond_wait(&aw->cv, &aw->mu);
+        }
+        if (aw->shutdown && !aw->write_pending) break;
+        
+        uint8_t *data = aw->write_buf;
+        size_t nframes = aw->write_frames;
+        size_t from = aw->write_from;
+        size_t to = aw->write_to;
+        time_t start_time = aw->write_start_time;
+        pthread_mutex_unlock(&aw->mu);
+        
+        if (nframes > 0) {
+            asyncwr_do_write(aw, data, nframes, from, to, start_time);
+        }
+        
+        pthread_mutex_lock(&aw->mu);
+        aw->write_pending = 0;
+        pthread_cond_broadcast(&aw->cv);
+    }
+    pthread_mutex_unlock(&aw->mu);
+    
+    logmsg("wrt", "writer thread exit");
+    return NULL;
+}
+
+static int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
+                        int bytes_per_sample, size_t capacity_frames,
+                        const char *outdir, const char *prefix, const char *format) {
+    memset(aw, 0, sizeof(*aw));
+    
+    aw->frame_bytes = channels * bytes_per_sample;
+    aw->channels = channels;
+    aw->rate = rate;
+    aw->bytes_per_sample = bytes_per_sample;
+    aw->capacity = capacity_frames;
+    aw->head = 0;
+    aw->total_written = 0;
+    
+    aw->data = (uint8_t*)malloc(capacity_frames * aw->frame_bytes);
+    if (!aw->data) return -1;
+    
+    /* Write buffer sized for max_file_sec worth of data */
+    aw->write_buf = (uint8_t*)malloc(capacity_frames * aw->frame_bytes);
+    aw->write_capacity = capacity_frames;
+    if (!aw->write_buf) {
+        free(aw->data);
+        return -1;
+    }
+    
+    aw->write_pending = 0;
+    aw->outdir = outdir;
+    aw->prefix = prefix;
+    aw->format = format;
+    aw->shutdown = 0;
+    
+    pthread_mutex_init(&aw->mu, NULL);
+    pthread_cond_init(&aw->cv, NULL);
+    
+    if (pthread_create(&aw->thread, NULL, asyncwr_thread_main, aw) != 0) {
+        free(aw->data);
+        free(aw->write_buf);
+        pthread_mutex_destroy(&aw->mu);
+        pthread_cond_destroy(&aw->cv);
+        return -1;
+    }
+    aw->initialized = 1;
+    
+    logmsg("ring", "initialized: %.1f sec capacity (%zu frames)", 
+           (double)capacity_frames / rate, capacity_frames);
     return 0;
 }
-static void ring_free(Ring *r) {
-    if (r->data) free(r->data);
-    pthread_mutex_destroy(&r->mu);
+
+static void asyncwr_free(AsyncWriter *aw) {
+    if (!aw->initialized) return;
+    
+    pthread_mutex_lock(&aw->mu);
+    aw->shutdown = 1;
+    pthread_cond_signal(&aw->cv);
+    pthread_mutex_unlock(&aw->mu);
+    
+    pthread_join(aw->thread, NULL);
+    
+    free(aw->data);
+    free(aw->write_buf);
+    pthread_mutex_destroy(&aw->mu);
+    pthread_cond_destroy(&aw->cv);
+    aw->initialized = 0;
 }
-static void ring_write(Ring *r, const void *frames, size_t nframes) {
-    pthread_mutex_lock(&r->mu);
-    const size_t fb = r->frame_bytes;
-    const uint8_t *src = (const uint8_t*)frames;
-    size_t wp = r->write_pos;
-    for (size_t i=0; i<nframes; ++i) {
-        size_t idx = (wp % r->frames_capacity) * fb;
-        memcpy(&r->data[idx], &src[i * fb], fb);
-        wp = (wp + 1) % r->frames_capacity;
-        if (wp == r->read_pos) r->read_pos = (r->read_pos + 1) % r->frames_capacity;
+
+/* Append samples to ring buffer (called by capture thread) */
+static int asyncwr_append(AsyncWriter *aw, const uint8_t *samples, size_t nframes) {
+    pthread_mutex_lock(&aw->mu);
+    
+    const size_t fb = aw->frame_bytes;
+    size_t remaining = nframes;
+    const uint8_t *src = samples;
+    
+    while (remaining > 0) {
+        size_t space_to_end = aw->capacity - aw->head;
+        size_t chunk = (remaining < space_to_end) ? remaining : space_to_end;
+        
+        memcpy(aw->data + aw->head * fb, src, chunk * fb);
+        
+        aw->head = (aw->head + chunk) % aw->capacity;
+        aw->total_written += chunk;
+        src += chunk * fb;
+        remaining -= chunk;
     }
-    r->write_pos = wp;
-    r->total_written += nframes;
-    pthread_mutex_unlock(&r->mu);
+    
+    pthread_mutex_unlock(&aw->mu);
+    return 0;
 }
-static size_t ring_available_locked(const Ring *r) {
-    if (r->write_pos >= r->read_pos) return r->write_pos - r->read_pos;
-    return r->frames_capacity - (r->read_pos - r->write_pos);
+
+/* Get total frames ever written (monotonic position) */
+static size_t asyncwr_position(AsyncWriter *aw) {
+    pthread_mutex_lock(&aw->mu);
+    size_t pos = aw->total_written;
+    pthread_mutex_unlock(&aw->mu);
+    return pos;
 }
-static size_t ring_read(Ring *r, void *dst, size_t max_frames) {
-    pthread_mutex_lock(&r->mu);
-    size_t avail = ring_available_locked(r);
-    if (avail == 0) { pthread_mutex_unlock(&r->mu); return 0; }
-    size_t take = (avail < max_frames) ? avail : max_frames;
-    const size_t fb = r->frame_bytes;
-    uint8_t *d = (uint8_t*)dst;
-    for (size_t i=0; i<take; ++i) {
-        size_t idx = (r->read_pos % r->frames_capacity) * fb;
-        memcpy(&d[i * fb], &r->data[idx], fb);
-        r->read_pos = (r->read_pos + 1) % r->frames_capacity;
+
+/* Copy last N frames for level detection / fingerprinting */
+static size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes) {
+    pthread_mutex_lock(&aw->mu);
+    
+    size_t avail = (aw->total_written < aw->capacity) ? aw->total_written : aw->capacity;
+    size_t take = (avail < nframes) ? avail : nframes;
+    
+    if (take > 0) {
+        const size_t fb = aw->frame_bytes;
+        uint8_t *d = (uint8_t*)dst;
+        
+        /* Start position in ring: head - take (with wraparound) */
+        size_t start = (aw->head + aw->capacity - take) % aw->capacity;
+        
+        if (start + take <= aw->capacity) {
+            /* No wrap */
+            memcpy(d, aw->data + start * fb, take * fb);
+        } else {
+            /* Wrap around */
+            size_t first_part = aw->capacity - start;
+            memcpy(d, aw->data + start * fb, first_part * fb);
+            memcpy(d + first_part * fb, aw->data, (take - first_part) * fb);
+        }
     }
-    pthread_mutex_unlock(&r->mu);
+    
+    pthread_mutex_unlock(&aw->mu);
     return take;
 }
-static size_t ring_copy_last(Ring *r, void *dst, size_t nframes) {
-    pthread_mutex_lock(&r->mu);
-    const size_t cap = r->frames_capacity;
-    const size_t fb  = r->frame_bytes;
-    size_t have = (r->total_written < cap) ? r->total_written : cap;
-    size_t take = (have < nframes) ? have : nframes;
-    if (take > cap) take = cap;  /* safety: never exceed buffer capacity */
-    size_t start;
-    if (r->write_pos >= take) {
-        start = r->write_pos - take;
+
+/* Write frames [from, to) to disk asynchronously */
+static void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time) {
+    pthread_mutex_lock(&aw->mu);
+    
+    /* Wait for previous write to complete */
+    while (aw->write_pending && !aw->shutdown) {
+        pthread_cond_wait(&aw->cv, &aw->mu);
+    }
+    if (aw->shutdown) {
+        pthread_mutex_unlock(&aw->mu);
+        return;
+    }
+    
+    /* Oldest frame still in ring */
+    size_t oldest = (aw->total_written > aw->capacity) 
+                    ? (aw->total_written - aw->capacity) : 0;
+    
+    if (from < oldest) {
+        logmsg("wrt", "WARNING: requested frames %zu-%zu but oldest is %zu (lost %zu frames)",
+               from, to, oldest, oldest - from);
+        from = oldest;
+    }
+    if (to > aw->total_written) to = aw->total_written;
+    if (to <= from) {
+        pthread_mutex_unlock(&aw->mu);
+        return;
+    }
+    
+    size_t nframes = to - from;
+    const size_t fb = aw->frame_bytes;
+    
+    /* Resize write buffer if needed */
+    if (nframes > aw->write_capacity) {
+        uint8_t *new_buf = (uint8_t*)realloc(aw->write_buf, nframes * fb);
+        if (new_buf) {
+            aw->write_buf = new_buf;
+            aw->write_capacity = nframes;
+        } else {
+            logmsg("wrt", "ERROR: can't allocate %zu bytes for write buffer", nframes * fb);
+            pthread_mutex_unlock(&aw->mu);
+            return;
+        }
+    }
+    
+    /* Copy from ring to write buffer */
+    size_t offset_from_head = aw->total_written - from;
+    size_t start = (aw->head + aw->capacity - offset_from_head) % aw->capacity;
+    
+    if (start + nframes <= aw->capacity) {
+        memcpy(aw->write_buf, aw->data + start * fb, nframes * fb);
     } else {
-        start = cap - (take - r->write_pos);
+        size_t first_part = aw->capacity - start;
+        memcpy(aw->write_buf, aw->data + start * fb, first_part * fb);
+        memcpy(aw->write_buf + first_part * fb, aw->data, (nframes - first_part) * fb);
     }
-    uint8_t *d = (uint8_t*)dst;
-    for (size_t i=0; i<take; ++i) {
-        size_t idx = ((start + i) % cap) * fb;
-        memcpy(&d[i * fb], &r->data[idx], fb);
+    
+    aw->write_frames = nframes;
+    aw->write_from = from;
+    aw->write_to = to;
+    aw->write_start_time = start_time;
+    aw->write_pending = 1;
+    
+    pthread_cond_signal(&aw->cv);
+    pthread_mutex_unlock(&aw->mu);
+}
+
+/* Wait for any pending async write to complete */
+static void asyncwr_wait_pending(AsyncWriter *aw) {
+    pthread_mutex_lock(&aw->mu);
+    while (aw->write_pending) {
+        pthread_cond_wait(&aw->cv, &aw->mu);
     }
-    pthread_mutex_unlock(&r->mu);
-    return take;
+    pthread_mutex_unlock(&aw->mu);
 }
 
 static unsigned rms_s16_interleaved(const int16_t *x, size_t frames, size_t channels) {
@@ -246,16 +452,10 @@ static unsigned rms_s16_interleaved(const int16_t *x, size_t frames, size_t chan
     if (r > 32767.0) r = 32767.0;
     return (unsigned)(r + 0.5);
 }
-static unsigned avg_abs_s16(const int16_t *x, size_t frames, size_t channels) {
-    if (!frames || !channels) return 0;
-    const size_t N = frames * channels;
-    unsigned long long acc = 0;
-    for (size_t i=0; i<N; ++i) acc += (unsigned)(x[i] < 0 ? -x[i] : x[i]);
-    return (unsigned)(acc / N);
-}
 
-/* Analyze samples: returns avg absolute value, and optionally peak value */
-static unsigned analyze_samples(const void *data, size_t frames, size_t channels, int bytes_per_sample, int source_big_endian, unsigned *peak_out) {
+/* Analyze samples: returns avg absolute value, and optionally peak value
+ * All samples are little-endian (converted at capture time for SLink) */
+static unsigned analyze_samples(const void *data, size_t frames, size_t channels, int bytes_per_sample, unsigned *peak_out) {
     if (!frames || !channels) { if (peak_out) *peak_out = 0; return 0; }
     const size_t N = frames * channels;
     unsigned long long acc = 0;
@@ -271,12 +471,8 @@ static unsigned analyze_samples(const void *data, size_t frames, size_t channels
     } else if (bytes_per_sample == 3) {
         const uint8_t *p = (const uint8_t*)data;
         for (size_t i=0; i<N; ++i) {
-            int32_t s;
-            if (source_big_endian) {
-                s = ((int32_t)p[i*3] << 16) | ((int32_t)p[i*3+1] << 8) | (int32_t)p[i*3+2];
-            } else {
-                s = ((int32_t)p[i*3+2] << 16) | ((int32_t)p[i*3+1] << 8) | (int32_t)p[i*3];
-            }
+            /* Little-endian 24-bit */
+            int32_t s = ((int32_t)p[i*3+2] << 16) | ((int32_t)p[i*3+1] << 8) | (int32_t)p[i*3];
             if (s & 0x800000) s |= 0xFF000000;
             int16_t s16 = (int16_t)(s >> 8);
             unsigned v = (unsigned)(s16 < 0 ? -s16 : s16);
@@ -286,27 +482,6 @@ static unsigned analyze_samples(const void *data, size_t frames, size_t channels
     }
     if (peak_out) *peak_out = peak;
     return (unsigned)(acc / N);
-}
-
-/* Write samples to WAV file, optionally swapping bytes for big-endian 24-bit sources */
-static void wav_write_samples(FILE *fp, const uint8_t *data, size_t frames, size_t channels, int bytes_per_sample, int source_big_endian) {
-    if (bytes_per_sample == 2) {
-        fwrite(data, channels * 2, frames, fp);
-    } else if (bytes_per_sample == 3) {
-        if (source_big_endian) {
-            /* SLink is big-endian, WAV needs little-endian - swap byte order */
-            for (size_t i = 0; i < frames * channels; ++i) {
-                uint8_t le[3];
-                le[0] = data[i*3 + 2];  /* LSB */
-                le[1] = data[i*3 + 1];  /* middle */
-                le[2] = data[i*3 + 0];  /* MSB */
-                fwrite(le, 3, 1, fp);
-            }
-        } else {
-            /* ALSA S24_3LE is already little-endian */
-            fwrite(data, channels * 3, frames, fp);
-        }
-    }
 }
 
 static void random_bytes(void *dst, size_t n) {
@@ -455,81 +630,202 @@ static char *shazam_post(const char *url, const char *user_agent, const char *js
 static void le16_write(uint16_t v, FILE *f){ uint8_t b[2]={v&0xff,(v>>8)&0xff}; fwrite(b,1,2,f); }
 static void le32_write(uint32_t v, FILE *f){ uint8_t b[4]={v&0xff,(v>>8)&0xff,(v>>16)&0xff,(v>>24)&0xff}; fwrite(b,1,4,f); }
 
-typedef struct { FILE *fp; char tmp_name[512]; } WavFile;
-static void build_wav_name(char *out, size_t out_sz, const char *prefix, time_t ts) {
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Atomic file writing from AudioBuffer (WAV and FLAC)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* Ensure directory exists (mkdir -p style, single level only) */
+static void ensure_dir(const char *path) {
+    if (!path || !path[0]) return;
+    struct stat st;
+    if (stat(path, &st) == 0) return;  /* already exists */
+    if (mkdir(path, 0755) != 0 && errno != EEXIST) {
+        logmsg("wrt","mkdir %s: %s", path, strerror(errno));
+    }
+}
+
+static void build_audio_filename(char *out, size_t out_sz, const char *outdir, 
+                                  const char *prefix, const char *ext, time_t ts) {
     struct tm tm; localtime_r(&ts, &tm);
-    snprintf(out, out_sz, "%s_%04d%02d%02d_%02d%02d%02d.wav",
-             prefix, tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
-             tm.tm_hour, tm.tm_min, tm.tm_sec);
+    if (outdir && outdir[0]) {
+        snprintf(out, out_sz, "%s/%s_%04d%02d%02d_%02d%02d%02d.%s",
+                 outdir, prefix, tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
+                 tm.tm_hour, tm.tm_min, tm.tm_sec, ext);
+    } else {
+        snprintf(out, out_sz, "%s_%04d%02d%02d_%02d%02d%02d.%s",
+                 prefix, tm.tm_year+1900, tm.tm_mon+1, tm.tm_mday,
+                 tm.tm_hour, tm.tm_min, tm.tm_sec, ext);
+    }
 }
 
-static int wav_open_at(WavFile *wf, const char *prefix, unsigned channels, unsigned rate, time_t ts) {
-    (void)channels; (void)rate;
-    char final[512]; build_wav_name(final, sizeof(final), prefix, ts);
-
-    snprintf(wf->tmp_name, sizeof(wf->tmp_name), "%s", final);
-    size_t len = strlen(wf->tmp_name);
-    if (len + 5 < sizeof(wf->tmp_name)) { memcpy(wf->tmp_name + len, ".part", 6); }
-    else { wf->tmp_name[sizeof(wf->tmp_name)-1] = '\0'; }
-
-    wf->fp = fopen(wf->tmp_name, "wb");
-    if (!wf->fp) { logmsg("wav","open %s: %s", wf->tmp_name, strerror(errno)); return -1; }
-    uint8_t zero[44] = {0};
-    if (fwrite(zero,1,44,wf->fp)!=44){ logmsg("wav","header write failed"); fclose(wf->fp); wf->fp=NULL; return -1; }
-    logmsg("wav","opened %s", final);
-    return 0;
-}
-
-static int wav_finalize(WavFile *wf, unsigned channels, unsigned rate, unsigned bits_per_sample) {
-    if (!wf->fp) return 0;
-    long file_size = ftell(wf->fp);
-    if (file_size < 44) { fclose(wf->fp); wf->fp=NULL; unlink(wf->tmp_name); return -1; }
-
-    uint32_t data_bytes = (uint32_t)(file_size - 44);
-    uint16_t audio_format = 1;
-    uint16_t num_channels = (uint16_t)channels;
-    uint32_t sample_rate  = rate;
-    uint16_t block_align = num_channels * (bits_per_sample/8);
-    uint32_t byte_rate = sample_rate * block_align;
-
-    fseek(wf->fp, 0, SEEK_SET);
-    fwrite("RIFF",1,4,wf->fp);
-    le32_write(36 + data_bytes, wf->fp);
-    fwrite("WAVE",1,4,wf->fp);
-    fwrite("fmt ",1,4,wf->fp);
-    le32_write(16, wf->fp);
-    le16_write(audio_format, wf->fp);
-    le16_write(num_channels, wf->fp);
-    le32_write(sample_rate,  wf->fp);
-    le32_write(byte_rate,    wf->fp);
-    le16_write(block_align,  wf->fp);
-    le16_write((uint16_t)bits_per_sample, wf->fp);
-    fwrite("data",1,4,wf->fp);
-    le32_write(data_bytes, wf->fp);
-
-    fflush(wf->fp);
-    int fd = fileno(wf->fp); if (fd>=0) fsync(fd);
-    fclose(wf->fp); wf->fp=NULL;
-
-    char final_name[512]; snprintf(final_name, sizeof(final_name), "%s", wf->tmp_name);
-    size_t n = strlen(final_name); if (n>5) final_name[n-5]='\0';
-    if (rename(wf->tmp_name, final_name)!=0) {
-        logmsg("wav","rename -> %s failed: %s", final_name, strerror(errno));
+/* Write AudioBuffer to WAV file atomically */
+static int audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *prefix) {
+    if (!ab->data || ab->frames == 0) return -1;
+    
+    ensure_dir(outdir);
+    
+    char final_name[512], tmp_name[520];
+    build_audio_filename(final_name, sizeof(final_name), outdir, prefix, "wav", ab->start_time);
+    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp", final_name);
+    
+    FILE *fp = fopen(tmp_name, "wb");
+    if (!fp) { logmsg("wav","open %s: %s", tmp_name, strerror(errno)); return -1; }
+    
+    unsigned bits = ab->bytes_per_sample * 8;
+    uint32_t data_bytes = (uint32_t)(ab->frames * ab->frame_bytes);
+    uint16_t block_align = (uint16_t)(ab->channels * ab->bytes_per_sample);
+    uint32_t byte_rate = ab->rate * block_align;
+    
+    /* Write header */
+    fwrite("RIFF", 1, 4, fp);
+    le32_write(36 + data_bytes, fp);
+    fwrite("WAVE", 1, 4, fp);
+    fwrite("fmt ", 1, 4, fp);
+    le32_write(16, fp);
+    le16_write(1, fp);  /* PCM */
+    le16_write((uint16_t)ab->channels, fp);
+    le32_write(ab->rate, fp);
+    le32_write(byte_rate, fp);
+    le16_write(block_align, fp);
+    le16_write((uint16_t)bits, fp);
+    fwrite("data", 1, 4, fp);
+    le32_write(data_bytes, fp);
+    
+    /* Write samples - data is already little-endian */
+    fwrite(ab->data, ab->frame_bytes, ab->frames, fp);
+    
+    fflush(fp);
+    int fd = fileno(fp); if (fd >= 0) fsync(fd);
+    fclose(fp);
+    
+    if (rename(tmp_name, final_name) != 0) {
+        logmsg("wav","rename %s -> %s: %s", tmp_name, final_name, strerror(errno));
+        unlink(tmp_name);
         return -1;
     }
-    logmsg("wav","finalized data=%u bytes", data_bytes);
+    
+    logmsg("wav","wrote %s (%.1f sec, %.1f MB)", final_name, 
+           (double)ab->frames / ab->rate, (double)data_bytes / (1024*1024));
     return 0;
+}
+
+#ifdef HAVE_FLAC
+/* Write AudioBuffer to FLAC file atomically */
+static int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *prefix) {
+    if (!ab->data || ab->frames == 0) return -1;
+    
+    ensure_dir(outdir);
+    
+    char final_name[512], tmp_name[520];
+    build_audio_filename(final_name, sizeof(final_name), outdir, prefix, "flac", ab->start_time);
+    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp", final_name);
+    
+    FLAC__StreamEncoder *encoder = FLAC__stream_encoder_new();
+    if (!encoder) { logmsg("flac","encoder_new failed"); return -1; }
+    
+    unsigned bits = ab->bytes_per_sample * 8;
+    FLAC__stream_encoder_set_channels(encoder, ab->channels);
+    FLAC__stream_encoder_set_bits_per_sample(encoder, bits);
+    FLAC__stream_encoder_set_sample_rate(encoder, ab->rate);
+    FLAC__stream_encoder_set_compression_level(encoder, 5);  /* balanced speed/size */
+    FLAC__stream_encoder_set_total_samples_estimate(encoder, ab->frames);
+    
+    FLAC__StreamEncoderInitStatus init_status = 
+        FLAC__stream_encoder_init_file(encoder, tmp_name, NULL, NULL);
+    if (init_status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
+        logmsg("flac","init failed: %s", FLAC__StreamEncoderInitStatusString[init_status]);
+        FLAC__stream_encoder_delete(encoder);
+        return -1;
+    }
+    
+    /* FLAC needs samples as int32_t array */
+    size_t total_samples = ab->frames * ab->channels;
+    FLAC__int32 *buffer = (FLAC__int32*)malloc(total_samples * sizeof(FLAC__int32));
+    if (!buffer) {
+        logmsg("flac","oom for sample buffer");
+        FLAC__stream_encoder_finish(encoder);
+        FLAC__stream_encoder_delete(encoder);
+        unlink(tmp_name);
+        return -1;
+    }
+    
+    const uint8_t *src = ab->data;
+    if (ab->bytes_per_sample == 2) {
+        const int16_t *s16 = (const int16_t*)src;
+        for (size_t i = 0; i < total_samples; ++i) {
+            buffer[i] = s16[i];
+        }
+    } else if (ab->bytes_per_sample == 3) {
+        for (size_t i = 0; i < total_samples; ++i) {
+            /* Little-endian 24-bit */
+            int32_t s = ((int32_t)src[i*3+2] << 16) | ((int32_t)src[i*3+1] << 8) | (int32_t)src[i*3];
+            if (s & 0x800000) s |= 0xFF000000;  /* sign extend */
+            buffer[i] = s;
+        }
+    }
+    
+    /* Encode in chunks to avoid huge stack usage */
+    const size_t chunk_frames = 4096;
+    FLAC__bool ok = true;
+    for (size_t pos = 0; pos < ab->frames && ok; pos += chunk_frames) {
+        size_t frames_to_encode = (ab->frames - pos < chunk_frames) ? (ab->frames - pos) : chunk_frames;
+        ok = FLAC__stream_encoder_process_interleaved(encoder, buffer + pos * ab->channels, (unsigned)frames_to_encode);
+    }
+    
+    free(buffer);
+    
+    if (!ok) {
+        logmsg("flac","encode failed: %s", FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(encoder)]);
+        FLAC__stream_encoder_finish(encoder);
+        FLAC__stream_encoder_delete(encoder);
+        unlink(tmp_name);
+        return -1;
+    }
+    
+    FLAC__stream_encoder_finish(encoder);
+    FLAC__stream_encoder_delete(encoder);
+    
+    /* Atomic rename */
+    if (rename(tmp_name, final_name) != 0) {
+        logmsg("flac","rename %s -> %s: %s", tmp_name, final_name, strerror(errno));
+        unlink(tmp_name);
+        return -1;
+    }
+    
+    /* Get file size for logging */
+    struct stat st;
+    double file_mb = 0;
+    if (stat(final_name, &st) == 0) file_mb = (double)st.st_size / (1024*1024);
+    
+    logmsg("flac","wrote %s (%.1f sec, %.1f MB)", final_name, 
+           (double)ab->frames / ab->rate, file_mb);
+    return 0;
+}
+#endif /* HAVE_FLAC */
+
+/* Write AudioBuffer to file (WAV or FLAC based on format) */
+static int audiobuf_write(const AudioBuffer *ab, const char *outdir, const char *prefix, const char *format) {
+#ifdef HAVE_FLAC
+    if (format && strcmp(format, "flac") == 0) {
+        return audiobuf_write_flac(ab, outdir, prefix);
+    }
+#else
+    if (format && strcmp(format, "flac") == 0) {
+        logmsg("wrt","FLAC not available, falling back to WAV");
+    }
+#endif
+    return audiobuf_write_wav(ab, outdir, prefix);
 }
 
 typedef struct {
-    Config    cfg;
-    Ring      ring;
-    pthread_t th_cap;
-    pthread_t th_id;
-    pthread_t th_wrt;
-    sqlite3  *db;
+    Config      cfg;
+    AsyncWriter aw;            /* central audio buffer with async disk writes */
+    pthread_t   th_cap;
+    pthread_t   th_id;
+    pthread_t   th_wrt;
+    sqlite3    *db;
     pthread_mutex_t db_mu;
-    char      current_wav[512];  /* current WAV file being recorded */
+    char        current_wav[512];  /* current WAV file being recorded */
 } App;
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -613,6 +909,7 @@ static void db_insert_play(App *app, const char *timestamp, const char *artist,
     pthread_mutex_unlock(&app->db_mu);
 }
 
+#ifdef HAVE_PCAP
 static void *capture_slink(void *arg) {
     App *app = (App*)arg;
     Config *cfg = &app->cfg;
@@ -646,13 +943,17 @@ static void *capture_slink(void *arg) {
         if (!pkt) continue;
 
         if (hdr.caplen >= 30 && pkt[12] == 0x04 && pkt[13] == 0xee) {
-            /* Store 24-bit samples directly (3 bytes per channel) */
-            memcpy(&buf[buf_idx * fb + 0], &pkt[24], 3);  /* Ch 0 */
-            memcpy(&buf[buf_idx * fb + 3], &pkt[27], 3);  /* Ch 1 */
+            /* Convert 24-bit big-endian to little-endian as we copy */
+            buf[buf_idx * fb + 0] = pkt[26];  /* Ch 0: swap bytes */
+            buf[buf_idx * fb + 1] = pkt[25];
+            buf[buf_idx * fb + 2] = pkt[24];
+            buf[buf_idx * fb + 3] = pkt[29];  /* Ch 1: swap bytes */
+            buf[buf_idx * fb + 4] = pkt[28];
+            buf[buf_idx * fb + 5] = pkt[27];
 
             buf_idx++;
             if (buf_idx >= cfg->frames_per_read) {
-                ring_write(&app->ring, buf, cfg->frames_per_read);
+                asyncwr_append(&app->aw, buf, cfg->frames_per_read);
                 buf_idx = 0;
             }
         }
@@ -663,16 +964,13 @@ static void *capture_slink(void *arg) {
     logmsg("cap","exit");
     return NULL;
 }
+#endif
 
-static void *capture_main(void *arg) {
+#ifdef HAVE_ALSA
+static void *capture_alsa(void *arg) {
     App *app = (App*)arg;
     Config *cfg = &app->cfg;
 
-    if (cfg->source && !strcmp(cfg->source, "slink")) {
-        return capture_slink(arg);
-    }
-
-#ifdef HAVE_ALSA
     vlogmsg("cap","opening ALSA on %s", cfg->device);
     snd_pcm_t *pcm = NULL;
     int err = snd_pcm_open(&pcm, cfg->device, SND_PCM_STREAM_CAPTURE, 0);
@@ -701,7 +999,7 @@ static void *capture_main(void *arg) {
     uint8_t *buf = (uint8_t*)malloc(fb * FR);
     if (!buf) { logmsg("cap","oom"); snd_pcm_close(pcm); g_running=0; return NULL; }
 
-    logmsg("cap","started: rate=%u ch=%u period=%lu bits=%d", cfg->rate, cfg->channels, (unsigned long)period, cfg->bytes_per_sample * 8);
+    logmsg("cap","started: rate=%u ch=%u period=%lu bits=%d (ALSA)", cfg->rate, cfg->channels, (unsigned long)period, cfg->bytes_per_sample * 8);
     while (g_running) {
         snd_pcm_sframes_t got = snd_pcm_readi(pcm, buf, FR);
         if (got < 0) {
@@ -713,16 +1011,34 @@ static void *capture_main(void *arg) {
             }
             continue;
         }
-        if (got > 0) ring_write(&app->ring, buf, (size_t)got);
+        if (got > 0) asyncwr_append(&app->aw, buf, (size_t)got);
     }
 
     free(buf);
     snd_pcm_close(pcm);
-#else
-    logmsg("cap","ALSA not available, use --source slink");
-    g_running = 0;
-#endif
     logmsg("cap","exit");
+    return NULL;
+}
+#endif
+
+static void *capture_main(void *arg) {
+    App *app = (App*)arg;
+    Config *cfg = &app->cfg;
+
+#ifdef HAVE_PCAP
+    if (!strcmp(cfg->source, "slink")) {
+        return capture_slink(arg);
+    }
+#endif
+
+#ifdef HAVE_ALSA
+    if (!strcmp(cfg->source, "alsa")) {
+        return capture_alsa(arg);
+    }
+#endif
+
+    logmsg("cap", "source '%s' not available (not compiled in)", cfg->source);
+    g_running = 0;
     return NULL;
 }
 
@@ -746,19 +1062,15 @@ static void *id_main(void *arg) {
     int pending_confirms = 0;
 
     while (g_running) {
-        size_t got = ring_copy_last(&app->ring, window, look_frames);
+        size_t got = asyncwr_copy_last(&app->aw, window, look_frames);
         
         /* Convert to 16-bit for RMS and vibra */
         if (cfg->bytes_per_sample == 2) {
             memcpy(window_s16, window, got * fb);
         } else if (cfg->bytes_per_sample == 3) {
             for (size_t i = 0; i < got * cfg->channels; ++i) {
-                int32_t s;
-                if (cfg->source_big_endian) {
-                    s = ((int32_t)window[i*3] << 16) | ((int32_t)window[i*3+1] << 8) | (int32_t)window[i*3+2];
-                } else {
-                    s = ((int32_t)window[i*3+2] << 16) | ((int32_t)window[i*3+1] << 8) | (int32_t)window[i*3];
-                }
+                /* Little-endian 24-bit */
+                int32_t s = ((int32_t)window[i*3+2] << 16) | ((int32_t)window[i*3+1] << 8) | (int32_t)window[i*3];
                 if (s & 0x800000) s |= 0xFF000000;
                 window_s16[i] = (int16_t)(s >> 8);
             }
@@ -913,46 +1225,45 @@ static void *writer_main(void *arg) {
 
     const unsigned sustain_chunks_needed = (unsigned)((cfg->sustain_sec * cfg->rate + (FR-1)) / FR);
     const unsigned silence_chunks_needed = (unsigned)((cfg->silence_sec * cfg->rate + (FR-1)) / FR);
-    const size_t prebuffer_frames = (size_t)cfg->prebuffer_sec * cfg->rate;
 
     /* Sliding window for trigger detection - require 60% of chunks above threshold */
     unsigned window_size = sustain_chunks_needed;
     unsigned *window = (unsigned*)calloc(window_size, sizeof(unsigned));
     unsigned window_pos = 0;
-    unsigned window_above = 0;  /* count of above-threshold in window */
+    unsigned window_above = 0;
     bool window_full = false;
-    const unsigned trigger_pct = 60;  /* require 60% above threshold */
+    const unsigned trigger_pct = 60;
 
     unsigned below_cnt = 0;
     bool recording = false;
-    WavFile wf = {0};
-    size_t file_frames_written = 0;
+    
+    /* Position-based tracking */
+    size_t write_cursor = 0;      /* absolute frame we've written up to */
+    time_t segment_start_time = 0; /* timestamp of write_cursor */
+    
     const size_t max_file_frames = cfg->max_file_sec > 0 ? (size_t)cfg->max_file_sec * cfg->rate : 0;
 
-    logmsg("wrt","started: thr=%u sustain=%.2fs prebuffer=%us silence=%.2fs",
-           cfg->threshold, cfg->sustain_sec, cfg->prebuffer_sec, cfg->silence_sec);
+    const char *fmt_str = cfg->format ? cfg->format : "wav";
+    logmsg("wrt","started: thr=%u sustain=%.2fs silence=%.2fs format=%s outdir=%s",
+           cfg->threshold, cfg->sustain_sec, cfg->silence_sec, 
+           fmt_str, cfg->outdir ? cfg->outdir : ".");
 
     while (g_running) {
-        size_t peek = ring_copy_last(&app->ring, chunk, FR);
+        size_t peek = asyncwr_copy_last(&app->aw, chunk, FR);
         unsigned peak = 0;
-        unsigned avg = analyze_samples(chunk, peek, cfg->channels, cfg->bytes_per_sample, cfg->source_big_endian, &peak);
+        unsigned avg = analyze_samples(chunk, peek, cfg->channels, cfg->bytes_per_sample, &peak);
         
-        /* Music detection: require minimum peak AND average above threshold
-         * Pure silence/noise floor: peak ~100-200, avg ~20-40
-         * Quiet music/vinyl: peak ~300-800, avg ~50-150
-         * Loud music with bass: peak ~1000+, avg ~300+ */
-        const unsigned min_peak = 400;   /* minimum peak to filter out noise floor */
-        const unsigned min_avg = 60;     /* minimum average regardless of threshold setting */
-        float crest = (avg > 0) ? (float)peak / (float)avg : 0;
+        /* Music detection */
+        const unsigned min_peak = 400;
+        const unsigned min_avg = 60;
         int is_musical = (peak >= min_peak) && (avg >= min_avg) && (avg >= cfg->threshold);
         
-        vlogmsg("wrt","avg=%u peak=%u crest=%.1f musical=%d thr=%u recording=%d", avg, peak, crest, is_musical, cfg->threshold, (int)recording);
+        vlogmsg("wrt","avg=%u peak=%u musical=%d recording=%d", avg, peak, is_musical, (int)recording);
 
         if (!recording) {
-            /* Update sliding window - require musical content */
+            /* Update sliding window */
             unsigned is_above = is_musical ? 1 : 0;
             if (window_full) {
-                /* Remove oldest entry from count before replacing */
                 window_above -= window[window_pos];
             }
             window[window_pos] = is_above;
@@ -960,7 +1271,6 @@ static void *writer_main(void *arg) {
             window_pos = (window_pos + 1) % window_size;
             if (window_pos == 0) window_full = true;
 
-            /* Calculate required threshold (70% of window, or 70% of filled portion) */
             unsigned effective_size = window_full ? window_size : window_pos;
             unsigned required = (effective_size * trigger_pct) / 100;
             
@@ -968,60 +1278,45 @@ static void *writer_main(void *arg) {
             static unsigned last_pct = 0;
             unsigned current_pct = effective_size > 0 ? (window_above * 100) / effective_size : 0;
             if (current_pct >= 50 && (current_pct / 10 != last_pct / 10)) {
-                logmsg("wrt","trigger progress: %u%% above threshold (%u/%u) avg=%u crest=%.1f", current_pct, window_above, effective_size, avg, crest);
+                logmsg("wrt","trigger progress: %u%% above threshold (%u/%u) avg=%u", 
+                       current_pct, window_above, effective_size, avg);
                 last_pct = current_pct;
             }
             if (current_pct < 50) last_pct = 0;
 
             if (window_full && window_above >= required && peek > 0) {
-                /* Copy prebuffer while holding lock to avoid race with capture thread */
-                pthread_mutex_lock(&app->ring.mu);
-                size_t wp = app->ring.write_pos;
-                size_t cap = app->ring.frames_capacity;
-                size_t avail = (app->ring.total_written < cap) ? app->ring.total_written : cap;
-                size_t want_pre = prebuffer_frames;
-                if (want_pre > avail) want_pre = avail;
-                if (want_pre > cap) want_pre = cap;  /* never request more than buffer can hold */
-                size_t start;
-                if (wp >= want_pre) {
-                    start = wp - want_pre;
-                } else {
-                    start = cap - (want_pre - wp);
-                }
+                /* TRIGGER: start recording from oldest available data (prebuffer) */
+                size_t current_pos = asyncwr_position(&app->aw);
                 
-                /* Copy prebuffer data to local buffer while holding lock */
-                uint8_t *prebuf = malloc(want_pre * fb);
-                size_t copied_frames = 0;
-                if (prebuf) {
-                    for (size_t i = 0; i < want_pre; i++) {
-                        size_t cursor = (start + i) % cap;
-                        if (cursor == wp) break;
-                        memcpy(&prebuf[i * fb], &app->ring.data[cursor * fb], fb);
-                        copied_frames++;
+                /* Oldest frame still in ring buffer */
+                pthread_mutex_lock(&app->aw.mu);
+                size_t oldest = (app->aw.total_written > app->aw.capacity) 
+                                ? (app->aw.total_written - app->aw.capacity) : 0;
+                
+                /* Continue gapless if write_cursor still valid, else start from oldest */
+                if (write_cursor < oldest) {
+                    if (write_cursor > 0) {
+                        logmsg("wrt","WARNING: lost %zu frames (%.1f sec), resuming from oldest",
+                               oldest - write_cursor, (double)(oldest - write_cursor) / cfg->rate);
                     }
-                    app->ring.read_pos = wp;
+                    write_cursor = oldest;
                 }
-                pthread_mutex_unlock(&app->ring.mu);
-
-                time_t trigger_ts = time(NULL);
-                if (prebuf && copied_frames > 0 && wav_open_at(&wf, cfg->prefix, cfg->channels, cfg->rate, trigger_ts - (time_t)(copied_frames / cfg->rate)) == 0) {
-                    /* Track current WAV file for database logging */
-                    snprintf(app->current_wav, sizeof(app->current_wav), "%s", wf.tmp_name);
-                    size_t len = strlen(app->current_wav);
-                    if (len > 5 && !strcmp(app->current_wav + len - 5, ".part")) {
-                        app->current_wav[len - 5] = '\0';  /* strip .part suffix */
-                    }
-                    /* Write prebuffer from local copy - no lock needed */
-                    wav_write_samples(wf.fp, prebuf, copied_frames, cfg->channels, cfg->bytes_per_sample, cfg->source_big_endian);
-                    fflush(wf.fp);
-                    recording = true;
-                    below_cnt = 0;
-                    file_frames_written = copied_frames;
-                    logmsg("wrt","TRIGGER avg=%u (prebuffer %zu frames)", avg, copied_frames);
-                } else {
-                    logmsg("wrt","failed to open wav%s", prebuf ? "" : " (malloc failed)");
-                }
-                free(prebuf);
+                /* else: continuing gapless from write_cursor */
+                
+                size_t prebuffer_frames = current_pos - write_cursor;
+                segment_start_time = time(NULL) - (time_t)(prebuffer_frames / cfg->rate);
+                pthread_mutex_unlock(&app->aw.mu);
+                
+                const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
+                build_audio_filename(app->current_wav, sizeof(app->current_wav), 
+                                     cfg->outdir, cfg->prefix, ext, segment_start_time);
+                
+                recording = true;
+                below_cnt = 0;
+                
+                logmsg("wrt","TRIGGER avg=%u (prebuffer %.1f sec, cursor=%zu)", 
+                       avg, (double)prebuffer_frames / cfg->rate, write_cursor);
+                
                 /* Reset sliding window */
                 memset(window, 0, window_size * sizeof(unsigned));
                 window_pos = 0;
@@ -1029,72 +1324,62 @@ static void *writer_main(void *arg) {
                 window_full = false;
             }
         } else {
-            /* Read all available data to keep up with capture thread */
-            size_t total_got = 0;
-            size_t got;
-            while ((got = ring_read(&app->ring, chunk, FR)) > 0 && wf.fp) {
-                wav_write_samples(wf.fp, chunk, got, cfg->channels, cfg->bytes_per_sample, cfg->source_big_endian);
-                total_got += got;
-                file_frames_written += got;
+            /* Recording: check for split or silence */
+            size_t current_pos = asyncwr_position(&app->aw);
+            size_t frames_since_cursor = current_pos - write_cursor;
+            
+            /* Check if we need to split */
+            if (max_file_frames > 0 && frames_since_cursor >= max_file_frames) {
+                logmsg("wrt","SPLIT: writing frames %zu-%zu (%.1f min)", 
+                       write_cursor, current_pos, (double)frames_since_cursor / cfg->rate / 60.0);
                 
-                /* Check if we need to split to a new file (seamless) */
-                if (max_file_frames > 0 && file_frames_written >= max_file_frames) {
-                    unsigned bits = cfg->bytes_per_sample * 8;
-                    fflush(wf.fp);
-                    wav_finalize(&wf, cfg->channels, cfg->rate, bits);
-                    logmsg("wrt","SPLIT at %zu frames (%.1f min)", file_frames_written, (double)file_frames_written / cfg->rate / 60.0);
-                    
-                    /* Open new file immediately - seamless transition */
-                    time_t now_ts = time(NULL);
-                    if (wav_open_at(&wf, cfg->prefix, cfg->channels, cfg->rate, now_ts) != 0) {
-                        logmsg("wrt","failed to open continuation file, stopping");
-                        app->current_wav[0] = '\0';
-                        recording = false;
-                        break;
-                    }
-                    /* Update current WAV file for database logging */
-                    snprintf(app->current_wav, sizeof(app->current_wav), "%s", wf.tmp_name);
-                    size_t clen = strlen(app->current_wav);
-                    if (clen > 5 && !strcmp(app->current_wav + clen - 5, ".part")) {
-                        app->current_wav[clen - 5] = '\0';
-                    }
-                    file_frames_written = 0;
-                }
-            }
-            if (total_got > 0) {
-                static unsigned cnt = 0; if ((++cnt & 0x1F)==0) { fflush(wf.fp); int fd=fileno(wf.fp); if (fd>=0) fsync(fd); }
-            } else {
-                struct timespec ts = {.tv_sec=0,.tv_nsec=50*1000*1000};
-                nanosleep(&ts, NULL);
+                asyncwr_write_range(&app->aw, write_cursor, current_pos, segment_start_time);
+                
+                /* Advance cursor */
+                write_cursor = current_pos;
+                segment_start_time = time(NULL);
+                
+                const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
+                build_audio_filename(app->current_wav, sizeof(app->current_wav), 
+                                     cfg->outdir, cfg->prefix, ext, segment_start_time);
             }
 
-            size_t p2 = ring_copy_last(&app->ring, chunk, FR);
-            unsigned peak2 = 0;
-            unsigned avg2 = analyze_samples(chunk, p2, cfg->channels, cfg->bytes_per_sample, cfg->source_big_endian, &peak2);
-            /* Silence detection uses very low thresholds - only stop on true silence
-             * Ambient music can have very quiet passages - don't stop on those
-             * Vinyl surface noise alone: peak ~200-400, avg ~50-80
-             * True silence (needle lifted): peak <100, avg <20 */
-            const unsigned silence_peak_thr = 150;  /* below this = likely silence */
-            const unsigned silence_avg_thr = 25;    /* below this = likely silence */
-            int is_silence = (peak2 < silence_peak_thr) && (avg2 < silence_avg_thr);
+            /* Check for silence */
+            const unsigned silence_peak_thr = 150;
+            const unsigned silence_avg_thr = 25;
+            int is_silence = (peak < silence_peak_thr) && (avg < silence_avg_thr);
             if (is_silence) { if (below_cnt < 0x7fffffff) below_cnt++; }
             else { below_cnt = 0; }
 
             if (below_cnt >= silence_chunks_needed) {
-                unsigned bits = cfg->bytes_per_sample * 8;
-                if (wf.fp) { fflush(wf.fp); wav_finalize(&wf, cfg->channels, cfg->rate, bits); }
+                /* STOP: write remaining audio */
+                size_t final_pos = asyncwr_position(&app->aw);
+                if (final_pos > write_cursor) {
+                    logmsg("wrt","STOP: writing frames %zu-%zu", write_cursor, final_pos);
+                    asyncwr_write_range(&app->aw, write_cursor, final_pos, segment_start_time);
+                    write_cursor = final_pos;
+                }
                 recording = false;
                 below_cnt = 0;
                 app->current_wav[0] = '\0';
                 logmsg("wrt","STOP (silence)");
             }
         }
+        
         struct timespec ts = {.tv_sec=0,.tv_nsec=30*1000*1000};
         nanosleep(&ts, NULL);
     }
 
-    if (recording && wf.fp) { fflush(wf.fp); unsigned bits = cfg->bytes_per_sample * 8; wav_finalize(&wf, cfg->channels, cfg->rate, bits); }
+    /* Flush any remaining audio on shutdown */
+    if (recording) {
+        size_t final_pos = asyncwr_position(&app->aw);
+        if (final_pos > write_cursor) {
+            logmsg("wrt","SHUTDOWN: writing frames %zu-%zu", write_cursor, final_pos);
+            asyncwr_write_range(&app->aw, write_cursor, final_pos, segment_start_time);
+        }
+        /* Wait for async write to complete */
+        asyncwr_wait_pending(&app->aw);
+    }
     free(window);
     free(chunk);
     logmsg("wrt","exit");
@@ -1104,28 +1389,37 @@ static void *writer_main(void *arg) {
 static void usage(const char *argv0) {
     fprintf(stderr,
         "Usage: %s [options]\n"
-        "  --device hw:2,1        ALSA device\n"
+        "  --device hw:2,1        ALSA device or network interface\n"
         "  --rate 48000           sample rate\n"
         "  --channels 2           channel count\n"
-        "  --frames 1024          frames per ALSA read\n"
-        "  --ring-sec 20          ring buffer size in seconds\n"
+        "  --frames 1024          frames per read\n"
         "  --fingerprint-sec 12   seconds of audio to send to vibra\n"
         "  --min-rms 300          minimum RMS to attempt recognition\n"
-        "  --interval 2           seconds between recognition attempts (baseline loop)\n"
+        "  --interval 2           seconds between recognition attempts\n"
         "  --user-agent UA        override User-Agent header\n"
         "  --timezone TZ          override timezone (default Europe/Amsterdam)\n"
         "  --shazam-gap-sec 10    min seconds between Shazam lookups\n"
         "  --same-track-hold-sec 90  suppress lookups after a good match\n"
-        "  --threshold 50         avg abs amplitude trigger for WAV writer\n"
+        "  --threshold 50         avg abs amplitude trigger for recording\n"
         "  --sustain-sec 1.0      seconds above threshold to start recording\n"
-        "  --prebuffer-sec 5      seconds of audio to include before trigger\n"
-        "  --silence-sec 3.0      seconds below threshold to stop recording\n"
-        "  --prefix capture       WAV filename prefix\n"
-        "  --source alsa          audio source: 'alsa' or 'slink'\n"
+        "  --silence-sec 15       seconds below threshold to stop recording\n"
+        "  --prefix capture       filename prefix\n"
+        "  --outdir ./            output directory for audio files\n"
+        "  --format wav           output format: 'wav' or 'flac'\n"
+#if defined(HAVE_ALSA) && defined(HAVE_PCAP)
+        "  --source TYPE          audio source: 'alsa' or 'slink' (required)\n"
+#elif defined(HAVE_ALSA)
+        "  --source TYPE          audio source: 'alsa' (required)\n"
+#elif defined(HAVE_PCAP)
+        "  --source TYPE          audio source: 'slink' (required)\n"
+#else
+        "  --source TYPE          no audio sources compiled in!\n"
+#endif
         "  --bits 16              sample bit depth (16 or 24)\n"
-        "  --max-file-sec 600     max seconds per WAV file (0 = no limit)\n"
+        "  --max-file-sec 600     max seconds per file (0 = no limit)\n"
+        "  --ring-sec N           ring buffer size (default = max-file-sec + 60)\n"
         "  --db tracks.db         SQLite database for track logging\n"
-        "  --verbose              enable heartbeat logging\n",
+        "  --verbose              enable detailed logging\n",
         argv0);
 }
 static int parse_cli(int argc, char **argv, Config *cfg) {
@@ -1135,7 +1429,6 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
         else if (!strcmp(a,"--rate") && i+1<argc) cfg->rate = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--channels") && i+1<argc) cfg->channels = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--frames") && i+1<argc) cfg->frames_per_read = (unsigned)strtoul(argv[++i], NULL, 10);
-        else if (!strcmp(a,"--ring-sec") && i+1<argc) cfg->ring_sec = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--fingerprint-sec") && i+1<argc) cfg->fingerprint_sec = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--min-rms") && i+1<argc) cfg->min_rms = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--interval") && i+1<argc) cfg->identify_interval_sec = (unsigned)strtoul(argv[++i], NULL, 10);
@@ -1145,12 +1438,14 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
         else if (!strcmp(a,"--same-track-hold-sec") && i+1<argc) cfg->same_track_hold_sec = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--threshold") && i+1<argc) cfg->threshold = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--sustain-sec") && i+1<argc) cfg->sustain_sec = (float)atof(argv[++i]);
-        else if (!strcmp(a,"--prebuffer-sec") && i+1<argc) cfg->prebuffer_sec = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--silence-sec") && i+1<argc) cfg->silence_sec = (float)atof(argv[++i]);
         else if (!strcmp(a,"--prefix") && i+1<argc) cfg->prefix = argv[++i];
         else if (!strcmp(a,"--source") && i+1<argc) cfg->source = argv[++i];
         else if (!strcmp(a,"--bits") && i+1<argc) { unsigned b = (unsigned)strtoul(argv[++i], NULL, 10); cfg->bytes_per_sample = (b == 24) ? 3 : 2; }
         else if (!strcmp(a,"--max-file-sec") && i+1<argc) cfg->max_file_sec = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(a,"--ring-sec") && i+1<argc) cfg->ring_sec = (unsigned)strtoul(argv[++i], NULL, 10);
+        else if (!strcmp(a,"--outdir") && i+1<argc) cfg->outdir = argv[++i];
+        else if (!strcmp(a,"--format") && i+1<argc) cfg->format = argv[++i];
         else if (!strcmp(a,"--db") && i+1<argc) cfg->db_path = argv[++i];
         else if (!strcmp(a,"--verbose")) g_verbose = 1;
         else { usage(argv[0]); return -1; }
@@ -1170,7 +1465,6 @@ int main(int argc, char **argv) {
         .rate = 48000,
         .channels = 2,
         .frames_per_read = 1024,
-        .ring_sec = 20,
         .fingerprint_sec = 12,
         .min_rms = 300,
         .identify_interval_sec = 2,
@@ -1180,31 +1474,64 @@ int main(int argc, char **argv) {
         .same_track_hold_sec = 90,
         .threshold = 50,
         .sustain_sec = 1.0f,
-        .prebuffer_sec = 5,
         .silence_sec = 15.0f,
         .prefix = "capture",
-        .source = "alsa",
+        .source = NULL,           /* must be specified */
         .bytes_per_sample = 2,
         .max_file_sec = 600,  /* 10 minutes */
+        .ring_sec = 0,        /* 0 = auto-size to max_file_sec */
+        .outdir = NULL,       /* current directory */
+        .format = "wav",      /* default to WAV */
     };
     if (parse_cli(argc, argv, &cfg) != 0) return 2;
-
-    /* SLink is big-endian, ALSA is little-endian */
-    cfg.source_big_endian = (cfg.source && !strcmp(cfg.source, "slink")) ? 1 : 0;
+    
+    /* Validate required options */
+    int source_valid = 0;
+#ifdef HAVE_ALSA
+    if (cfg.source && strcmp(cfg.source, "alsa") == 0) source_valid = 1;
+#endif
+#ifdef HAVE_PCAP
+    if (cfg.source && strcmp(cfg.source, "slink") == 0) source_valid = 1;
+#endif
+    if (!source_valid) {
+#if defined(HAVE_ALSA) && defined(HAVE_PCAP)
+        logmsg("main", "--source is required: 'alsa' or 'slink'");
+#elif defined(HAVE_ALSA)
+        logmsg("main", "--source is required: 'alsa'");
+#elif defined(HAVE_PCAP)
+        logmsg("main", "--source is required: 'slink'");
+#else
+        logmsg("main", "no audio sources compiled in");
+#endif
+        return 2;
+    }
     
     /* SLink is always 24-bit */
     if (cfg.source && !strcmp(cfg.source, "slink")) {
         cfg.bytes_per_sample = 3;
     }
+    
+    /* Ring buffer sizing - need headroom for async writes */
+    unsigned min_ring_sec = cfg.max_file_sec > 0 ? cfg.max_file_sec + 60 : 600;
+    if (cfg.ring_sec == 0) {
+        cfg.ring_sec = min_ring_sec;
+    } else if (cfg.max_file_sec > 0 && cfg.ring_sec <= cfg.max_file_sec) {
+        logmsg("main", "--ring-sec (%u) must be > --max-file-sec (%u) to allow headroom for writes", 
+               cfg.ring_sec, cfg.max_file_sec);
+        return 2;
+    }
 
     App app = {0};
     app.cfg = cfg;
-    size_t ring_frames = (size_t)app.cfg.rate * app.cfg.ring_sec;
-    if (ring_init(&app.ring, ring_frames, app.cfg.channels, app.cfg.bytes_per_sample) != 0) {
-        logmsg("main","ring alloc failed"); return 1;
+    
+    /* Initialize ring buffer */
+    size_t ring_frames = (size_t)cfg.ring_sec * cfg.rate;
+    if (asyncwr_init(&app.aw, cfg.channels, cfg.rate, cfg.bytes_per_sample,
+                     ring_frames, cfg.outdir, cfg.prefix, cfg.format) != 0) {
+        logmsg("main","audio buffer alloc failed"); return 1;
     }
     if (db_init(&app) != 0) {
-        logmsg("main","database init failed"); ring_free(&app.ring); return 1;
+        logmsg("main","database init failed"); asyncwr_free(&app.aw); return 1;
     }
 
     struct sigaction sa = {0};
@@ -1213,20 +1540,21 @@ int main(int argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    logmsg("main","starting: dev=%s rate=%u ch=%u frames=%u ring=%us fingerprint=%us interval=%us thr=%u sustain=%.2fs prebuffer=%us silence=%.2fs split=%us verbose=%d shazam-gap=%us same-hold=%us",
+    logmsg("main","starting: dev=%s rate=%u ch=%u frames=%u fingerprint=%us interval=%us thr=%u sustain=%.2fs silence=%.2fs split=%us ring=%us verbose=%d shazam-gap=%us same-hold=%us",
            app.cfg.device, app.cfg.rate, app.cfg.channels, app.cfg.frames_per_read,
-           app.cfg.ring_sec, app.cfg.fingerprint_sec, app.cfg.identify_interval_sec,
-           app.cfg.threshold, app.cfg.sustain_sec, app.cfg.prebuffer_sec, app.cfg.silence_sec, app.cfg.max_file_sec, g_verbose,
+           app.cfg.fingerprint_sec, app.cfg.identify_interval_sec,
+           app.cfg.threshold, app.cfg.sustain_sec, app.cfg.silence_sec, app.cfg.max_file_sec, 
+           app.cfg.ring_sec, g_verbose,
            app.cfg.shazam_gap_sec, app.cfg.same_track_hold_sec);
 
     if (pthread_create(&app.th_cap, NULL, capture_main, &app) != 0) {
-        logmsg("main","pthread cap failed"); ring_free(&app.ring); return 1;
+        logmsg("main","pthread cap failed"); asyncwr_free(&app.aw); return 1;
     }
     if (pthread_create(&app.th_id, NULL, id_main, &app) != 0) {
-        logmsg("main","pthread id failed"); g_running=0; pthread_join(app.th_cap,NULL); ring_free(&app.ring); return 1;
+        logmsg("main","pthread id failed"); g_running=0; pthread_join(app.th_cap,NULL); asyncwr_free(&app.aw); return 1;
     }
     if (pthread_create(&app.th_wrt, NULL, writer_main, &app) != 0) {
-        logmsg("main","pthread wrt failed"); g_running=0; pthread_join(app.th_cap,NULL); pthread_join(app.th_id,NULL); ring_free(&app.ring); return 1;
+        logmsg("main","pthread wrt failed"); g_running=0; pthread_join(app.th_cap,NULL); pthread_join(app.th_id,NULL); asyncwr_free(&app.aw); return 1;
     }
 
     while (g_running) {
@@ -1238,7 +1566,7 @@ int main(int argc, char **argv) {
     pthread_join(app.th_id, NULL);
     pthread_join(app.th_wrt, NULL);
     db_close(&app);
-    ring_free(&app.ring);
+    asyncwr_free(&app.aw);
     logmsg("main","bye");
     return 0;
 }
