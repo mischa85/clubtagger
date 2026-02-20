@@ -36,6 +36,12 @@ extern void vibra_free_fingerprint(Fingerprint *fingerprint);
 
 static volatile sig_atomic_t g_running = 1;
 static int g_verbose = 0;
+#ifdef HAVE_PCAP
+static pcap_t *g_pcap_handle = NULL;
+#endif
+#ifdef HAVE_ALSA
+static snd_pcm_t *g_alsa_handle = NULL;
+#endif
 
 static void logmsg(const char *tag, const char *fmt, ...) {
     va_list ap; va_start(ap, fmt);
@@ -922,6 +928,7 @@ static void *capture_slink(void *arg) {
         g_running = 0;
         return NULL;
     }
+    g_pcap_handle = handle;  /* allow signal handler to call breakloop */
 
     logmsg("cap","started: rate=%u ch=%u (SLink source, 24-bit)", cfg->rate, cfg->channels);
 
@@ -960,6 +967,7 @@ static void *capture_slink(void *arg) {
     }
 
     free(buf);
+    g_pcap_handle = NULL;  /* prevent signal handler from using closed handle */
     pcap_close(handle);
     logmsg("cap","exit");
     return NULL;
@@ -992,6 +1000,7 @@ static void *capture_alsa(void *arg) {
     snd_pcm_hw_params_free(p);
     if (err < 0) { logmsg("cap","hw_params: %s", snd_strerror(err)); snd_pcm_close(pcm); g_running=0; return NULL; }
     snd_pcm_prepare(pcm);
+    g_alsa_handle = pcm;  /* allow signal handler to abort */
 
     cfg->rate = rate;
     const size_t FR = cfg->frames_per_read;
@@ -1015,6 +1024,7 @@ static void *capture_alsa(void *arg) {
     }
 
     free(buf);
+    g_alsa_handle = NULL;  /* prevent signal handler from using closed handle */
     snd_pcm_close(pcm);
     logmsg("cap","exit");
     return NULL;
@@ -1453,7 +1463,16 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
     return 0;
 }
 
-static void on_signal(int sig) { (void)sig; g_running = 0; }
+static void on_signal(int sig) {
+    (void)sig;
+    g_running = 0;
+#ifdef HAVE_PCAP
+    if (g_pcap_handle) pcap_breakloop(g_pcap_handle);
+#endif
+#ifdef HAVE_ALSA
+    if (g_alsa_handle) snd_pcm_abort(g_alsa_handle);
+#endif
+}
 
 int main(int argc, char **argv) {
     setvbuf(stderr, NULL, _IONBF, 0);

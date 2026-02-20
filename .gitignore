@@ -22,3 +22,5 @@ dist/
 core
 core.*
 test.db
+*.flac
+*.wav
