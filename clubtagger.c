@@ -625,8 +625,8 @@ static char *shazam_post(const char *url, const char *user_agent, const char *js
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK) logmsg("curl","perform failed: %s", curl_easy_strerror(res));
-    if (http_code != 200) logmsg("curl","HTTP %ld", http_code);
+    if (res != CURLE_OK) logmsg("curl","perform failed: %s (code %d)", curl_easy_strerror(res), (int)res);
+    else if (http_code != 200) logmsg("curl","HTTP %ld", http_code);
 
     if (buf.s && buf.n > 0) return buf.s;
     free(buf.s);
