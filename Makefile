@@ -48,14 +48,33 @@ ifneq ($(FLAC_LIBS),)
   FLAC_CFLAGS += -DHAVE_FLAC
 endif
 
+# AF_XDP support (optional, requires libbpf + libxdp)
+# Enable with: make ENABLE_AF_XDP=1
+ifdef ENABLE_AF_XDP
+  LIBBPF_CFLAGS := $(shell pkg-config --cflags libbpf 2>/dev/null)
+  LIBBPF_LIBS   := $(shell pkg-config --libs libbpf 2>/dev/null)
+  LIBXDP_CFLAGS := $(shell pkg-config --cflags libxdp 2>/dev/null)
+  LIBXDP_LIBS   := $(shell pkg-config --libs libxdp 2>/dev/null)
+  ifneq ($(LIBBPF_LIBS),)
+    ifneq ($(LIBXDP_LIBS),)
+      AF_XDP_CFLAGS := $(LIBBPF_CFLAGS) $(LIBXDP_CFLAGS) -DHAVE_AF_XDP
+      AF_XDP_LIBS   := $(LIBBPF_LIBS) $(LIBXDP_LIBS)
+    else
+      $(warning libxdp not found, AF_XDP support disabled)
+    endif
+  else
+    $(warning libbpf not found, AF_XDP support disabled)
+  endif
+endif
+
 # Required libraries; vibra usually doesn't ship a pkg-config file
 # You can override VIBRA_LIBS from the environment if needed.
 VIBRA_LIBS  ?= -lvibra -lstdc++
 MATH_LIBS   ?= -lm
 
 # Build flags - use := to override any environment LDFLAGS
-CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS)
-LDFLAGS  := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib
+CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS)
+LDFLAGS  := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib
 
 # Extra flags opt-in
 CFLAGS   += $(CFLAGS_EXTRA)
@@ -63,8 +82,8 @@ LDFLAGS  += $(LDFLAGS_EXTRA)
 
 all: $(APP)
 
-debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(CFLAGS_EXTRA)
-debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
+debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(CFLAGS_EXTRA)
+debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
 debug: clean $(APP)
 
 $(APP): $(OBJ)
@@ -73,11 +92,29 @@ $(APP): $(OBJ)
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# BPF program compilation (requires clang and libbpf headers)
+ifdef ENABLE_AF_XDP
+BPF_OBJ := slink_xdp.bpf.o
+CLANG  ?= clang
+BPFTOOL ?= bpftool
+
+$(BPF_OBJ): slink_xdp.bpf.c
+	$(CLANG) -O2 -g -target bpf -c $< -o $@
+
+bpf: $(BPF_OBJ)
+
+$(APP): $(OBJ) $(BPF_OBJ)
+endif
+
 install: $(APP)
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 $(APP) "$(DESTDIR)$(BINDIR)/$(APP)"
+ifdef ENABLE_AF_XDP
+	install -d "$(DESTDIR)$(PREFIX)/share/clubtagger"
+	install -m 0644 $(BPF_OBJ) "$(DESTDIR)$(PREFIX)/share/clubtagger/$(BPF_OBJ)"
+endif
 
 clean:
-	$(RM) $(OBJ) $(APP)
+	$(RM) $(OBJ) $(APP) slink_xdp.bpf.o
 
-.PHONY: all debug clean install
+.PHONY: all debug clean install bpf

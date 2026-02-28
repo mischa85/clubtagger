@@ -23,6 +23,19 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <arpa/inet.h>
+#include <stdatomic.h>
+#ifdef __linux__
+#include <sched.h>
+#endif
+#ifdef HAVE_AF_XDP
+#include <linux/if_link.h>
+#include <linux/if_xdp.h>
+#include <bpf/libbpf.h>
+#include <bpf/bpf.h>
+#include <xdp/xsk.h>
+#include <net/if.h>
+#include <poll.h>
+#endif
 #include <sys/socket.h>
 #include <sqlite3.h>
 
@@ -41,6 +54,9 @@ static pcap_t *g_pcap_handle = NULL;
 #endif
 #ifdef HAVE_ALSA
 static snd_pcm_t *g_alsa_handle = NULL;
+#endif
+#ifdef HAVE_AF_XDP
+static struct xsk_socket *g_xsk = NULL;
 #endif
 
 static void logmsg(const char *tag, const char *fmt, ...) {
@@ -132,6 +148,8 @@ typedef struct {
     const char *db_path;       /* SQLite database path for track logging */
     const char *outdir;        /* output directory for audio files */
     const char *format;        /* output format: "wav" or "flac" */
+    unsigned    pcap_buffer_mb;    /* pcap kernel buffer size in MB (0 = default) */
+    const char *slink_backend;     /* "pcap" or "afxdp" */
 } Config;
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -157,11 +175,10 @@ static int audiobuf_write(const AudioBuffer *ab, const char *outdir, const char 
  * Writer thread copies ranges from ring and writes to disk asynchronously.
  * ───────────────────────────────────────────────────────────────────────────── */
 typedef struct {
-    /* Ring buffer (fixed size) */
+    /* Ring buffer (fixed size, lock-free for capture thread) */
     uint8_t        *data;
     size_t          capacity;       /* fixed capacity in frames */
-    size_t          head;           /* write position (wraps modulo capacity) */
-    size_t          total_written;  /* monotonic counter: total frames ever written */
+    _Atomic size_t  total_written;  /* monotonic counter: total frames ever written */
     size_t          frame_bytes;
     unsigned        channels;
     unsigned        rate;
@@ -259,8 +276,7 @@ static int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     aw->rate = rate;
     aw->bytes_per_sample = bytes_per_sample;
     aw->capacity = capacity_frames;
-    aw->head = 0;
-    aw->total_written = 0;
+    atomic_init(&aw->total_written, 0);
     
     aw->data = (uint8_t*)malloc(capacity_frames * aw->frame_bytes);
     if (!aw->data) return -1;
@@ -313,43 +329,42 @@ static void asyncwr_free(AsyncWriter *aw) {
     aw->initialized = 0;
 }
 
-/* Append samples to ring buffer (called by capture thread) */
+/* Append samples to ring buffer (called by capture thread - LOCK-FREE) */
 static int asyncwr_append(AsyncWriter *aw, const uint8_t *samples, size_t nframes) {
-    pthread_mutex_lock(&aw->mu);
-    
     const size_t fb = aw->frame_bytes;
+    size_t tw = atomic_load_explicit(&aw->total_written, memory_order_relaxed);
     size_t remaining = nframes;
     const uint8_t *src = samples;
     
     while (remaining > 0) {
-        size_t space_to_end = aw->capacity - aw->head;
+        size_t head = tw % aw->capacity;
+        size_t space_to_end = aw->capacity - head;
         size_t chunk = (remaining < space_to_end) ? remaining : space_to_end;
         
-        memcpy(aw->data + aw->head * fb, src, chunk * fb);
+        memcpy(aw->data + head * fb, src, chunk * fb);
         
-        aw->head = (aw->head + chunk) % aw->capacity;
-        aw->total_written += chunk;
+        tw += chunk;
         src += chunk * fb;
         remaining -= chunk;
     }
     
-    pthread_mutex_unlock(&aw->mu);
+    /* Release: ensure writes visible before updating total_written */
+    atomic_store_explicit(&aw->total_written, tw, memory_order_release);
     return 0;
 }
 
 /* Get total frames ever written (monotonic position) */
 static size_t asyncwr_position(AsyncWriter *aw) {
-    pthread_mutex_lock(&aw->mu);
-    size_t pos = aw->total_written;
-    pthread_mutex_unlock(&aw->mu);
-    return pos;
+    return atomic_load_explicit(&aw->total_written, memory_order_acquire);
 }
 
-/* Copy last N frames for level detection / fingerprinting */
+/* Copy last N frames for level detection / fingerprinting (LOCK-FREE) */
 static size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes) {
-    pthread_mutex_lock(&aw->mu);
+    /* Acquire: see all writes before this total_written */
+    size_t tw = atomic_load_explicit(&aw->total_written, memory_order_acquire);
+    size_t head = tw % aw->capacity;
     
-    size_t avail = (aw->total_written < aw->capacity) ? aw->total_written : aw->capacity;
+    size_t avail = (tw < aw->capacity) ? tw : aw->capacity;
     size_t take = (avail < nframes) ? avail : nframes;
     
     if (take > 0) {
@@ -357,7 +372,7 @@ static size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes) {
         uint8_t *d = (uint8_t*)dst;
         
         /* Start position in ring: head - take (with wraparound) */
-        size_t start = (aw->head + aw->capacity - take) % aw->capacity;
+        size_t start = (head + aw->capacity - take) % aw->capacity;
         
         if (start + take <= aw->capacity) {
             /* No wrap */
@@ -370,12 +385,15 @@ static size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes) {
         }
     }
     
-    pthread_mutex_unlock(&aw->mu);
     return take;
 }
 
 /* Write frames [from, to) to disk asynchronously */
 static void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time) {
+    /* Read total_written atomically first */
+    size_t tw = atomic_load_explicit(&aw->total_written, memory_order_acquire);
+    size_t head = tw % aw->capacity;
+    
     pthread_mutex_lock(&aw->mu);
     
     /* Wait for previous write to complete */
@@ -388,15 +406,14 @@ static void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t 
     }
     
     /* Oldest frame still in ring */
-    size_t oldest = (aw->total_written > aw->capacity) 
-                    ? (aw->total_written - aw->capacity) : 0;
+    size_t oldest = (tw > aw->capacity) ? (tw - aw->capacity) : 0;
     
     if (from < oldest) {
         logmsg("wrt", "WARNING: requested frames %zu-%zu but oldest is %zu (lost %zu frames)",
                from, to, oldest, oldest - from);
         from = oldest;
     }
-    if (to > aw->total_written) to = aw->total_written;
+    if (to > tw) to = tw;
     if (to <= from) {
         pthread_mutex_unlock(&aw->mu);
         return;
@@ -418,9 +435,9 @@ static void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t 
         }
     }
     
-    /* Copy from ring to write buffer */
-    size_t offset_from_head = aw->total_written - from;
-    size_t start = (aw->head + aw->capacity - offset_from_head) % aw->capacity;
+    /* Copy from ring to write buffer - safe because capture thread only writes ahead */
+    size_t offset_from_head = tw - from;
+    size_t start = (head + aw->capacity - offset_from_head) % aw->capacity;
     
     if (start + nframes <= aw->capacity) {
         memcpy(aw->write_buf, aw->data + start * fb, nframes * fb);
@@ -916,15 +933,30 @@ static void db_insert_play(App *app, const char *timestamp, const char *artist,
 }
 
 #ifdef HAVE_PCAP
-static void *capture_slink(void *arg) {
+static void *capture_pcap(void *arg) {
     App *app = (App*)arg;
     Config *cfg = &app->cfg;
     
-    vlogmsg("cap","opening SLink on %s", cfg->device);
+    vlogmsg("cap","opening SLink on %s (pcap)", cfg->device);
     char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t *handle = pcap_open_live(cfg->device, BUFSIZ, 1, 1000, errbuf);
+    pcap_t *handle = pcap_create(cfg->device, errbuf);
     if (!handle) {
-        logmsg("cap","pcap_open_live %s: %s", cfg->device, errbuf);
+        logmsg("cap","pcap_create %s: %s", cfg->device, errbuf);
+        g_running = 0;
+        return NULL;
+    }
+    pcap_set_snaplen(handle, BUFSIZ);
+    pcap_set_promisc(handle, 1);
+    pcap_set_timeout(handle, 1000);
+    pcap_set_immediate_mode(handle, 1);
+    if (cfg->pcap_buffer_mb > 0) {
+        pcap_set_buffer_size(handle, cfg->pcap_buffer_mb * 1024 * 1024);
+        vlogmsg("cap", "pcap buffer size: %u MB", cfg->pcap_buffer_mb);
+    }
+    int rc = pcap_activate(handle);
+    if (rc != 0) {
+        logmsg("cap", "pcap_activate %s: %s", cfg->device, pcap_geterr(handle));
+        pcap_close(handle);
         g_running = 0;
         return NULL;
     }
@@ -944,12 +976,27 @@ static void *capture_slink(void *arg) {
     struct pcap_pkthdr hdr;
     const u_char *pkt;
     uint32_t buf_idx = 0;
+    int last_seq = -1;  /* Sequence counter tracking */
+    uint64_t loss_events = 0;
+    (void)loss_events;  /* TODO: report this */
 
     while (g_running) {
         pkt = pcap_next(handle, &hdr);
         if (!pkt) continue;
 
         if (hdr.caplen >= 30 && pkt[12] == 0x04 && pkt[13] == 0xee) {
+            /* Check sequence counter at byte 19 (cycles 0x00-0x1F) */
+            int seq = pkt[19] & 0x1F;
+            if (last_seq >= 0) {
+                int expected = (last_seq + 1) & 0x1F;
+                if (seq != expected) {
+                    loss_events++;
+                    logmsg("cap", "sequence discontinuity: expected %02X got %02X",
+                           expected, seq);
+                }
+            }
+            last_seq = seq;
+            
             /* Convert 24-bit big-endian to little-endian as we copy */
             buf[buf_idx * fb + 0] = pkt[26];  /* Ch 0: swap bytes */
             buf[buf_idx * fb + 1] = pkt[25];
@@ -1031,13 +1078,338 @@ static void *capture_alsa(void *arg) {
 }
 #endif
 
+#ifdef HAVE_AF_XDP
+/* ─────────────────────────────────────────────────────────────────────────────
+ * AF_XDP capture - zero-copy packet capture for high-performance SLink
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+#define NUM_FRAMES      131072  /* ~1.37 sec at 96 Kpps */
+#define FRAME_SIZE      2048   /* Power of 2 for fast indexing (SLink packets are 1276 bytes) */
+#define BATCH_SIZE      64
+
+struct xsk_umem_info {
+    struct xsk_ring_prod fq;
+    struct xsk_ring_cons cq;
+    struct xsk_umem *umem;
+    void *buffer;
+};
+
+struct xsk_socket_info {
+    struct xsk_ring_cons rx;
+    struct xsk_ring_prod tx;
+    struct xsk_umem_info *umem;
+    struct xsk_socket *xsk;
+    uint32_t outstanding_tx;
+};
+
+static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size) {
+    struct xsk_umem_info *umem = calloc(1, sizeof(*umem));
+    if (!umem) return NULL;
+    
+    struct xsk_umem_config cfg = {
+        .fill_size = NUM_FRAMES,
+        .comp_size = NUM_FRAMES,
+        .frame_size = FRAME_SIZE,
+        .frame_headroom = 0,
+        .flags = 0,
+    };
+    
+    int ret = xsk_umem__create(&umem->umem, buffer, size, &umem->fq, &umem->cq, &cfg);
+    if (ret) {
+        logmsg("cap", "xsk_umem__create failed: %s", strerror(-ret));
+        free(umem);
+        return NULL;
+    }
+    umem->buffer = buffer;
+    return umem;
+}
+
+static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
+                                                    const char *ifname, int queue_id,
+                                                    int prog_fd) {
+    struct xsk_socket_info *xsk_info = calloc(1, sizeof(*xsk_info));
+    if (!xsk_info) return NULL;
+    
+    struct xsk_socket_config cfg = {
+        .rx_size = 16384,  /* ~170ms at 96 Kpps - handles mutex contention */
+        .tx_size = XSK_RING_PROD__DEFAULT_NUM_DESCS,
+        .libbpf_flags = XSK_LIBBPF_FLAGS__INHIBIT_PROG_LOAD,
+        .xdp_flags = XDP_FLAGS_DRV_MODE,
+        .bind_flags = XDP_USE_NEED_WAKEUP,
+    };
+    
+    int ret = xsk_socket__create(&xsk_info->xsk, ifname, queue_id, umem->umem,
+                                  &xsk_info->rx, &xsk_info->tx, &cfg);
+    if (ret) {
+        /* Try fallback to SKB mode */
+        cfg.xdp_flags = XDP_FLAGS_SKB_MODE;
+        ret = xsk_socket__create(&xsk_info->xsk, ifname, queue_id, umem->umem,
+                                  &xsk_info->rx, &xsk_info->tx, &cfg);
+        if (ret) {
+            logmsg("cap", "xsk_socket__create failed: %s", strerror(-ret));
+            free(xsk_info);
+            return NULL;
+        }
+        vlogmsg("cap", "using XDP SKB mode (fallback)");
+    } else {
+        vlogmsg("cap", "using XDP driver mode");
+    }
+    
+    xsk_info->umem = umem;
+    return xsk_info;
+}
+
+static void xsk_populate_fill_ring(struct xsk_umem_info *umem) {
+    uint32_t idx;
+    int ret = xsk_ring_prod__reserve(&umem->fq, NUM_FRAMES, &idx);
+    if (ret != NUM_FRAMES) {
+        logmsg("cap", "xsk_ring_prod__reserve failed");
+        return;
+    }
+    for (int i = 0; i < NUM_FRAMES; i++) {
+        *xsk_ring_prod__fill_addr(&umem->fq, idx++) = i * FRAME_SIZE;
+    }
+    xsk_ring_prod__submit(&umem->fq, NUM_FRAMES);
+}
+
+static void *capture_afxdp(void *arg) {
+    App *app = (App*)arg;
+    Config *cfg = &app->cfg;
+    int ret;
+    
+    vlogmsg("cap", "opening SLink on %s (AF_XDP)", cfg->device);
+    
+    /* Get interface index */
+    unsigned int ifindex = if_nametoindex(cfg->device);
+    if (ifindex == 0) {
+        logmsg("cap", "interface %s not found", cfg->device);
+        g_running = 0;
+        return NULL;
+    }
+    
+    /* Load BPF program */
+    char bpf_path[256];
+    snprintf(bpf_path, sizeof(bpf_path), "%s/slink_xdp.bpf.o", 
+             getenv("BPF_PATH") ? getenv("BPF_PATH") : "/usr/share/clubtagger");
+    
+    struct bpf_object *obj = bpf_object__open(bpf_path);
+    if (libbpf_get_error(obj)) {
+        /* Try local path */
+        obj = bpf_object__open("slink_xdp.bpf.o");
+        if (libbpf_get_error(obj)) {
+            logmsg("cap", "failed to open BPF object: %s", bpf_path);
+            g_running = 0;
+            return NULL;
+        }
+    }
+    
+    ret = bpf_object__load(obj);
+    if (ret) {
+        logmsg("cap", "failed to load BPF object: %s", strerror(-ret));
+        bpf_object__close(obj);
+        g_running = 0;
+        return NULL;
+    }
+    
+    struct bpf_program *prog = bpf_object__find_program_by_name(obj, "slink_xdp_prog");
+    if (!prog) {
+        logmsg("cap", "failed to find XDP program");
+        bpf_object__close(obj);
+        g_running = 0;
+        return NULL;
+    }
+    
+    int prog_fd = bpf_program__fd(prog);
+    
+    /* Attach XDP program to interface */
+    ret = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS_DRV_MODE, NULL);
+    if (ret) {
+        /* Try SKB mode */
+        ret = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS_SKB_MODE, NULL);
+        if (ret) {
+            logmsg("cap", "failed to attach XDP program: %s", strerror(-ret));
+            bpf_object__close(obj);
+            g_running = 0;
+            return NULL;
+        }
+    }
+    
+    /* Allocate UMEM */
+    void *buffer = aligned_alloc(getpagesize(), NUM_FRAMES * FRAME_SIZE);
+    if (!buffer) {
+        logmsg("cap", "failed to allocate UMEM buffer");
+        bpf_xdp_detach(ifindex, 0, NULL);
+        bpf_object__close(obj);
+        g_running = 0;
+        return NULL;
+    }
+    
+    struct xsk_umem_info *umem = xsk_configure_umem(buffer, NUM_FRAMES * FRAME_SIZE);
+    if (!umem) {
+        logmsg("cap", "failed to configure UMEM");
+        free(buffer);
+        bpf_xdp_detach(ifindex, 0, NULL);
+        bpf_object__close(obj);
+        g_running = 0;
+        return NULL;
+    }
+    
+    /* Create XSK socket */
+    struct xsk_socket_info *xsk = xsk_configure_socket(umem, cfg->device, 0, prog_fd);
+    if (!xsk) {
+        xsk_umem__delete(umem->umem);
+        free(buffer);
+        bpf_xdp_detach(ifindex, 0, NULL);
+        bpf_object__close(obj);
+        g_running = 0;
+        return NULL;
+    }
+    g_xsk = xsk->xsk;
+    
+    /* Get xsks_map and update it with our socket */
+    struct bpf_map *xsks_map = bpf_object__find_map_by_name(obj, "xsks_map");
+    if (xsks_map) {
+        int xsks_map_fd = bpf_map__fd(xsks_map);
+        int key = 0;
+        int xsk_fd = xsk_socket__fd(xsk->xsk);
+        ret = bpf_map_update_elem(xsks_map_fd, &key, &xsk_fd, 0);
+        if (ret) {
+            logmsg("cap", "failed to update xsks_map: %s", strerror(-ret));
+        }
+    }
+    
+    /* Populate fill ring */
+    xsk_populate_fill_ring(umem);
+    
+    logmsg("cap", "started: rate=%u ch=%u (AF_XDP source, 24-bit)", cfg->rate, cfg->channels);
+    
+    const size_t fb = cfg->channels * cfg->bytes_per_sample;
+    uint8_t *audio_buf = (uint8_t*)malloc(cfg->frames_per_read * fb);
+    if (!audio_buf) {
+        logmsg("cap", "oom");
+        g_running = 0;
+        goto cleanup;
+    }
+    uint32_t buf_idx = 0;
+    int last_seq = -1;  /* Sequence counter tracking */
+    uint64_t loss_events = 0;
+    (void)loss_events;  /* TODO: report this */
+    
+    struct pollfd fds = {
+        .fd = xsk_socket__fd(xsk->xsk),
+        .events = POLLIN,
+    };
+    
+    while (g_running) {
+        /* Check if we need to wakeup */
+        if (xsk_ring_prod__needs_wakeup(&umem->fq)) {
+            poll(&fds, 1, 100);
+        }
+        
+        /* Process received packets */
+        uint32_t idx_rx = 0;
+        unsigned int rcvd = xsk_ring_cons__peek(&xsk->rx, BATCH_SIZE, &idx_rx);
+        if (rcvd == 0) {
+            poll(&fds, 1, 10);
+            continue;
+        }
+        
+        /* Save addresses before processing (needed for fill ring refill) */
+        uint64_t addrs[BATCH_SIZE];
+        for (unsigned int i = 0; i < rcvd; i++) {
+            addrs[i] = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx + i)->addr;
+        }
+        
+        for (unsigned int i = 0; i < rcvd; i++) {
+            uint32_t len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++)->len;
+            uint8_t *pkt = xsk_umem__get_data(umem->buffer, addrs[i]);
+            
+            /* Process SLink packet - ethertype already filtered by BPF */
+            if (len >= 30) {
+                /* Check sequence counter at byte 19 (cycles 0x00-0x1F) */
+                int seq = pkt[19] & 0x1F;
+                if (last_seq >= 0) {
+                    int expected = (last_seq + 1) & 0x1F;
+                    if (seq != expected) {
+                        loss_events++;
+                        logmsg("cap", "sequence discontinuity: expected %02X got %02X",
+                               expected, seq);
+                    }
+                }
+                last_seq = seq;
+                
+                /* Convert 24-bit big-endian to little-endian */
+                audio_buf[buf_idx * fb + 0] = pkt[26];  /* Ch 0: swap bytes */
+                audio_buf[buf_idx * fb + 1] = pkt[25];
+                audio_buf[buf_idx * fb + 2] = pkt[24];
+                audio_buf[buf_idx * fb + 3] = pkt[29];  /* Ch 1: swap bytes */
+                audio_buf[buf_idx * fb + 4] = pkt[28];
+                audio_buf[buf_idx * fb + 5] = pkt[27];
+                
+                buf_idx++;
+                if (buf_idx >= cfg->frames_per_read) {
+                    asyncwr_append(&app->aw, audio_buf, cfg->frames_per_read);
+                    buf_idx = 0;
+                }
+            }
+        }
+        xsk_ring_cons__release(&xsk->rx, rcvd);
+        
+        /* Refill fill queue with saved addresses - must not leak frames */
+        uint32_t idx_fq = 0;
+        while (xsk_ring_prod__reserve(&umem->fq, rcvd, &idx_fq) != (int)rcvd) {
+            /* Fill ring full, kernel hasn't consumed yet - brief spin */
+            if (!g_running) break;
+        }
+        if (g_running) {
+            for (unsigned int i = 0; i < rcvd; i++) {
+                *xsk_ring_prod__fill_addr(&umem->fq, idx_fq++) = addrs[i];
+            }
+            xsk_ring_prod__submit(&umem->fq, rcvd);
+        }
+    }
+    
+    free(audio_buf);
+    
+cleanup:
+    g_xsk = NULL;
+    xsk_socket__delete(xsk->xsk);
+    xsk_umem__delete(umem->umem);
+    free(umem);
+    free(xsk);
+    free(buffer);
+    bpf_xdp_detach(ifindex, 0, NULL);
+    bpf_object__close(obj);
+    
+    logmsg("cap", "exit");
+    return NULL;
+}
+#endif
+
 static void *capture_main(void *arg) {
     App *app = (App*)arg;
     Config *cfg = &app->cfg;
 
-#ifdef HAVE_PCAP
+#ifdef __linux__
+    /* Set real-time priority to prevent starvation during FLAC encoding */
+    struct sched_param param = { .sched_priority = sched_get_priority_max(SCHED_FIFO) };
+    if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0) {
+        vlogmsg("cap", "using SCHED_FIFO priority %d", param.sched_priority);
+    } else {
+        vlogmsg("cap", "SCHED_FIFO failed (run as root or grant CAP_SYS_NICE)");
+    }
+#endif
+
+#if defined(HAVE_PCAP) || defined(HAVE_AF_XDP)
     if (!strcmp(cfg->source, "slink")) {
-        return capture_slink(arg);
+#ifdef HAVE_AF_XDP
+        if (cfg->slink_backend && !strcmp(cfg->slink_backend, "afxdp")) {
+            return capture_afxdp(arg);
+        }
+#endif
+#ifdef HAVE_PCAP
+        return capture_pcap(arg);
+#endif
     }
 #endif
 
@@ -1416,19 +1788,25 @@ static void usage(const char *argv0) {
         "  --prefix capture       filename prefix\n"
         "  --outdir ./            output directory for audio files\n"
         "  --format wav           output format: 'wav' or 'flac'\n"
-#if defined(HAVE_ALSA) && defined(HAVE_PCAP)
+#if defined(HAVE_ALSA) && (defined(HAVE_PCAP) || defined(HAVE_AF_XDP))
         "  --source TYPE          audio source: 'alsa' or 'slink' (required)\n"
 #elif defined(HAVE_ALSA)
         "  --source TYPE          audio source: 'alsa' (required)\n"
-#elif defined(HAVE_PCAP)
+#elif defined(HAVE_PCAP) || defined(HAVE_AF_XDP)
         "  --source TYPE          audio source: 'slink' (required)\n"
 #else
         "  --source TYPE          no audio sources compiled in!\n"
+#endif
+#if defined(HAVE_PCAP) && defined(HAVE_AF_XDP)
+        "  --slink-backend TYPE   slink capture backend: 'pcap' or 'afxdp' (default: pcap)\n"
 #endif
         "  --bits 16              sample bit depth (16 or 24)\n"
         "  --max-file-sec 600     max seconds per file (0 = no limit)\n"
         "  --ring-sec N           ring buffer size (default = max-file-sec + 60)\n"
         "  --db tracks.db         SQLite database for track logging\n"
+#ifdef HAVE_PCAP
+        "  --pcap-buffer-mb N     pcap kernel buffer size in MB (default: OS default)\n"
+#endif
         "  --verbose              enable detailed logging\n",
         argv0);
 }
@@ -1451,12 +1829,14 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
         else if (!strcmp(a,"--silence-sec") && i+1<argc) cfg->silence_sec = (float)atof(argv[++i]);
         else if (!strcmp(a,"--prefix") && i+1<argc) cfg->prefix = argv[++i];
         else if (!strcmp(a,"--source") && i+1<argc) cfg->source = argv[++i];
+        else if (!strcmp(a,"--slink-backend") && i+1<argc) cfg->slink_backend = argv[++i];
         else if (!strcmp(a,"--bits") && i+1<argc) { unsigned b = (unsigned)strtoul(argv[++i], NULL, 10); cfg->bytes_per_sample = (b == 24) ? 3 : 2; }
         else if (!strcmp(a,"--max-file-sec") && i+1<argc) cfg->max_file_sec = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--ring-sec") && i+1<argc) cfg->ring_sec = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--outdir") && i+1<argc) cfg->outdir = argv[++i];
         else if (!strcmp(a,"--format") && i+1<argc) cfg->format = argv[++i];
         else if (!strcmp(a,"--db") && i+1<argc) cfg->db_path = argv[++i];
+        else if (!strcmp(a,"--pcap-buffer-mb") && i+1<argc) cfg->pcap_buffer_mb = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a,"--verbose")) g_verbose = 1;
         else { usage(argv[0]); return -1; }
     }
@@ -1472,6 +1852,7 @@ static void on_signal(int sig) {
 #ifdef HAVE_ALSA
     if (g_alsa_handle) snd_pcm_abort(g_alsa_handle);
 #endif
+    /* AF_XDP capture exits on g_running = 0, no special cleanup needed */
 }
 
 int main(int argc, char **argv) {
@@ -1501,6 +1882,8 @@ int main(int argc, char **argv) {
         .ring_sec = 0,        /* 0 = auto-size to max_file_sec */
         .outdir = NULL,       /* current directory */
         .format = "wav",      /* default to WAV */
+        .pcap_buffer_mb = 0,  /* 0 = OS default */
+        .slink_backend = NULL,  /* auto-select based on what's compiled in */
     };
     if (parse_cli(argc, argv, &cfg) != 0) return 2;
     
@@ -1509,15 +1892,15 @@ int main(int argc, char **argv) {
 #ifdef HAVE_ALSA
     if (cfg.source && strcmp(cfg.source, "alsa") == 0) source_valid = 1;
 #endif
-#ifdef HAVE_PCAP
+#if defined(HAVE_PCAP) || defined(HAVE_AF_XDP)
     if (cfg.source && strcmp(cfg.source, "slink") == 0) source_valid = 1;
 #endif
     if (!source_valid) {
-#if defined(HAVE_ALSA) && defined(HAVE_PCAP)
+#if defined(HAVE_ALSA) && (defined(HAVE_PCAP) || defined(HAVE_AF_XDP))
         logmsg("main", "--source is required: 'alsa' or 'slink'");
 #elif defined(HAVE_ALSA)
         logmsg("main", "--source is required: 'alsa'");
-#elif defined(HAVE_PCAP)
+#elif defined(HAVE_PCAP) || defined(HAVE_AF_XDP)
         logmsg("main", "--source is required: 'slink'");
 #else
         logmsg("main", "no audio sources compiled in");
@@ -1528,6 +1911,34 @@ int main(int argc, char **argv) {
     /* SLink is always 24-bit */
     if (cfg.source && !strcmp(cfg.source, "slink")) {
         cfg.bytes_per_sample = 3;
+        
+        /* Set default backend based on what's compiled in */
+        if (!cfg.slink_backend) {
+#ifdef HAVE_PCAP
+            cfg.slink_backend = "pcap";
+#elif defined(HAVE_AF_XDP)
+            cfg.slink_backend = "afxdp";
+#endif
+        }
+        
+        /* Validate slink backend */
+        if (cfg.slink_backend && strcmp(cfg.slink_backend, "pcap") != 0 
+                              && strcmp(cfg.slink_backend, "afxdp") != 0) {
+            logmsg("main", "--slink-backend must be 'pcap' or 'afxdp'");
+            return 2;
+        }
+#ifndef HAVE_PCAP
+        if (cfg.slink_backend && !strcmp(cfg.slink_backend, "pcap")) {
+            logmsg("main", "pcap backend not compiled in (build with libpcap)");
+            return 2;
+        }
+#endif
+#ifndef HAVE_AF_XDP
+        if (cfg.slink_backend && !strcmp(cfg.slink_backend, "afxdp")) {
+            logmsg("main", "AF_XDP backend not compiled in (build with ENABLE_AF_XDP=1)");
+            return 2;
+        }
+#endif
     }
     
     /* Ring buffer sizing - need headroom for async writes */
