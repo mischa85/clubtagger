@@ -164,6 +164,9 @@ typedef struct {
     unsigned rate;
     int      bytes_per_sample;
     time_t   start_time;
+    /* Pre-allocated FLAC conversion buffer (optional) */
+    int32_t *flac_buf;
+    size_t   flac_buf_samples;
 } AudioBuffer;
 
 static int audiobuf_write(const AudioBuffer *ab, const char *outdir, const char *prefix, const char *format);
@@ -192,6 +195,10 @@ typedef struct {
     size_t          write_to;
     time_t          write_start_time;
     int             write_pending;
+    
+    /* Pre-allocated FLAC conversion buffer */
+    int32_t        *flac_buf;
+    size_t          flac_buf_samples;
     
     /* Config */
     const char     *outdir;
@@ -227,7 +234,9 @@ static void asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframe
         .channels = aw->channels,
         .rate = aw->rate,
         .bytes_per_sample = aw->bytes_per_sample,
-        .start_time = start_time
+        .start_time = start_time,
+        .flac_buf = aw->flac_buf,
+        .flac_buf_samples = aw->flac_buf_samples
     };
     
     audiobuf_write(&ab, aw->outdir, aw->prefix, aw->format);
@@ -289,6 +298,15 @@ static int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
         return -1;
     }
     
+    /* Pre-allocate FLAC conversion buffer (capacity_frames * channels samples) */
+    aw->flac_buf_samples = capacity_frames * channels;
+    aw->flac_buf = (int32_t*)malloc(aw->flac_buf_samples * sizeof(int32_t));
+    if (!aw->flac_buf) {
+        free(aw->write_buf);
+        free(aw->data);
+        return -1;
+    }
+    
     aw->write_pending = 0;
     aw->outdir = outdir;
     aw->prefix = prefix;
@@ -324,6 +342,7 @@ static void asyncwr_free(AsyncWriter *aw) {
     
     free(aw->data);
     free(aw->write_buf);
+    free(aw->flac_buf);
     pthread_mutex_destroy(&aw->mu);
     pthread_cond_destroy(&aw->cv);
     aw->initialized = 0;
@@ -523,11 +542,21 @@ static void uuid4(char out[37]) {
              b[10],b[11],b[12],b[13],b[14],b[15]);
 }
 
-struct Buf { char *s; size_t n; size_t cap; };
+struct Buf { char *s; size_t n; size_t cap; int owned; };  /* owned=1 if we allocated s */
 static size_t curl_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata) {
     size_t realsize = size * nmemb;
     struct Buf *b = (struct Buf*)userdata;
     if (b->n + realsize + 1 > b->cap) {
+        if (!b->owned) {
+            /* Fixed buffer, truncate */
+            if (b->n < b->cap - 1) {
+                size_t space = b->cap - 1 - b->n;
+                memcpy(b->s + b->n, ptr, space);
+                b->n += space;
+                b->s[b->n] = 0;
+            }
+            return realsize;  /* pretend success to avoid curl error */
+        }
         size_t newcap = (b->cap ? b->cap * 2 : 4096);
         while (newcap < b->n + realsize + 1) newcap *= 2;
         char *ns = (char*)realloc(b->s, newcap);
@@ -569,7 +598,7 @@ static void json_extract_field(const char *j, const char *key, char *out, size_t
 
 static void build_shazam_request(const char *uri, unsigned sample_ms,
                                  const char *timezone_opt,
-                                 char url_out[512], char **json_body_out) {
+                                 char url_out[512], char *body_out, size_t body_sz) {
     char u1[37], u2[37]; uuid4(u1); uuid4(u2);
     snprintf(url_out, 512,
              "https://amp.shazam.com/discovery/v5/fr/FR/android/-/tag/%s/%s"
@@ -586,9 +615,7 @@ static void build_shazam_request(const char *uri, unsigned sample_ms,
     const char *tz = timezone_opt && *timezone_opt ? timezone_opt : "Europe/Amsterdam";
     unsigned long long now_ms = (unsigned long long)time(NULL) * 1000ULL;
 
-    char *buf = (char*)malloc(1024 + (uri ? strlen(uri) : 0));
-    if (!buf) { *json_body_out = NULL; return; }
-    int n = snprintf(buf, 1024 + (uri ? (int)strlen(uri) : 0),
+    snprintf(body_out, body_sz,
         "{"
           "\"geolocation\":{"
             "\"altitude\":%.3f,"
@@ -607,13 +634,12 @@ static void build_shazam_request(const char *uri, unsigned sample_ms,
         sample_ms, now_ms, uri ? uri : "",
         now_ms, tz
     );
-    if (n < 0) { free(buf); buf = NULL; }
-    *json_body_out = buf;
 }
 
-static char *shazam_post(const char *url, const char *user_agent, const char *json_body) {
+static int shazam_post(const char *url, const char *user_agent, const char *json_body,
+                       char *response_buf, size_t response_sz) {
     CURL *curl = curl_easy_init();
-    if (!curl) return NULL;
+    if (!curl) return -1;
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Accept-Encoding: gzip, deflate, br");
     headers = curl_slist_append(headers, "Accept: */*");
@@ -621,7 +647,7 @@ static char *shazam_post(const char *url, const char *user_agent, const char *js
     headers = curl_slist_append(headers, "Content-Type: application/json");
     headers = curl_slist_append(headers, "Content-Language: en_US");
 
-    struct Buf buf = {0};
+    struct Buf buf = { .s = response_buf, .n = 0, .cap = response_sz, .owned = 0 };
 
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_POST, 1L);
@@ -642,12 +668,16 @@ static char *shazam_post(const char *url, const char *user_agent, const char *js
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    if (res != CURLE_OK) logmsg("curl","perform failed: %s (code %d)", curl_easy_strerror(res), (int)res);
-    else if (http_code != 200) logmsg("curl","HTTP %ld", http_code);
+    if (res != CURLE_OK) {
+        logmsg("curl","perform failed: %s (code %d)", curl_easy_strerror(res), (int)res);
+        return -1;
+    }
+    if (http_code != 200) {
+        logmsg("curl","HTTP %ld", http_code);
+        return -1;
+    }
 
-    if (buf.s && buf.n > 0) return buf.s;
-    free(buf.s);
-    return NULL;
+    return (buf.n > 0) ? 0 : -1;
 }
 
 static void le16_write(uint16_t v, FILE *f){ uint8_t b[2]={v&0xff,(v>>8)&0xff}; fwrite(b,1,2,f); }
@@ -761,15 +791,22 @@ static int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const 
         return -1;
     }
     
-    /* FLAC needs samples as int32_t array */
+    /* FLAC needs samples as int32_t array - use pre-allocated buffer if available */
     size_t total_samples = ab->frames * ab->channels;
-    FLAC__int32 *buffer = (FLAC__int32*)malloc(total_samples * sizeof(FLAC__int32));
-    if (!buffer) {
-        logmsg("flac","oom for sample buffer");
-        FLAC__stream_encoder_finish(encoder);
-        FLAC__stream_encoder_delete(encoder);
-        unlink(tmp_name);
-        return -1;
+    FLAC__int32 *buffer;
+    int buffer_allocated = 0;
+    if (ab->flac_buf && ab->flac_buf_samples >= total_samples) {
+        buffer = (FLAC__int32*)ab->flac_buf;
+    } else {
+        buffer = (FLAC__int32*)malloc(total_samples * sizeof(FLAC__int32));
+        if (!buffer) {
+            logmsg("flac","oom for sample buffer");
+            FLAC__stream_encoder_finish(encoder);
+            FLAC__stream_encoder_delete(encoder);
+            unlink(tmp_name);
+            return -1;
+        }
+        buffer_allocated = 1;
     }
     
     const uint8_t *src = ab->data;
@@ -795,7 +832,7 @@ static int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const 
         ok = FLAC__stream_encoder_process_interleaved(encoder, buffer + pos * ab->channels, (unsigned)frames_to_encode);
     }
     
-    free(buffer);
+    if (buffer_allocated) free(buffer);
     
     if (!ok) {
         logmsg("flac","encode failed: %s", FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(encoder)]);
@@ -849,6 +886,14 @@ typedef struct {
     sqlite3    *db;
     pthread_mutex_t db_mu;
     char        current_wav[512];  /* current WAV file being recorded */
+    uint8_t    *cap_buf;           /* pre-allocated capture buffer */
+    size_t      cap_buf_size;      /* size of cap_buf in bytes */
+    uint8_t    *wrt_buf;           /* pre-allocated writer read buffer */
+    unsigned   *wrt_window;        /* pre-allocated writer sliding window */
+    unsigned    wrt_window_size;   /* size of wrt_window in elements */
+    uint8_t    *id_buf;            /* pre-allocated id_main audio window */
+    int16_t    *id_buf_s16;        /* pre-allocated id_main s16 conversion buffer */
+    size_t      id_buf_frames;     /* size of id_buf in frames */
 } App;
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -965,13 +1010,7 @@ static void *capture_pcap(void *arg) {
     logmsg("cap","started: rate=%u ch=%u (SLink source, 24-bit)", cfg->rate, cfg->channels);
 
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
-    uint8_t *buf = (uint8_t*)malloc(cfg->frames_per_read * fb);
-    if (!buf) { 
-        logmsg("cap","oom"); 
-        pcap_close(handle); 
-        g_running=0; 
-        return NULL; 
-    }
+    uint8_t *buf = app->cap_buf;
 
     struct pcap_pkthdr hdr;
     const u_char *pkt;
@@ -1013,7 +1052,6 @@ static void *capture_pcap(void *arg) {
         }
     }
 
-    free(buf);
     g_pcap_handle = NULL;  /* prevent signal handler from using closed handle */
     pcap_close(handle);
     logmsg("cap","exit");
@@ -1052,8 +1090,7 @@ static void *capture_alsa(void *arg) {
     cfg->rate = rate;
     const size_t FR = cfg->frames_per_read;
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
-    uint8_t *buf = (uint8_t*)malloc(fb * FR);
-    if (!buf) { logmsg("cap","oom"); snd_pcm_close(pcm); g_running=0; return NULL; }
+    uint8_t *buf = app->cap_buf;
 
     logmsg("cap","started: rate=%u ch=%u period=%lu bits=%d (ALSA)", cfg->rate, cfg->channels, (unsigned long)period, cfg->bytes_per_sample * 8);
     while (g_running) {
@@ -1070,7 +1107,6 @@ static void *capture_alsa(void *arg) {
         if (got > 0) asyncwr_append(&app->aw, buf, (size_t)got);
     }
 
-    free(buf);
     g_alsa_handle = NULL;  /* prevent signal handler from using closed handle */
     snd_pcm_close(pcm);
     logmsg("cap","exit");
@@ -1102,9 +1138,8 @@ struct xsk_socket_info {
     uint32_t outstanding_tx;
 };
 
-static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size) {
-    struct xsk_umem_info *umem = calloc(1, sizeof(*umem));
-    if (!umem) return NULL;
+static int xsk_configure_umem(struct xsk_umem_info *umem, void *buffer, uint64_t size) {
+    memset(umem, 0, sizeof(*umem));
     
     struct xsk_umem_config cfg = {
         .fill_size = NUM_FRAMES,
@@ -1117,18 +1152,16 @@ static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size) {
     int ret = xsk_umem__create(&umem->umem, buffer, size, &umem->fq, &umem->cq, &cfg);
     if (ret) {
         logmsg("cap", "xsk_umem__create failed: %s", strerror(-ret));
-        free(umem);
-        return NULL;
+        return -1;
     }
     umem->buffer = buffer;
-    return umem;
+    return 0;
 }
 
-static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
-                                                    const char *ifname, int queue_id,
-                                                    int prog_fd) {
-    struct xsk_socket_info *xsk_info = calloc(1, sizeof(*xsk_info));
-    if (!xsk_info) return NULL;
+static int xsk_configure_socket(struct xsk_socket_info *xsk_info, struct xsk_umem_info *umem,
+                                 const char *ifname, int queue_id,
+                                 int prog_fd) {
+    memset(xsk_info, 0, sizeof(*xsk_info));
     
     struct xsk_socket_config cfg = {
         .rx_size = 16384,  /* ~170ms at 96 Kpps - handles mutex contention */
@@ -1147,8 +1180,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
                                   &xsk_info->rx, &xsk_info->tx, &cfg);
         if (ret) {
             logmsg("cap", "xsk_socket__create failed: %s", strerror(-ret));
-            free(xsk_info);
-            return NULL;
+            return -1;
         }
         vlogmsg("cap", "using XDP SKB mode (fallback)");
     } else {
@@ -1156,7 +1188,7 @@ static struct xsk_socket_info *xsk_configure_socket(struct xsk_umem_info *umem,
     }
     
     xsk_info->umem = umem;
-    return xsk_info;
+    return 0;
 }
 
 static void xsk_populate_fill_ring(struct xsk_umem_info *umem) {
@@ -1244,8 +1276,8 @@ static void *capture_afxdp(void *arg) {
         return NULL;
     }
     
-    struct xsk_umem_info *umem = xsk_configure_umem(buffer, NUM_FRAMES * FRAME_SIZE);
-    if (!umem) {
+    struct xsk_umem_info umem;
+    if (xsk_configure_umem(&umem, buffer, NUM_FRAMES * FRAME_SIZE) < 0) {
         logmsg("cap", "failed to configure UMEM");
         free(buffer);
         bpf_xdp_detach(ifindex, 0, NULL);
@@ -1255,23 +1287,23 @@ static void *capture_afxdp(void *arg) {
     }
     
     /* Create XSK socket */
-    struct xsk_socket_info *xsk = xsk_configure_socket(umem, cfg->device, 0, prog_fd);
-    if (!xsk) {
-        xsk_umem__delete(umem->umem);
+    struct xsk_socket_info xsk;
+    if (xsk_configure_socket(&xsk, &umem, cfg->device, 0, prog_fd) < 0) {
+        xsk_umem__delete(umem.umem);
         free(buffer);
         bpf_xdp_detach(ifindex, 0, NULL);
         bpf_object__close(obj);
         g_running = 0;
         return NULL;
     }
-    g_xsk = xsk->xsk;
+    g_xsk = xsk.xsk;
     
     /* Get xsks_map and update it with our socket */
     struct bpf_map *xsks_map = bpf_object__find_map_by_name(obj, "xsks_map");
     if (xsks_map) {
         int xsks_map_fd = bpf_map__fd(xsks_map);
         int key = 0;
-        int xsk_fd = xsk_socket__fd(xsk->xsk);
+        int xsk_fd = xsk_socket__fd(xsk.xsk);
         ret = bpf_map_update_elem(xsks_map_fd, &key, &xsk_fd, 0);
         if (ret) {
             logmsg("cap", "failed to update xsks_map: %s", strerror(-ret));
@@ -1279,36 +1311,31 @@ static void *capture_afxdp(void *arg) {
     }
     
     /* Populate fill ring */
-    xsk_populate_fill_ring(umem);
+    xsk_populate_fill_ring(&umem);
     
     logmsg("cap", "started: rate=%u ch=%u (AF_XDP source, 24-bit)", cfg->rate, cfg->channels);
     
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
-    uint8_t *audio_buf = (uint8_t*)malloc(cfg->frames_per_read * fb);
-    if (!audio_buf) {
-        logmsg("cap", "oom");
-        g_running = 0;
-        goto cleanup;
-    }
+    uint8_t *audio_buf = app->cap_buf;
     uint32_t buf_idx = 0;
     int last_seq = -1;  /* Sequence counter tracking */
     uint64_t loss_events = 0;
     (void)loss_events;  /* TODO: report this */
     
     struct pollfd fds = {
-        .fd = xsk_socket__fd(xsk->xsk),
+        .fd = xsk_socket__fd(xsk.xsk),
         .events = POLLIN,
     };
     
     while (g_running) {
         /* Check if we need to wakeup */
-        if (xsk_ring_prod__needs_wakeup(&umem->fq)) {
+        if (xsk_ring_prod__needs_wakeup(&umem.fq)) {
             poll(&fds, 1, 100);
         }
         
         /* Process received packets */
         uint32_t idx_rx = 0;
-        unsigned int rcvd = xsk_ring_cons__peek(&xsk->rx, BATCH_SIZE, &idx_rx);
+        unsigned int rcvd = xsk_ring_cons__peek(&xsk.rx, BATCH_SIZE, &idx_rx);
         if (rcvd == 0) {
             poll(&fds, 1, 10);
             continue;
@@ -1317,12 +1344,12 @@ static void *capture_afxdp(void *arg) {
         /* Save addresses before processing (needed for fill ring refill) */
         uint64_t addrs[BATCH_SIZE];
         for (unsigned int i = 0; i < rcvd; i++) {
-            addrs[i] = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx + i)->addr;
+            addrs[i] = xsk_ring_cons__rx_desc(&xsk.rx, idx_rx + i)->addr;
         }
         
         for (unsigned int i = 0; i < rcvd; i++) {
-            uint32_t len = xsk_ring_cons__rx_desc(&xsk->rx, idx_rx++)->len;
-            uint8_t *pkt = xsk_umem__get_data(umem->buffer, addrs[i]);
+            uint32_t len = xsk_ring_cons__rx_desc(&xsk.rx, idx_rx++)->len;
+            uint8_t *pkt = xsk_umem__get_data(umem.buffer, addrs[i]);
             
             /* Process SLink packet - ethertype already filtered by BPF */
             if (len >= 30) {
@@ -1353,30 +1380,26 @@ static void *capture_afxdp(void *arg) {
                 }
             }
         }
-        xsk_ring_cons__release(&xsk->rx, rcvd);
+        xsk_ring_cons__release(&xsk.rx, rcvd);
         
         /* Refill fill queue with saved addresses - must not leak frames */
         uint32_t idx_fq = 0;
-        while (xsk_ring_prod__reserve(&umem->fq, rcvd, &idx_fq) != (int)rcvd) {
+        while (xsk_ring_prod__reserve(&umem.fq, rcvd, &idx_fq) != (int)rcvd) {
             /* Fill ring full, kernel hasn't consumed yet - brief spin */
             if (!g_running) break;
         }
         if (g_running) {
             for (unsigned int i = 0; i < rcvd; i++) {
-                *xsk_ring_prod__fill_addr(&umem->fq, idx_fq++) = addrs[i];
+                *xsk_ring_prod__fill_addr(&umem.fq, idx_fq++) = addrs[i];
             }
-            xsk_ring_prod__submit(&umem->fq, rcvd);
+            xsk_ring_prod__submit(&umem.fq, rcvd);
         }
     }
     
-    free(audio_buf);
-    
 cleanup:
     g_xsk = NULL;
-    xsk_socket__delete(xsk->xsk);
-    xsk_umem__delete(umem->umem);
-    free(umem);
-    free(xsk);
+    xsk_socket__delete(xsk.xsk);
+    xsk_umem__delete(umem.umem);
     free(buffer);
     bpf_xdp_detach(ifindex, 0, NULL);
     bpf_object__close(obj);
@@ -1428,11 +1451,10 @@ static void *id_main(void *arg) {
     App *app = (App*)arg;
     Config *cfg = &app->cfg;
 
-    const size_t look_frames = (size_t)cfg->fingerprint_sec * cfg->rate;
+    const size_t look_frames = app->id_buf_frames;
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
-    uint8_t *window = (uint8_t*)malloc(look_frames * fb);
-    int16_t *window_s16 = (int16_t*)malloc(sizeof(int16_t) * look_frames * cfg->channels);
-    if (!window || !window_s16) { logmsg("id","oom"); return NULL; }
+    uint8_t *window = app->id_buf;
+    int16_t *window_s16 = app->id_buf_s16;
 
     logmsg("id","started: fingerprint=%us interval=%us min_rms=%u",
            cfg->fingerprint_sec, cfg->identify_interval_sec, cfg->min_rms);
@@ -1481,14 +1503,14 @@ static void *id_main(void *arg) {
             } else {
                 const char *uri = vibra_get_uri_from_fingerprint(fp);
                 unsigned sample_ms = vibra_get_sample_ms_from_fingerprint(fp);
-                char url[512]; char *body = NULL;
-                build_shazam_request(uri, sample_ms, cfg->timezone, url, &body);
-                if (body) {
-                    const char *ua = cfg->user_agent ? cfg->user_agent :
-                        "Dalvik/2.1.0 (Linux; U; Android 5.0.2; VS980 4G Build/LRX22G)";
-                    char *json = shazam_post(url, ua, body);
-                    if (json) {
-                        vlogmsg("id","shazam response: %.500s", json);
+                char url[512];
+                char body[2048];
+                char json[65536];
+                build_shazam_request(uri, sample_ms, cfg->timezone, url, body, sizeof(body));
+                const char *ua = cfg->user_agent ? cfg->user_agent :
+                    "Dalvik/2.1.0 (Linux; U; Android 5.0.2; VS980 4G Build/LRX22G)";
+                if (shazam_post(url, ua, body, json, sizeof(json)) == 0) {
+                    vlogmsg("id","shazam response: %.500s", json);
                         
                         /* Count number of matches - more matches = more ambiguous */
                         int match_count = 0;
@@ -1525,8 +1547,6 @@ static void *id_main(void *arg) {
                         
                         if (quality == 0) {
                             vlogmsg("id","rejecting: %d matches, ts=%.6f fs=%.6f (too ambiguous)", match_count, timeskew, freqskew);
-                            free(json);
-                            free(body);
                             vibra_free_fingerprint(fp);
                             goto sleep_loop;
                         }
@@ -1575,12 +1595,9 @@ static void *id_main(void *arg) {
                         } else {
                             vlogmsg("id","no track in response");
                         }
-                        free(json);
                     } else {
                         logmsg("id","recognize: empty");
                     }
-                    free(body);
-                }
                 vibra_free_fingerprint(fp);
             }
         }
@@ -1591,7 +1608,6 @@ sleep_loop:
         }
     }
 
-    free(window);
     logmsg("id","exit");
     return NULL;
 }
@@ -1601,16 +1617,13 @@ static void *writer_main(void *arg) {
     Config *cfg = &app->cfg;
 
     const size_t FR = cfg->frames_per_read;
-    const size_t fb = cfg->channels * cfg->bytes_per_sample;
-    uint8_t *chunk = (uint8_t*)malloc(FR * fb);
-    if (!chunk) { logmsg("wrt","oom"); return NULL; }
+    uint8_t *chunk = app->wrt_buf;
 
-    const unsigned sustain_chunks_needed = (unsigned)((cfg->sustain_sec * cfg->rate + (FR-1)) / FR);
     const unsigned silence_chunks_needed = (unsigned)((cfg->silence_sec * cfg->rate + (FR-1)) / FR);
 
     /* Sliding window for trigger detection - require 60% of chunks above threshold */
-    unsigned window_size = sustain_chunks_needed;
-    unsigned *window = (unsigned*)calloc(window_size, sizeof(unsigned));
+    unsigned window_size = app->wrt_window_size;
+    unsigned *window = app->wrt_window;
     unsigned window_pos = 0;
     unsigned window_above = 0;
     bool window_full = false;
@@ -1762,8 +1775,6 @@ static void *writer_main(void *arg) {
         /* Wait for async write to complete */
         asyncwr_wait_pending(&app->aw);
     }
-    free(window);
-    free(chunk);
     logmsg("wrt","exit");
     return NULL;
 }
@@ -1963,6 +1974,36 @@ int main(int argc, char **argv) {
     if (db_init(&app) != 0) {
         logmsg("main","database init failed"); asyncwr_free(&app.aw); return 1;
     }
+    
+    /* Pre-allocate capture buffer */
+    app.cap_buf_size = cfg.frames_per_read * cfg.channels * cfg.bytes_per_sample;
+    app.cap_buf = (uint8_t*)malloc(app.cap_buf_size);
+    if (!app.cap_buf) {
+        logmsg("main","capture buffer alloc failed"); db_close(&app); asyncwr_free(&app.aw); return 1;
+    }
+    
+    /* Pre-allocate writer buffers */
+    app.wrt_buf = (uint8_t*)malloc(app.cap_buf_size);
+    if (!app.wrt_buf) {
+        logmsg("main","writer buffer alloc failed"); free(app.cap_buf); db_close(&app); asyncwr_free(&app.aw); return 1;
+    }
+    app.wrt_window_size = (unsigned)((cfg.sustain_sec * cfg.rate + (cfg.frames_per_read-1)) / cfg.frames_per_read);
+    app.wrt_window = (unsigned*)calloc(app.wrt_window_size, sizeof(unsigned));
+    if (!app.wrt_window) {
+        logmsg("main","writer window alloc failed"); free(app.wrt_buf); free(app.cap_buf); db_close(&app); asyncwr_free(&app.aw); return 1;
+    }
+    
+    /* Pre-allocate id_main buffers */
+    app.id_buf_frames = (size_t)cfg.fingerprint_sec * cfg.rate;
+    size_t id_fb = cfg.channels * cfg.bytes_per_sample;
+    app.id_buf = (uint8_t*)malloc(app.id_buf_frames * id_fb);
+    if (!app.id_buf) {
+        logmsg("main","id buffer alloc failed"); free(app.wrt_window); free(app.wrt_buf); free(app.cap_buf); db_close(&app); asyncwr_free(&app.aw); return 1;
+    }
+    app.id_buf_s16 = (int16_t*)malloc(sizeof(int16_t) * app.id_buf_frames * cfg.channels);
+    if (!app.id_buf_s16) {
+        logmsg("main","id s16 buffer alloc failed"); free(app.id_buf); free(app.wrt_window); free(app.wrt_buf); free(app.cap_buf); db_close(&app); asyncwr_free(&app.aw); return 1;
+    }
 
     struct sigaction sa = {0};
     sa.sa_handler = on_signal;
@@ -1996,6 +2037,11 @@ int main(int argc, char **argv) {
     pthread_join(app.th_id, NULL);
     pthread_join(app.th_wrt, NULL);
     db_close(&app);
+    free(app.id_buf_s16);
+    free(app.id_buf);
+    free(app.wrt_window);
+    free(app.wrt_buf);
+    free(app.cap_buf);
     asyncwr_free(&app.aw);
     logmsg("main","bye");
     return 0;
