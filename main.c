@@ -29,10 +29,16 @@ static void usage(const char *argv0) {
             "\n"
             "Features (at least one required):\n"
             "  --record               Enable audio recording\n"
+#ifdef HAVE_VIBRA
             "  --audio-tag            Enable Shazam audio fingerprint tagging\n"
+#endif
             "  --cdj-tag              Enable CDJ/Pro DJ Link track tagging\n"
             "\n"
+#ifdef HAVE_VIBRA
             "Audio source (required for --record or --audio-tag):\n"
+#else
+            "Audio source (required for --record):\n"
+#endif
             "  --device DEV           ALSA device or network interface\n"
 #if defined(HAVE_ALSA) && (defined(HAVE_PCAP) || defined(HAVE_AF_XDP))
             "  --source TYPE          Audio source: 'alsa' or 'slink'\n"
@@ -47,7 +53,11 @@ static void usage(const char *argv0) {
             "  --slink-backend TYPE   Slink capture backend: 'pcap' or 'afxdp' (default: pcap)\n"
 #endif
             "\n"
+#ifdef HAVE_VIBRA
             "Audio parameters (for --record / --audio-tag):\n"
+#else
+            "Audio parameters (for --record):\n"
+#endif
             "  --rate 48000           Sample rate\n"
             "  --channels 2           Channel count\n"
             "  --frames 1024          Frames per read\n"
@@ -63,6 +73,7 @@ static void usage(const char *argv0) {
             "  --max-file-sec 600     Max seconds per file (0 = no limit)\n"
             "  --ring-sec N           Ring buffer size (default = max-file-sec + 60)\n"
             "\n"
+#ifdef HAVE_VIBRA
             "Audio tagging options (for --audio-tag):\n"
             "  --fingerprint-sec 12   Seconds of audio to send to Shazam\n"
             "  --min-rms 300          Minimum RMS to attempt recognition\n"
@@ -71,10 +82,15 @@ static void usage(const char *argv0) {
             "  --shazam-gap-sec 10    Min seconds between Shazam lookups\n"
             "  --same-track-hold-sec 90  Suppress lookups after a good match\n"
             "\n"
+#endif
             "CDJ tagging options (for --cdj-tag):\n"
             "  --prolink-interface IF CDJ network interface (e.g., en0) - REQUIRED\n"
-            "  --match-threshold 60   Fuzzy match similarity % (0-100, default 60)\n"
             "\n"
+#ifdef HAVE_VIBRA
+            "Matching options (for combined --audio-tag + --cdj-tag):\n"
+            "  --match-threshold 60   Fuzzy match similarity %% (0-100, default 60)\n"
+            "\n"
+#endif
             "Database and output:\n"
             "  --db tracks.db         SQLite database for track logging\n"
             "  --timezone TZ          Override timezone (default Europe/Amsterdam)\n"
@@ -85,10 +101,16 @@ static void usage(const char *argv0) {
             "  --verbose              Enable detailed logging\n"
             "\n"
             "Examples:\n"
+#ifdef HAVE_VIBRA
             "  %s --record --audio-tag --source alsa --device hw:2,1 --db tracks.db\n"
+#endif
             "  %s --cdj-tag --prolink-interface en7 --db tracks.db\n"
             "  %s --record --cdj-tag --source slink --device en7 --prolink-interface en7 --db tracks.db\n",
+#ifdef HAVE_VIBRA
             argv0, argv0, argv0, argv0);
+#else
+            argv0, argv0, argv0);
+#endif
 }
 
 static int parse_cli(int argc, char **argv, Config *cfg) {
@@ -280,6 +302,15 @@ int main(int argc, char **argv) {
             return 2;
         }
     }
+    
+    /* Audio tagging validation */
+#ifndef HAVE_VIBRA
+    if (cfg.enable_audio_tag) {
+        logmsg("main", "--audio-tag requires libvibra (not found at build time)");
+        logmsg("main", "use --cdj-tag for CDJ-only track identification");
+        return 2;
+    }
+#endif
     
     /* Validate audio source if needed */
     int source_valid = 0;
