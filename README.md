@@ -36,11 +36,13 @@ make            # builds without ALSA support
 
 ### Dependencies
 - `libcurl` — HTTP communication
-- `libvibra` — local acoustic fingerprinting
+- `libvibra` — local acoustic fingerprinting (optional, enables `--audio-tag`)
 - `libsqlite3` — track database
 - `libpcap` — network packet capture (SLink, Pro DJ Link)
 - `libFLAC` — FLAC encoding (optional)
 - `libasound2` — ALSA audio capture (Linux only)
+
+The build auto-detects available libraries. Without libvibra, only `--record` and `--cdj-tag` modes are available.
 
 ---
 
@@ -91,7 +93,7 @@ clubtagger has three main modes that can be combined:
 | Option | Description |
 |--------|-------------|
 | `--record` | Enable audio recording to WAV/FLAC |
-| `--audio-tag` | Enable Shazam fingerprint identification |
+| `--audio-tag` | Enable Shazam fingerprint identification (requires libvibra) |
 | `--cdj-tag` | Enable CDJ/Pro DJ Link track reading |
 
 ### Audio source
@@ -115,7 +117,7 @@ clubtagger has three main modes that can be combined:
 | `--sustain-sec` | Seconds above threshold to start | `1.0` |
 | `--silence-sec` | Silence duration to stop | `15` |
 
-### Audio tagging
+### Audio tagging (requires libvibra)
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--fingerprint-sec` | Fingerprint length | `12` |
@@ -128,6 +130,10 @@ clubtagger has three main modes that can be combined:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--prolink-interface` | Network interface for CDJ traffic | (required) |
+
+### Matching (combined --audio-tag + --cdj-tag)
+| Option | Description | Default |
+|--------|-------------|---------|
 | `--match-threshold` | Fuzzy match similarity % (0-100) | `60` |
 
 ### Output
