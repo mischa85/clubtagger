@@ -47,10 +47,12 @@ static __always_inline int check_udp_ports(struct udphdr *udp)
     __u16 sport = bpf_ntohs(udp->source);
     __u16 dport = bpf_ntohs(udp->dest);
     
-    /* Pro DJ Link traffic */
-    if (dport == PROLINK_KEEPALIVE_PORT ||
-        dport == PROLINK_STATUS_PORT ||
-        dport == PROLINK_BEAT_PORT)
+    /* Pro DJ Link traffic - check BOTH source and destination ports!
+     * CDJs send status packets FROM port 50001, not TO port 50001.
+     * Keepalives and beat packets have similar patterns. */
+    if (dport == PROLINK_KEEPALIVE_PORT || sport == PROLINK_KEEPALIVE_PORT ||
+        dport == PROLINK_STATUS_PORT || sport == PROLINK_STATUS_PORT ||
+        dport == PROLINK_BEAT_PORT || sport == PROLINK_BEAT_PORT)
         return 1;
     
     /* NOTE: NFS traffic is NOT redirected to AF_XDP.
