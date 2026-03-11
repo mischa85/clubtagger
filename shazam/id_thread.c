@@ -34,6 +34,7 @@ void *id_main(void *arg) {
     /* libvibra not available - audio fingerprinting disabled */
     logmsg("id", "WARNING: libvibra not available, audio fingerprinting disabled");
     logmsg("id", "Use --cdj-tag for CDJ-only track identification");
+    atomic_store_explicit(&app->shazam_state, SHAZAM_DISABLED, memory_order_release);
     while (g_running) {
         struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
         nanosleep(&ts, NULL);
@@ -59,6 +60,9 @@ void *id_main(void *arg) {
     const int MIN_CONFIDENCE = 60;      /* Minimum % to accept a match */
     const int CDJ_BONUS = 15;           /* Bonus for CDJ confirmation */
     const int CDJ_ONLY_CONFIDENCE = 70; /* Confidence for CDJ-only matches */
+
+    /* Initial state: listening for audio */
+    atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
 
     while (g_running) {
         size_t got = asyncwr_copy_last(&app->aw, window, look_frames);
@@ -90,6 +94,9 @@ void *id_main(void *arg) {
             }
             last_lookup = nowt;
 
+            /* Update state: fingerprinting */
+            atomic_store_explicit(&app->shazam_state, SHAZAM_FINGERPRINTING, memory_order_release);
+
             const int bytes = (int)(got * cfg->channels * sizeof(int16_t));
             Fingerprint *fp = vibra_get_fingerprint_from_signed_pcm(
                 (const char *)window_s16, bytes, (int)cfg->rate, 16, (int)cfg->channels);
@@ -103,6 +110,10 @@ void *id_main(void *arg) {
                 char json[65536];
                 build_shazam_request(uri, sample_ms, cfg->timezone, url, body, sizeof(body));
                 const char *ua = cfg->user_agent ? cfg->user_agent : "Dalvik/2.1.0 (Linux; U; Android 5.0.2; VS980 4G Build/LRX22G)";
+
+                /* Update state: querying Shazam */
+                atomic_store_explicit(&app->shazam_state, SHAZAM_QUERYING, memory_order_release);
+
                 if (shazam_post(url, ua, body, json, sizeof(json)) == 0) {
                     vlogmsg("id", "shazam response: %.500s", json);
 
@@ -168,6 +179,14 @@ void *id_main(void *arg) {
                                 /* Accumulate confidence: weighted average favoring recent */
                                 pending_confidence = (pending_confidence + shazam_confidence * 2) / 3;
                                 vlogmsg("id", "confirming: %s — %s (%d/3, %d%%)", artist, title, pending_confirms, pending_confidence);
+
+                                /* Update state: confirming with candidate info */
+                                pthread_mutex_lock(&app->db_mu);
+                                snprintf(app->shazam_candidate, sizeof(app->shazam_candidate), "%s — %s", artist, title);
+                                app->shazam_confirms = pending_confirms;
+                                pthread_mutex_unlock(&app->db_mu);
+                                atomic_store_explicit(&app->shazam_state, SHAZAM_CONFIRMING, memory_order_release);
+
                                 if (pending_confirms >= 3) {
                                     /* Check CDJ for confirmation boost */
                                     char cdj_title[256] = {0}, cdj_artist[256] = {0};
@@ -209,7 +228,10 @@ void *id_main(void *arg) {
                                         pthread_mutex_lock(&app->db_mu);
                                         snprintf(app->last_artist, sizeof(app->last_artist), "%s", artist);
                                         snprintf(app->last_title, sizeof(app->last_title), "%s", title);
+                                        app->shazam_candidate[0] = '\0';
+                                        app->shazam_confirms = 0;
                                         pthread_mutex_unlock(&app->db_mu);
+                                        atomic_store_explicit(&app->shazam_state, SHAZAM_MATCHED, memory_order_release);
                                         atomic_fetch_add_explicit(&app->track_seq, 1, memory_order_release);
                                         pending.valid = 0;
                                         pending_confirms = 0;
@@ -221,6 +243,13 @@ void *id_main(void *arg) {
                                 pending_confirms = 1; /* first sighting counts as 1 */
                                 pending_confidence = shazam_confidence;
                                 vlogmsg("id", "candidate: %s — %s (need 3 confirms, %d%%)", artist, title, shazam_confidence);
+
+                                /* Update state: new candidate */
+                                pthread_mutex_lock(&app->db_mu);
+                                snprintf(app->shazam_candidate, sizeof(app->shazam_candidate), "%s — %s", artist, title);
+                                app->shazam_confirms = 1;
+                                pthread_mutex_unlock(&app->db_mu);
+                                atomic_store_explicit(&app->shazam_state, SHAZAM_CONFIRMING, memory_order_release);
                             }
                         }
                     } else {
@@ -254,7 +283,10 @@ void *id_main(void *arg) {
                                             pthread_mutex_lock(&app->db_mu);
                                             snprintf(app->last_artist, sizeof(app->last_artist), "%s", cdj_artist);
                                             snprintf(app->last_title, sizeof(app->last_title), "%s", cdj_title);
+                                            app->shazam_candidate[0] = '\0';
+                                            app->shazam_confirms = 0;
                                             pthread_mutex_unlock(&app->db_mu);
+                                            atomic_store_explicit(&app->shazam_state, SHAZAM_MATCHED, memory_order_release);
                                             atomic_fetch_add_explicit(&app->track_seq, 1, memory_order_release);
                                             pending.valid = 0;
                                             pending_confirms = 0;
@@ -281,6 +313,11 @@ void *id_main(void *arg) {
             }
         }
     sleep_loop:
+        /* Back to listening state (unless we're still confirming a candidate) */
+        if (atomic_load_explicit(&app->shazam_state, memory_order_relaxed) != SHAZAM_CONFIRMING) {
+            atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
+        }
+
         for (unsigned s = 0; s < cfg->identify_interval_sec && g_running; ++s) {
             struct timespec ts = {.tv_sec = 0, .tv_nsec = 200 * 1000 * 1000};
             nanosleep(&ts, NULL);

@@ -4,6 +4,7 @@
 #include "sse_server.h"
 #include "../common.h"
 #include "../prolink/cdj_types.h"
+#include "../db/database.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -15,6 +16,9 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+
+/* Number of recent tracks to send when a client connects */
+#define SSE_INITIAL_TRACKS 5
 
 static const char *SSE_HEADERS =
     "HTTP/1.1 200 OK\r\n"
@@ -65,9 +69,14 @@ void *sse_main(void *arg) {
     /* Simple client tracking - max 8 concurrent clients */
 #define SSE_MAX_CLIENTS 8
     int clients[SSE_MAX_CLIENTS];
-    for (int i = 0; i < SSE_MAX_CLIENTS; i++) clients[i] = -1;
+    int client_needs_init[SSE_MAX_CLIENTS];  /* Flag for sending initial data */
+    for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
+        clients[i] = -1;
+        client_needs_init[i] = 0;
+    }
 
     uint32_t last_track_seq = 0;
+    int last_shazam_state = -1;
 
     while (g_running) {
         /* Accept new connections */
@@ -87,6 +96,7 @@ void *sse_main(void *arg) {
                 for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
                     if (clients[i] < 0) {
                         clients[i] = client_fd;
+                        client_needs_init[i] = 1;  /* Mark for initial data send */
                         fcntl(client_fd, F_SETFL, O_NONBLOCK);
                         logmsg("sse", "client connected (slot %d)", i);
                         added = 1;
@@ -97,6 +107,52 @@ void *sse_main(void *arg) {
                     logmsg("sse", "max clients reached, rejecting");
                     close(client_fd);
                 }
+            }
+        }
+
+        /* Send initial history and shazam state to new clients */
+        for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
+            if (clients[i] >= 0 && client_needs_init[i]) {
+                client_needs_init[i] = 0;
+
+                /* Send recent tracks */
+                char timestamps[SSE_INITIAL_TRACKS][32];
+                char artists[SSE_INITIAL_TRACKS][256];
+                char titles[SSE_INITIAL_TRACKS][256];
+                int count = db_get_recent_tracks(app, SSE_INITIAL_TRACKS, timestamps, artists, titles);
+
+                if (count > 0) {
+                    char history_msg[4096];
+                    int history_len = snprintf(history_msg, sizeof(history_msg), "event: history\ndata: [");
+                    for (int t = 0; t < count; t++) {
+                        char esc_artist[512], esc_title[512];
+                        json_escape(artists[t], esc_artist, sizeof(esc_artist));
+                        json_escape(titles[t], esc_title, sizeof(esc_title));
+                        if (t > 0) history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, ",");
+                        history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len,
+                            "{\"ts\":\"%s\",\"a\":\"%s\",\"t\":\"%s\"}", timestamps[t], esc_artist, esc_title);
+                    }
+                    history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, "]\n\n");
+                    send(clients[i], history_msg, history_len, MSG_NOSIGNAL);
+                }
+
+                /* Send current shazam state */
+                int state = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
+                char shazam_msg[1024];
+                int shazam_len;
+                if (state == SHAZAM_CONFIRMING) {
+                    pthread_mutex_lock(&app->db_mu);
+                    char esc_cand[1024];
+                    json_escape(app->shazam_candidate, esc_cand, sizeof(esc_cand));
+                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
+                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d}\n\n",
+                        state, esc_cand, app->shazam_confirms);
+                    pthread_mutex_unlock(&app->db_mu);
+                } else {
+                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
+                        "event: shazam\ndata: {\"state\":%d}\n\n", state);
+                }
+                send(clients[i], shazam_msg, shazam_len, MSG_NOSIGNAL);
             }
         }
 
@@ -176,6 +232,31 @@ void *sse_main(void *arg) {
             for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
                 if (clients[i] >= 0) {
                     send(clients[i], deck_msg, deck_len, MSG_NOSIGNAL);
+                }
+            }
+
+            /* Check for shazam state change and send update */
+            int cur_shazam_state = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
+            if (cur_shazam_state != last_shazam_state) {
+                last_shazam_state = cur_shazam_state;
+                char shazam_msg[1024];
+                int shazam_len;
+                if (cur_shazam_state == SHAZAM_CONFIRMING) {
+                    pthread_mutex_lock(&app->db_mu);
+                    char esc_cand[1024];
+                    json_escape(app->shazam_candidate, esc_cand, sizeof(esc_cand));
+                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
+                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d}\n\n",
+                        cur_shazam_state, esc_cand, app->shazam_confirms);
+                    pthread_mutex_unlock(&app->db_mu);
+                } else {
+                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
+                        "event: shazam\ndata: {\"state\":%d}\n\n", cur_shazam_state);
+                }
+                for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
+                    if (clients[i] >= 0) {
+                        send(clients[i], shazam_msg, shazam_len, MSG_NOSIGNAL);
+                    }
                 }
             }
         }

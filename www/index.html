@@ -168,6 +168,44 @@
         }
         .status.connected { background: #1a4d1a; color: #4caf50; }
         .status.disconnected { background: #4d1a1a; color: #f44336; }
+        
+        /* Shazam status */
+        .shazam-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 15px;
+            background: #0f0f1a;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 3px solid #333;
+        }
+        .shazam-status .shazam-text {
+            font-size: 13px;
+            font-weight: 500;
+        }
+        .shazam-status .shazam-candidate {
+            font-size: 12px;
+            color: #888;
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .shazam-status .shazam-confirms {
+            font-size: 11px;
+            background: #333;
+            padding: 2px 6px;
+            border-radius: 3px;
+            color: #888;
+        }
+        .shazam-status.idle { border-left-color: #666; color: #666; }
+        .shazam-status.listening { border-left-color: #2196f3; color: #2196f3; }
+        .shazam-status.fingerprinting { border-left-color: #9c27b0; color: #9c27b0; }
+        .shazam-status.querying { border-left-color: #ff9800; color: #ff9800; }
+        .shazam-status.confirming { border-left-color: #ffeb3b; color: #ffeb3b; }
+        .shazam-status.matched { border-left-color: #4caf50; color: #4caf50; }
+        .shazam-status.disabled { border-left-color: #f44336; color: #f44336; }
     </style>
 </head>
 <body>
@@ -193,6 +231,10 @@
         
         <div class="decks-container" id="decks">
             <div class="no-decks">No CDJs detected</div>
+        </div>
+        
+        <div class="shazam-status idle" id="shazam-status">
+            <span class="shazam-text">Idle</span>
         </div>
         
         <div class="now-playing">

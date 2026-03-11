@@ -12,6 +12,18 @@
     const tracksEl = document.getElementById('tracks');
     const statusEl = document.getElementById('status');
     const decksEl = document.getElementById('decks');
+    const shazamEl = document.getElementById('shazam-status');
+    
+    // Shazam state names
+    const SHAZAM_STATES = {
+        0: { text: 'Idle', class: 'idle' },
+        1: { text: 'Listening...', class: 'listening' },
+        2: { text: 'Fingerprinting...', class: 'fingerprinting' },
+        3: { text: 'Querying Shazam...', class: 'querying' },
+        4: { text: 'Confirming...', class: 'confirming' },
+        5: { text: 'Matched!', class: 'matched' },
+        6: { text: 'Disabled', class: 'disabled' }
+    };
     
     // Slot names
     const SLOTS = { 0: '', 1: 'CD', 2: 'SD', 3: 'USB', 4: 'Link' };
@@ -76,6 +88,21 @@
         nowTitle.textContent = title || '';
     }
     
+    // Update Shazam status
+    function updateShazam(data) {
+        if (!shazamEl) return;
+        const stateInfo = SHAZAM_STATES[data.state] || { text: 'Unknown', class: 'unknown' };
+        shazamEl.className = 'shazam-status ' + stateInfo.class;
+        
+        if (data.state === 4 && data.candidate) {  // SHAZAM_CONFIRMING
+            shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>` +
+                `<span class="shazam-candidate">${escapeHtml(data.candidate)}</span>` +
+                `<span class="shazam-confirms">${data.confirms}/3</span>`;
+        } else {
+            shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>`;
+        }
+    }
+    
     // Update CDJ deck status
     function updateDecks(decks) {
         if (!decks || decks.length === 0) {
@@ -115,14 +142,25 @@
     }
     
     // Add track to list
-    function addTrack(artist, title) {
-        const now = new Date();
-        const time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    function addTrack(artist, title, timestamp) {
+        let time;
+        if (timestamp) {
+            // Parse timestamp from database (format: "YYYY-MM-DD HH:MM:SS")
+            const parts = timestamp.split(' ');
+            if (parts.length === 2) {
+                time = parts[1].substring(0, 5);  // "HH:MM"
+            } else {
+                time = timestamp;
+            }
+        } else {
+            const now = new Date();
+            time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+        }
         
         const div = document.createElement('div');
         div.className = 'track';
         div.innerHTML = `
-            <div class="track-time">${time}</div>
+            <div class="track-time">${escapeHtml(time)}</div>
             <div class="track-info">
                 <span class="track-artist">${escapeHtml(artist)}</span>
                 <span class="track-title"> — ${escapeHtml(title)}</span>
@@ -200,6 +238,32 @@
             }
         });
         
+        evtSource.addEventListener('history', function(e) {
+            try {
+                const tracks = JSON.parse(e.data);
+                // Add tracks in reverse order (oldest first, so newest ends up at top)
+                for (let i = tracks.length - 1; i >= 0; i--) {
+                    const t = tracks[i];
+                    addTrack(t.a, t.t, t.ts);
+                }
+                // Update now playing with most recent track
+                if (tracks.length > 0) {
+                    updateNowPlaying(tracks[0].a, tracks[0].t);
+                }
+            } catch (err) {
+                console.error('History parse error:', err);
+            }
+        });
+        
+        evtSource.addEventListener('shazam', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                updateShazam(data);
+            } catch (err) {
+                console.error('Shazam parse error:', err);
+            }
+        });
+        
         evtSource.onerror = function() {
             statusEl.textContent = 'Disconnected';
             statusEl.className = 'status disconnected';
@@ -212,31 +276,6 @@
         };
     }
     
-    // Load recent tracks from database (optional REST endpoint)
-    function loadTracks() {
-        fetch('/tracks')
-            .then(r => r.json())
-            .then(tracks => {
-                tracks.forEach(t => {
-                    const div = document.createElement('div');
-                    div.className = 'track';
-                    const time = new Date(t.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-                    div.innerHTML = `
-                        <div class="track-time">${time}</div>
-                        <div class="track-info">
-                            <span class="track-artist">${escapeHtml(t.artist || '')}</span>
-                            <span class="track-title"> — ${escapeHtml(t.title || '')}</span>
-                        </div>
-                    `;
-                    tracksEl.appendChild(div);
-                });
-            })
-            .catch(() => {
-                // /tracks endpoint may not exist, that's ok
-            });
-    }
-    
     // Start
-    loadTracks();
     connect();
 })();

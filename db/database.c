@@ -5,6 +5,7 @@
 #include "../common.h"
 
 #include <sqlite3.h>
+#include <stdio.h>
 
 int db_init(App *app) {
     if (!app->cfg.db_path) return 0; /* no database configured */
@@ -88,4 +89,39 @@ void db_insert_play(App *app, const char *timestamp, const char *artist,
 
     sqlite3_finalize(stmt);
     pthread_mutex_unlock(&app->db_mu);
+}
+
+int db_get_recent_tracks(App *app, int max_tracks,
+                         char timestamps[][32], char artists[][256], char titles[][256]) {
+    if (!app->db) return 0;
+
+    pthread_mutex_lock(&app->db_mu);
+
+    const char *sql = "SELECT timestamp, artist, title FROM plays "
+                      "ORDER BY id DESC LIMIT ?";
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        logmsg("db", "prepare failed: %s", sqlite3_errmsg(app->db));
+        pthread_mutex_unlock(&app->db_mu);
+        return 0;
+    }
+
+    sqlite3_bind_int(stmt, 1, max_tracks);
+
+    int count = 0;
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW && count < max_tracks) {
+        const char *ts = (const char *)sqlite3_column_text(stmt, 0);
+        const char *art = (const char *)sqlite3_column_text(stmt, 1);
+        const char *ttl = (const char *)sqlite3_column_text(stmt, 2);
+
+        snprintf(timestamps[count], 32, "%s", ts ? ts : "");
+        snprintf(artists[count], 256, "%s", art ? art : "");
+        snprintf(titles[count], 256, "%s", ttl ? ttl : "");
+        count++;
+    }
+
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&app->db_mu);
+    return count;
 }

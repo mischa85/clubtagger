@@ -36,6 +36,17 @@ typedef enum {
     TRACK_SRC_SLINK    = (1 << 2),  /* Identified via S-Link CD-text */
 } track_source_t;
 
+/* Shazam thread state (for web UI status display) */
+typedef enum {
+    SHAZAM_IDLE = 0,       /* Thread started, waiting for audio */
+    SHAZAM_LISTENING,      /* Enough audio, checking RMS */
+    SHAZAM_FINGERPRINTING, /* Generating fingerprint */
+    SHAZAM_QUERYING,       /* Sending to Shazam API */
+    SHAZAM_CONFIRMING,     /* Got match, waiting for confirmations */
+    SHAZAM_MATCHED,        /* Track confirmed and logged */
+    SHAZAM_DISABLED,       /* libvibra not available */
+} shazam_state_t;
+
 typedef struct TrackID {
     /* Core identification fields (common to all sources) */
     char artist[256];
@@ -183,6 +194,10 @@ typedef struct {
     char        last_title[256];   /* protected by db_mu */
     /* Pro DJ Link CDJ integration (optional) */
     void *prolink;                 /* ProlinkThread* - CDJ sniffer (NULL if disabled) */
+    /* Shazam thread state (for web UI) */
+    _Atomic int shazam_state;      /* shazam_state_t value */
+    char shazam_candidate[512];    /* protected by db_mu: "Artist — Title" of pending match */
+    int shazam_confirms;           /* protected by db_mu: confirmation count (e.g., 2/3) */
 } App;
 
 #endif /* CLUBTAGGER_TYPES_H */
