@@ -163,8 +163,10 @@ void *sse_main(void *arg) {
                         app->shazam_confidence, app->shazam_cdj_confirmed ? "true" : "false");
                     pthread_mutex_unlock(&app->db_mu);
                 } else {
+                    pthread_mutex_lock(&app->db_mu);
                     shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d}\n\n", state);
+                        "event: shazam\ndata: {\"state\":%d,\"attempts\":%d}\n\n", state, app->shazam_no_match_count);
+                    pthread_mutex_unlock(&app->db_mu);
                 }
                 send(clients[i], shazam_msg, shazam_len, MSG_NOSIGNAL);
             }
@@ -214,12 +216,12 @@ void *sse_main(void *arg) {
         int vu_len = snprintf(vu_msg, sizeof(vu_msg), 
             "data: {\"l\":%u,\"r\":%u,\"lost\":%llu,\"frames\":%llu,\"rate\":%u,\"ch\":%u,"
             "\"rec\":%d,\"load\":%.2f,\"written\":%llu,\"mem\":%llu,\"memtot\":%llu,"
-            "\"diskfree\":%llu,\"disktot\":%llu}\n\n", 
+            "\"diskfree\":%llu,\"disktot\":%llu,\"fmt\":\"%s\"}\n\n", 
             vu_l, vu_r, (unsigned long long)lost, (unsigned long long)frames,
             app->cfg.rate, app->cfg.channels, is_rec, loadavg[0],
             (unsigned long long)disk_bytes, (unsigned long long)mem_used,
             (unsigned long long)mem_total, (unsigned long long)disk_free,
-            (unsigned long long)disk_total);
+            (unsigned long long)disk_total, app->cfg.format ? app->cfg.format : "wav");
 
         /* Check for track change */
         uint32_t track_seq = atomic_load_explicit(&app->track_seq, memory_order_acquire);
@@ -315,8 +317,10 @@ void *sse_main(void *arg) {
                         app->shazam_confidence, app->shazam_cdj_confirmed ? "true" : "false");
                     pthread_mutex_unlock(&app->db_mu);
                 } else {
+                    pthread_mutex_lock(&app->db_mu);
                     shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d}\n\n", cur_shazam_state);
+                        "event: shazam\ndata: {\"state\":%d,\"attempts\":%d}\n\n", cur_shazam_state, app->shazam_no_match_count);
+                    pthread_mutex_unlock(&app->db_mu);
                 }
                 for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
                     if (clients[i] >= 0) {

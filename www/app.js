@@ -118,7 +118,8 @@
     // Update audio stats display
     function updateAudioStats(data) {
         if (statFormat && data.rate) {
-            statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch';
+            const fmt = data.fmt ? data.fmt.toUpperCase() : 'WAV';
+            statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch ' + fmt;
         }
         if (statRuntime && data.frames && data.rate) {
             statRuntime.textContent = formatRuntime(Math.floor(data.frames/data.rate));
@@ -190,6 +191,10 @@
             shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>` +
                 `<span class="shazam-candidate">${escapeHtml(data.candidate)}${confPct}${cdjMatch}</span>` +
                 `<span class="shazam-confirms">${data.confirms}/${needed}</span>`;
+        } else if (data.attempts > 0 && (data.state === 1 || data.state === 2 || data.state === 3 || data.state === 8)) {
+            // Show attempt count when listening/fingerprinting/querying/no-match
+            shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>` +
+                `<span class="shazam-attempts">${data.attempts}/5</span>`;
         } else {
             shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>`;
         }
@@ -247,7 +252,7 @@
             }
         } else {
             const now = new Date();
-            time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+            time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
         }
         
         const isrcHtml = isrc ? `<div class="track-isrc">${escapeHtml(isrc)}</div>` : '';

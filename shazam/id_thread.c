@@ -55,6 +55,7 @@ void *id_main(void *arg) {
     TrackID pending = {0};
     int pending_confirms = 0;
     int pending_confidence = 0;  /* Accumulated confidence for pending track */
+    int no_match_count = 0;      /* Count consecutive Shazam no-matches before CDJ fallback */
 
     /* Confidence thresholds */
     const int MIN_CONFIDENCE = 60;      /* Minimum % to accept a match */
@@ -234,12 +235,14 @@ void *id_main(void *arg) {
                                         app->last_confidence = final_confidence;
                                         app->shazam_candidate[0] = '\0';
                                         app->shazam_confirms = 0;
+                                        app->shazam_no_match_count = 0;
                                         pthread_mutex_unlock(&app->db_mu);
                                         atomic_store_explicit(&app->shazam_state, SHAZAM_MATCHED, memory_order_release);
                                         atomic_fetch_add_explicit(&app->track_seq, 1, memory_order_release);
                                         pending.valid = 0;
                                         pending_confirms = 0;
                                         pending_confidence = 0;
+                                        no_match_count = 0;
                                     }
                                 }
                             } else {
@@ -257,10 +260,14 @@ void *id_main(void *arg) {
                             }
                         }
                     } else {
-                        logmsg("id", "no track in response");
+                        no_match_count++;
+                        pthread_mutex_lock(&app->db_mu);
+                        app->shazam_no_match_count = no_match_count;
+                        pthread_mutex_unlock(&app->db_mu);
+                        logmsg("id", "no track in response (attempt %d/5)", no_match_count);
                         int cdj_handled = 0;
-                        /* Try CDJ fallback when fingerprint fails */
-                        if (app->prolink) {
+                        /* Try CDJ fallback after several Shazam attempts fail */
+                        if (app->prolink && no_match_count >= 5) {
                             char cdj_title[256] = {0}, cdj_artist[256] = {0};
                             int cdj_deck = 0;
                             if (prolink_get_playing_track(app->prolink,
@@ -300,6 +307,7 @@ void *id_main(void *arg) {
                                             pending.valid = 0;
                                             pending_confirms = 0;
                                             pending_confidence = 0;
+                                            no_match_count = 0;
                                         }
                                     } else {
                                         pending = cdj_match;
@@ -329,10 +337,14 @@ void *id_main(void *arg) {
                         }
                     }
                 } else {
-                    logmsg("id", "recognize: empty");
+                    no_match_count++;
+                    pthread_mutex_lock(&app->db_mu);
+                    app->shazam_no_match_count = no_match_count;
+                    pthread_mutex_unlock(&app->db_mu);
+                    logmsg("id", "recognize: empty (attempt %d/5)", no_match_count);
                     int cdj_handled = 0;
-                    /* Try CDJ fallback when Shazam API fails */
-                    if (app->prolink) {
+                    /* Try CDJ fallback after several Shazam attempts fail */
+                    if (app->prolink && no_match_count >= 5) {
                         char cdj_title[256] = {0}, cdj_artist[256] = {0};
                         int cdj_deck = 0;
                         if (prolink_get_playing_track(app->prolink,
@@ -370,7 +382,8 @@ void *id_main(void *arg) {
                                         pending.valid = 0;
                                         pending_confirms = 0;
                                         pending_confidence = 0;
-                                    }
+                                        no_match_count = 0;                                        no_match_count = 0;
+                                        app->shazam_no_match_count = 0;                                    }
                                 } else {
                                     pending = cdj_match;
                                     pending_confirms = 1;
