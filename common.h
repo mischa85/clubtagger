@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #ifdef HAVE_PCAP
 #include <pcap.h>
