@@ -9,14 +9,12 @@
 #include <stdint.h>
 #include <sys/types.h>
 
-/* AF_XDP must come before pcap: linux/bpf.h defines struct bpf_insn.
- * Include linux/filter.h to set __LINUX_FILTER_H__ which tells pcap/bpf.h
- * to skip its bpf_insn definition while keeping struct bpf_program. */
+/* AF_XDP and pcap have conflicting struct bpf_insn definitions.
+ * When AF_XDP is enabled, we use raw sockets for NFS observation 
+ * instead of pcap, avoiding the conflict entirely. */
 #ifdef HAVE_AF_XDP
-#include <linux/filter.h>
 #include <xdp/xsk.h>
-#endif
-#ifdef HAVE_PCAP
+#elif defined(HAVE_PCAP)
 #include <pcap.h>
 #endif
 #ifdef HAVE_ALSA
@@ -32,7 +30,7 @@ extern volatile sig_atomic_t g_running;
 extern int g_verbose;
 extern int verbose;  /* Alias for prolink modules */
 extern int match_threshold;  /* 0-100 similarity % for fuzzy matching (default 60) */
-#ifdef HAVE_PCAP
+#if defined(HAVE_PCAP) && !defined(HAVE_AF_XDP)
 extern pcap_t *g_pcap_handle;
 #endif
 #ifdef HAVE_ALSA

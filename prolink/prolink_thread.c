@@ -22,6 +22,7 @@
 #include <poll.h>
 #include <stdlib.h>
 #include <xdp/xsk.h>
+#include "nfs_observer.h"
 #endif
 
 #ifdef HAVE_PCAP
@@ -228,22 +229,11 @@ static void *prolink_thread_afxdp(void *arg) {
     capture_interface = pt->interface;
     passive_only = 0;
 
-#ifdef HAVE_PCAP
-    /* Open secondary pcap handle for NFS observation.
-     * NFS traffic is XDP_PASS'd to the kernel, so pcap can see it.
-     * This enables passive NFS sniffing while using AF_XDP for Pro DJ Link. */
-    char errbuf[PCAP_ERRBUF_SIZE];
-    pcap_t *nfs_pcap = pcap_open_live(pt->interface, 1500, 1, 1, errbuf);
-    if (nfs_pcap) {
-        struct bpf_program nfs_fp;
-        if (pcap_compile(nfs_pcap, &nfs_fp, "udp port 2049", 1, PCAP_NETMASK_UNKNOWN) == 0) {
-            pcap_setfilter(nfs_pcap, &nfs_fp);
-            pcap_freecode(&nfs_fp);
-        }
-        pcap_setnonblock(nfs_pcap, 1, errbuf);
-        vlogmsg("cdj", "NFS observation enabled via pcap");
+    /* Initialize NFS observer for passive traffic sniffing.
+     * NFS traffic is XDP_PASS'd to kernel, so we use a raw socket to observe it. */
+    if (nfs_observer_init(pt->interface) == 0) {
+        vlogmsg("cdj", "NFS observation enabled via raw socket");
     }
-#endif
 
     /* Send initial keepalives */
     for (int i = 0; i < 3; i++) {
@@ -308,21 +298,12 @@ keepalive_check:
             last_ka = now;
         }
 
-#ifdef HAVE_PCAP
-        /* Process any NFS packets captured via pcap (passive observation) */
-        if (nfs_pcap) {
-            pcap_dispatch(nfs_pcap, 10, packet_handler, NULL);
-        }
-#endif
+        /* Poll for NFS traffic (passive observation) */
+        nfs_observer_poll();
     }
-
-#ifdef HAVE_PCAP
-    if (nfs_pcap) {
-        pcap_close(nfs_pcap);
-    }
-#endif
 
     /* Cleanup */
+    nfs_observer_cleanup();
     xsk_socket__delete(xsk.xsk);
     xsk_umem__delete(umem.umem);
     free(buffer);
