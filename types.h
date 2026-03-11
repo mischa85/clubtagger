@@ -204,6 +204,7 @@ typedef struct {
     int shazam_cdj_confirmed;      /* protected by db_mu: 1 if CDJ confirmed the match */
     char last_source[16];          /* protected by db_mu: "audio", "cdj", or "both" */
     int last_confidence;           /* protected by db_mu: confidence of last match */
+    char last_isrc[64];            /* protected by db_mu: ISRC code if available */
     /* Audio statistics (for web UI nerd info) */
     _Atomic uint32_t audio_rms;    /* current RMS level */
     _Atomic uint64_t audio_lost;   /* total lost samples (sequence discontinuities) */

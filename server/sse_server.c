@@ -175,7 +175,7 @@ void *sse_main(void *arg) {
 
         /* Check for track change */
         uint32_t track_seq = atomic_load_explicit(&app->track_seq, memory_order_acquire);
-        char track_msg[1024];
+        char track_msg[1536];
         int track_len = 0;
         if (track_seq != last_track_seq) {
             last_track_seq = track_seq;
@@ -183,11 +183,13 @@ void *sse_main(void *arg) {
             /* Escape strings for safe JSON output */
             char escaped_artist[256];
             char escaped_title[256];
+            char escaped_isrc[128];
             json_escape(app->last_artist, escaped_artist, sizeof(escaped_artist));
             json_escape(app->last_title, escaped_title, sizeof(escaped_title));
+            json_escape(app->last_isrc, escaped_isrc, sizeof(escaped_isrc));
             track_len = snprintf(track_msg, sizeof(track_msg),
-                                 "event: track\ndata: {\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d}\n\n",
-                                 escaped_artist, escaped_title, app->last_source, app->last_confidence);
+                                 "event: track\ndata: {\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d,\"isrc\":\"%s\"}\n\n",
+                                 escaped_artist, escaped_title, app->last_source, app->last_confidence, escaped_isrc);
             pthread_mutex_unlock(&app->db_mu);
         }
 

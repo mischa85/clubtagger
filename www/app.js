@@ -9,12 +9,20 @@
     const peakRight = document.getElementById('peak-right');
     const nowArtist = document.getElementById('now-artist');
     const nowTitle = document.getElementById('now-title');
+    const nowIsrc = document.getElementById('now-isrc');
     const nowMeta = document.getElementById('now-meta');
     const tracksEl = document.getElementById('tracks');
     const statusEl = document.getElementById('status');
     const decksEl = document.getElementById('decks');
     const shazamEl = document.getElementById('shazam-status');
-    const audioStatsEl = document.getElementById('audio-stats');
+    
+    // Stats elements
+    const statFormat = document.getElementById('stat-format');
+    const statRuntime = document.getElementById('stat-runtime');
+    const statFrames = document.getElementById('stat-frames');
+    const statRecording = document.getElementById('stat-recording');
+    const statLost = document.getElementById('stat-lost');
+    const statCpu = document.getElementById('stat-cpu');
     
     // Shazam state names
     const SHAZAM_STATES = {
@@ -45,35 +53,14 @@
         return pct;
     }
     
-    // Get VU color based on level (green -> yellow -> red)
-    function vuColor(pct) {
-        if (pct < 70) {
-            // Green to yellow (0-70%)
-            const t = pct / 70;
-            const r = Math.round(255 * t);
-            return `rgb(${r}, 255, 0)`;
-        } else if (pct < 90) {
-            // Yellow to orange (70-90%)
-            const t = (pct - 70) / 20;
-            const g = Math.round(255 * (1 - t * 0.5));
-            return `rgb(255, ${g}, 0)`;
-        } else {
-            // Orange to red (90-100%)
-            const t = (pct - 90) / 10;
-            const g = Math.round(128 * (1 - t));
-            return `rgb(255, ${g}, 0)`;
-        }
-    }
-    
-    // Update VU meters
+    // Update VU meters (using mask technique - set mask height to hide gradient)
     function updateVU(left, right) {
         const lPct = toPercent(left);
         const rPct = toPercent(right);
         
-        vuLeft.style.height = lPct + '%';
-        vuRight.style.height = rPct + '%';
-        vuLeft.style.backgroundColor = vuColor(lPct);
-        vuRight.style.backgroundColor = vuColor(rPct);
+        // Mask height is inverse of level (100% mask = 0% visible)
+        vuLeft.style.height = (100 - lPct) + '%';
+        vuRight.style.height = (100 - rPct) + '%';
         
         // Peak hold with decay
         if (lPct > peakLVal) {
@@ -107,22 +94,49 @@
     }
     setInterval(decayPeaks, 16);
     
+    // Format runtime seconds
+    function formatRuntime(secs) {
+        if (secs < 60) return secs + 's';
+        if (secs < 3600) return Math.floor(secs/60) + 'm ' + (secs%60) + 's';
+        const h = Math.floor(secs/3600);
+        const m = Math.floor((secs%3600)/60);
+        return h + 'h ' + m + 'm';
+    }
+    
     // Update audio stats display
     function updateAudioStats(data) {
-        if (!audioStatsEl) return;
-        const parts = [];
-        if (data.rate) parts.push(`<span class="stat">${data.rate/1000}kHz ${data.ch}ch</span>`);
-        if (data.rec) parts.push(`<span class="stat recording">● REC</span>`);
-        if (data.rms !== undefined) parts.push(`<span class="stat">RMS ${data.rms}</span>`);
-        if (data.lost > 0) parts.push(`<span class="stat lost">Lost ${data.lost}</span>`);
-        if (data.frames) parts.push(`<span class="stat">${(data.frames/data.rate).toFixed(0)}s</span>`);
-        audioStatsEl.innerHTML = parts.join('');
+        if (statFormat && data.rate) {
+            statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch';
+        }
+        if (statRuntime && data.frames && data.rate) {
+            statRuntime.textContent = formatRuntime(Math.floor(data.frames/data.rate));
+        }
+        if (statFrames && data.frames) {
+            statFrames.textContent = data.frames.toLocaleString();
+        }
+        if (statRecording) {
+            if (data.rec) {
+                statRecording.textContent = '● REC';
+                statRecording.className = 'stat-value recording';
+            } else {
+                statRecording.textContent = 'Standby';
+                statRecording.className = 'stat-value';
+            }
+        }
+        if (statLost) {
+            statLost.textContent = data.lost || 0;
+            statLost.className = 'stat-value' + (data.lost > 0 ? ' warn' : ' ok');
+        }
+        // CPU would come from backend - placeholder for now
     }
     
     // Update now playing
-    function updateNowPlaying(artist, title, source, confidence) {
+    function updateNowPlaying(artist, title, source, confidence, isrc) {
         nowArtist.textContent = artist || '—';
         nowTitle.textContent = title || '';
+        if (nowIsrc) {
+            nowIsrc.textContent = isrc || '';
+        }
         if (nowMeta) {
             nowMeta.innerHTML = sourceBadge(source, confidence);
         }
@@ -197,7 +211,7 @@
     }
     
     // Add track to list
-    function addTrack(artist, title, timestamp, source, confidence) {
+    function addTrack(artist, title, timestamp, source, confidence, isrc) {
         let time;
         if (timestamp) {
             // Parse timestamp from database (format: "YYYY-MM-DD HH:MM:SS")
@@ -212,6 +226,8 @@
             time = now.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
         }
         
+        const isrcHtml = isrc ? `<div class="track-isrc">${escapeHtml(isrc)}</div>` : '';
+        
         const div = document.createElement('div');
         div.className = 'track';
         div.innerHTML = `
@@ -219,6 +235,7 @@
             <div class="track-info">
                 <span class="track-artist">${escapeHtml(artist)}</span>
                 <span class="track-title"> — ${escapeHtml(title)}</span>
+                ${isrcHtml}
             </div>
             <div class="track-meta">${sourceBadge(source, confidence)}</div>
         `;
@@ -278,8 +295,8 @@
             try {
                 const data = JSON.parse(e.data);
                 if (data.a || data.t) {
-                    updateNowPlaying(data.a, data.t, data.src, data.conf);
-                    addTrack(data.a, data.t, null, data.src, data.conf);
+                    updateNowPlaying(data.a, data.t, data.src, data.conf, data.isrc);
+                    addTrack(data.a, data.t, null, data.src, data.conf, data.isrc);
                 }
             } catch (err) {
                 console.error('Track parse error:', err);
@@ -301,12 +318,12 @@
                 // Add tracks in reverse order (oldest first, so newest ends up at top)
                 for (let i = tracks.length - 1; i >= 0; i--) {
                     const t = tracks[i];
-                    addTrack(t.a, t.t, t.ts, t.src, t.conf);
+                    addTrack(t.a, t.t, t.ts, t.src, t.conf, t.isrc);
                 }
                 // Update now playing with most recent track
                 if (tracks.length > 0) {
                     const latest = tracks[0];
-                    updateNowPlaying(latest.a, latest.t, latest.src, latest.conf);
+                    updateNowPlaying(latest.a, latest.t, latest.src, latest.conf, latest.isrc);
                 }
             } catch (err) {
                 console.error('History parse error:', err);

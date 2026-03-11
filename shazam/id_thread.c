@@ -228,6 +228,9 @@ void *id_main(void *arg) {
                                         pthread_mutex_lock(&app->db_mu);
                                         snprintf(app->last_artist, sizeof(app->last_artist), "%s", artist);
                                         snprintf(app->last_title, sizeof(app->last_title), "%s", title);
+                                        snprintf(app->last_source, sizeof(app->last_source), "%s", source);
+                                        snprintf(app->last_isrc, sizeof(app->last_isrc), "%s", isrc);
+                                        app->last_confidence = final_confidence;
                                         app->shazam_candidate[0] = '\0';
                                         app->shazam_confirms = 0;
                                         pthread_mutex_unlock(&app->db_mu);
@@ -285,6 +288,7 @@ void *id_main(void *arg) {
                                             snprintf(app->last_title, sizeof(app->last_title), "%s", cdj_title);
                                             snprintf(app->last_source, sizeof(app->last_source), "cdj");
                                             app->last_confidence = CDJ_ONLY_CONFIDENCE;
+                                            app->last_isrc[0] = '\0';
                                             app->shazam_candidate[0] = '\0';
                                             app->shazam_confirms = 0;
                                             pthread_mutex_unlock(&app->db_mu);
@@ -348,6 +352,7 @@ void *id_main(void *arg) {
                                         snprintf(app->last_title, sizeof(app->last_title), "%s", cdj_title);
                                         snprintf(app->last_source, sizeof(app->last_source), "cdj");
                                         app->last_confidence = CDJ_ONLY_CONFIDENCE;
+                                        app->last_isrc[0] = '\0';
                                         app->shazam_candidate[0] = '\0';
                                         app->shazam_confirms = 0;
                                         pthread_mutex_unlock(&app->db_mu);

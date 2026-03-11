@@ -228,6 +228,9 @@ static void cdj_tag_callback(void *user_data, int deck,
     pthread_mutex_lock(&app->db_mu);
     snprintf(app->last_artist, sizeof(app->last_artist), "%s", artist ? artist : "");
     snprintf(app->last_title, sizeof(app->last_title), "%s", title ? title : "");
+    snprintf(app->last_source, sizeof(app->last_source), "%s", source ? source : "cdj");
+    app->last_confidence = confidence;
+    app->last_isrc[0] = '\0';
     pthread_mutex_unlock(&app->db_mu);
     
     /* Bump track sequence for UI updates */
