@@ -367,15 +367,21 @@ int main(int argc, char **argv) {
 #endif
     }
 
-    /* Ring buffer sizing - need headroom for async writes (only if recording) */
-    if (need_audio && cfg.enable_record) {
-        unsigned min_ring_sec = cfg.max_file_sec > 0 ? cfg.max_file_sec + 60 : 600;
-        if (cfg.ring_sec == 0) {
-            cfg.ring_sec = min_ring_sec;
-        } else if (cfg.max_file_sec > 0 && cfg.ring_sec <= cfg.max_file_sec) {
-            logmsg("main", "--ring-sec (%u) must be > --max-file-sec (%u) to allow headroom for writes",
-                   cfg.ring_sec, cfg.max_file_sec);
-            return 2;
+    /* Ring buffer sizing */
+    if (need_audio) {
+        if (cfg.enable_record) {
+            /* Recording needs headroom for async file writes */
+            unsigned min_ring_sec = cfg.max_file_sec > 0 ? cfg.max_file_sec + 60 : 600;
+            if (cfg.ring_sec == 0) {
+                cfg.ring_sec = min_ring_sec;
+            } else if (cfg.max_file_sec > 0 && cfg.ring_sec <= cfg.max_file_sec) {
+                logmsg("main", "--ring-sec (%u) must be > --max-file-sec (%u) to allow headroom for writes",
+                       cfg.ring_sec, cfg.max_file_sec);
+                return 2;
+            }
+        } else if (cfg.enable_audio_tag && cfg.ring_sec == 0) {
+            /* Audio tagging needs at least fingerprint_sec * 2 for buffering */
+            cfg.ring_sec = cfg.fingerprint_sec * 2;
         }
     }
 

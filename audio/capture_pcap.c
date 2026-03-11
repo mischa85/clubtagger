@@ -25,7 +25,7 @@ void *capture_pcap(void *arg) {
     }
     pcap_set_snaplen(handle, BUFSIZ);
     pcap_set_promisc(handle, 1);
-    pcap_set_timeout(handle, 1000);
+    pcap_set_timeout(handle, 100);  /* 100ms for responsive exit */
     pcap_set_immediate_mode(handle, 1);
     if (cfg->pcap_buffer_mb > 0) {
         pcap_set_buffer_size(handle, cfg->pcap_buffer_mb * 1024 * 1024);
@@ -54,7 +54,11 @@ void *capture_pcap(void *arg) {
 
     while (g_running) {
         pkt = pcap_next(handle, &hdr);
-        if (!pkt) continue;
+        if (!pkt) {
+            /* Check if broken by signal or just timeout */
+            if (!g_running) break;
+            continue;
+        }
 
         if (slink_is_valid(pkt, hdr.caplen)) {
             const slink_packet_t *slink = (const slink_packet_t *)pkt;

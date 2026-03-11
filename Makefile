@@ -103,23 +103,22 @@ ifdef ENABLE_AF_XDP
   endif
 endif
 
-# Vibra library detection (no pkg-config, check if library exists)
-# Check common library paths for libvibra
-VIBRA_CHECK := $(shell $(CC) -lvibra -lstdc++ -o /dev/null -x c /dev/null 2>/dev/null && echo yes)
-ifdef VIBRA_CHECK
-  VIBRA_LIBS   := -lvibra -lstdc++
-  VIBRA_CFLAGS := -DHAVE_VIBRA
+# Vibra library detection
+# Override with: make VIBRA_PREFIX=/path/to/vibra
+VIBRA_PREFIX ?= $(shell \
+  for p in /usr/local /opt/homebrew /usr; do \
+    if [ -f "$$p/lib/libvibra.dylib" ] || [ -f "$$p/lib/libvibra.so" ]; then \
+      echo "$$p"; break; \
+    fi; \
+  done)
+
+ifneq ($(VIBRA_PREFIX),)
+  VIBRA_LIBS   := -L$(VIBRA_PREFIX)/lib -lvibra -lstdc++
+  VIBRA_CFLAGS := -DHAVE_VIBRA -I$(VIBRA_PREFIX)/include
 else
-  # Try with explicit path
-  VIBRA_CHECK_USR := $(shell $(CC) -L/usr/local/lib -lvibra -lstdc++ -o /dev/null -x c /dev/null 2>/dev/null && echo yes)
-  ifdef VIBRA_CHECK_USR
-    VIBRA_LIBS   := -L/usr/local/lib -lvibra -lstdc++
-    VIBRA_CFLAGS := -DHAVE_VIBRA
-  else
-    $(warning libvibra not found, audio fingerprinting (--audio-tag) disabled)
-    VIBRA_LIBS   :=
-    VIBRA_CFLAGS :=
-  endif
+  $(warning libvibra not found, audio fingerprinting (--audio-tag) disabled)
+  VIBRA_LIBS   :=
+  VIBRA_CFLAGS :=
 endif
 
 MATH_LIBS   ?= -lm
