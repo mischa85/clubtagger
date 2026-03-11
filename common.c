@@ -1,0 +1,381 @@
+/*
+ * common.c - Shared utilities and globals for clubtagger
+ */
+#include "common.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Global state
+ * ───────────────────────────────────────────────────────────────────────────── */
+volatile sig_atomic_t g_running = 1;
+int g_verbose = 0;
+int verbose = 0;  /* Alias for prolink modules (synced with g_verbose) */
+int match_threshold = 60;  /* Default 60% similarity for fuzzy matching */
+#ifdef HAVE_PCAP
+pcap_t *g_pcap_handle = NULL;
+#endif
+#ifdef HAVE_ALSA
+snd_pcm_t *g_alsa_handle = NULL;
+#endif
+#ifdef HAVE_AF_XDP
+struct xsk_socket *g_xsk = NULL;
+#endif
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Logging functions
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+void logmsg(const char *tag, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "[%s] ", tag);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+    va_end(ap);
+}
+
+void vlogmsg(const char *tag, const char *fmt, ...) {
+    if (!g_verbose) return;
+    va_list ap;
+    va_start(ap, fmt);
+    fprintf(stderr, "[%s] ", tag);
+    vfprintf(stderr, fmt, ap);
+    fprintf(stderr, "\n");
+    fflush(stderr);
+    va_end(ap);
+}
+
+void now_timestamp(char *out, size_t out_sz) {
+    (void)out_sz;
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    snprintf(out, out_sz, "%04d-%02d-%02d %02d:%02d:%02d",
+             tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min, tm.tm_sec);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * String utilities
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+void normalize_str(char *s) {
+    if (!s) return;
+    size_t n = strlen(s), w = 0;
+    int inspace = 0;
+    for (size_t i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '(' || c == ')' || c == '[' || c == ']' || c == '{' || c == '}') continue;
+        if (c == '.' || c == ',' || c == '!' || c == '?' || c == '\'' || c == '"' || c == '`' || c == '~' || c == '_') continue;
+        if (c == '-' || c == '/' || c == '\\' || c == ':') c = ' ';
+        if (c < 32) c = ' ';
+        if (c == ' ') {
+            if (inspace) continue;
+            inspace = 1;
+            s[w++] = ' ';
+            continue;
+        }
+        inspace = 0;
+        if (c >= 'A' && c <= 'Z') c = (unsigned char)(c - 'A' + 'a');
+        s[w++] = (char)c;
+    }
+    if (w > 0 && s[w - 1] == ' ') w--;
+    s[w] = 0;
+}
+
+int same_track(const TrackID *a, const TrackID *b) {
+    if (!a->valid || !b->valid) return 0;
+    if (a->has_isrc && b->has_isrc) return strcmp(a->isrc, b->isrc) == 0;
+    char aa[256], bb[256];
+    snprintf(aa, sizeof(aa), "%s", a->artist);
+    normalize_str(aa);
+    snprintf(bb, sizeof(bb), "%s", b->artist);
+    normalize_str(bb);
+    if (strcmp(aa, bb) != 0) return 0;
+    snprintf(aa, sizeof(aa), "%s", a->title);
+    normalize_str(aa);
+    snprintf(bb, sizeof(bb), "%s", b->title);
+    normalize_str(bb);
+    return strcmp(aa, bb) == 0;
+}
+
+/* Normalize for fuzzy matching: lowercase, keep only alphanumeric + space */
+static void normalize_for_match(const char *src, char *dst, size_t dst_sz) {
+    size_t j = 0;
+    for (size_t i = 0; src[i] && j < dst_sz - 1; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+        if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ') {
+            dst[j++] = (char)c;
+        }
+    }
+    dst[j] = '\0';
+}
+
+int levenshtein_distance(const char *s1, const char *s2) {
+    size_t len1 = strlen(s1), len2 = strlen(s2);
+    if (len1 == 0) return (int)len2;
+    if (len2 == 0) return (int)len1;
+    
+    /* Ensure s1 is shorter for space optimization */
+    if (len1 > len2) {
+        const char *tmp = s1; s1 = s2; s2 = tmp;
+        size_t t = len1; len1 = len2; len2 = t;
+    }
+    
+    /* Use single row + prev value - O(min(n,m)) space */
+    int *row = malloc((len1 + 1) * sizeof(int));
+    if (!row) return (int)(len1 > len2 ? len1 : len2);  /* Fallback */
+    
+    for (size_t i = 0; i <= len1; i++) row[i] = (int)i;
+    
+    for (size_t j = 1; j <= len2; j++) {
+        int prev = row[0];
+        row[0] = (int)j;
+        for (size_t i = 1; i <= len1; i++) {
+            unsigned char c1 = (unsigned char)s1[i-1];
+            unsigned char c2 = (unsigned char)s2[j-1];
+            /* Case-insensitive comparison */
+            if (c1 >= 'A' && c1 <= 'Z') c1 = c1 - 'A' + 'a';
+            if (c2 >= 'A' && c2 <= 'Z') c2 = c2 - 'A' + 'a';
+            int cost = (c1 != c2) ? 1 : 0;
+            int del = row[i] + 1;
+            int ins = row[i-1] + 1;
+            int sub = prev + cost;
+            prev = row[i];
+            row[i] = (del < ins) ? (del < sub ? del : sub) : (ins < sub ? ins : sub);
+        }
+    }
+    
+    int result = row[len1];
+    free(row);
+    return result;
+}
+
+int str_similarity(const char *s1, const char *s2) {
+    char n1[256], n2[256];
+    normalize_for_match(s1, n1, sizeof(n1));
+    normalize_for_match(s2, n2, sizeof(n2));
+    
+    size_t len1 = strlen(n1), len2 = strlen(n2);
+    size_t max_len = len1 > len2 ? len1 : len2;
+    if (max_len == 0) return 100;
+    
+    int dist = levenshtein_distance(n1, n2);
+    return 100 - (dist * 100 / (int)max_len);
+}
+
+int str_contains(const char *haystack, const char *needle) {
+    char h[256], n[256];
+    normalize_for_match(haystack, h, sizeof(h));
+    normalize_for_match(needle, n, sizeof(n));
+    
+    if (n[0] == '\0') return 0;  /* Empty needle */
+    return strcasestr(h, n) != NULL;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Misc utilities
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+void random_bytes(void *dst, size_t n) {
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        fread(dst, 1, n, f);
+        fclose(f);
+    } else {
+        for (size_t i = 0; i < n; i++)
+            ((unsigned char *)dst)[i] = (unsigned char)(rand() & 0xFF);
+    }
+}
+
+void uuid4(char out[37]) {
+    unsigned char b[16];
+    random_bytes(b, sizeof(b));
+    b[6] = (b[6] & 0x0F) | 0x40;
+    b[8] = (b[8] & 0x3F) | 0x80;
+    snprintf(out, 37,
+             "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+             b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9],
+             b[10], b[11], b[12], b[13], b[14], b[15]);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * UTF-8 utilities
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+void utf8_safe_copy(char *dst, const char *src, size_t dst_sz) {
+    if (!dst || !src || dst_sz == 0) return;
+    
+    size_t src_len = strlen(src);
+    size_t copy_len = (src_len < dst_sz - 1) ? src_len : dst_sz - 1;
+    
+    /* Walk back to find valid UTF-8 boundary */
+    while (copy_len > 0 && (src[copy_len] & 0xC0) == 0x80) {
+        copy_len--;
+    }
+    /* Check if we're in the middle of a multi-byte sequence */
+    if (copy_len > 0) {
+        unsigned char c = (unsigned char)src[copy_len - 1];
+        /* If previous byte starts a multi-byte seq that extends past copy_len */
+        if ((c & 0xE0) == 0xC0 && copy_len < src_len) {
+            /* 2-byte seq needs 1 more byte */
+            if (copy_len + 1 > src_len || (src[copy_len] & 0xC0) != 0x80) copy_len--;
+        } else if ((c & 0xF0) == 0xE0 && copy_len + 1 < src_len) {
+            /* 3-byte seq, check if complete */
+            copy_len--;
+        } else if ((c & 0xF8) == 0xF0 && copy_len + 2 < src_len) {
+            /* 4-byte seq, check if complete */
+            copy_len--;
+        }
+    }
+    
+    memcpy(dst, src, copy_len);
+    dst[copy_len] = '\0';
+}
+
+void json_escape(const char *in, char *out, size_t out_max) {
+    if (!in || !out || out_max == 0) return;
+    
+    size_t j = 0;
+    for (size_t i = 0; in[i] && j < out_max - 2; i++) {
+        unsigned char c = (unsigned char)in[i];
+        
+        /* Escape special JSON characters */
+        if (c == '"' || c == '\\') {
+            if (j + 2 >= out_max) break;
+            out[j++] = '\\';
+            out[j++] = c;
+        } else if (c == '\n') {
+            if (j + 2 >= out_max) break;
+            out[j++] = '\\';
+            out[j++] = 'n';
+        } else if (c == '\r') {
+            if (j + 2 >= out_max) break;
+            out[j++] = '\\';
+            out[j++] = 'r';
+        } else if (c == '\t') {
+            if (j + 2 >= out_max) break;
+            out[j++] = '\\';
+            out[j++] = 't';
+        } else if (c < 0x20) {
+            /* Other control chars - encode as \uXXXX */
+            if (j + 6 >= out_max) break;
+            j += snprintf(out + j, out_max - j, "\\u%04x", c);
+        } else {
+            out[j++] = c;
+        }
+    }
+    out[j] = '\0';
+}
+
+/* Helper to encode a Unicode codepoint as UTF-8 */
+static size_t encode_utf8(uint32_t cp, char *out, size_t out_max) {
+    if (cp < 0x80) {
+        if (out_max < 1) return 0;
+        if (cp >= 0x20) { out[0] = (char)cp; return 1; }
+        return 0;  /* Skip control chars */
+    } else if (cp < 0x800) {
+        if (out_max < 2) return 0;
+        out[0] = 0xC0 | (cp >> 6);
+        out[1] = 0x80 | (cp & 0x3F);
+        return 2;
+    } else if (cp < 0x10000) {
+        if (out_max < 3) return 0;
+        out[0] = 0xE0 | (cp >> 12);
+        out[1] = 0x80 | ((cp >> 6) & 0x3F);
+        out[2] = 0x80 | (cp & 0x3F);
+        return 3;
+    } else if (cp < 0x110000) {
+        if (out_max < 4) return 0;
+        out[0] = 0xF0 | (cp >> 18);
+        out[1] = 0x80 | ((cp >> 12) & 0x3F);
+        out[2] = 0x80 | ((cp >> 6) & 0x3F);
+        out[3] = 0x80 | (cp & 0x3F);
+        return 4;
+    }
+    return 0;  /* Invalid codepoint */
+}
+
+size_t utf16le_to_utf8(const uint8_t *data, size_t byte_len, char *out, size_t out_max) {
+    size_t out_pos = 0;
+    
+    for (size_t i = 0; i + 1 < byte_len && out_pos < out_max - 4; i += 2) {
+        uint16_t cp = data[i] | (data[i + 1] << 8);  /* Little-endian */
+        
+        if (cp == 0) break;
+        
+        /* Check for surrogate pair (emoji, rare CJK, etc.) */
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 3 < byte_len) {
+            uint16_t low = data[i + 2] | (data[i + 3] << 8);
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                /* Valid surrogate pair - decode to full codepoint */
+                uint32_t full = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                out_pos += encode_utf8(full, out + out_pos, out_max - out_pos);
+                i += 2;  /* Skip low surrogate */
+                continue;
+            }
+        }
+        
+        out_pos += encode_utf8(cp, out + out_pos, out_max - out_pos);
+    }
+    
+    out[out_pos] = '\0';
+    return out_pos;
+}
+
+size_t utf16be_to_utf8(const uint8_t *data, size_t byte_len, char *out, size_t out_max) {
+    size_t out_pos = 0;
+    
+    for (size_t i = 0; i + 1 < byte_len && out_pos < out_max - 4; i += 2) {
+        uint16_t cp = (data[i] << 8) | data[i + 1];  /* Big-endian */
+        
+        if (cp == 0) break;
+        
+        /* Check for surrogate pair (emoji, rare CJK, etc.) */
+        if (cp >= 0xD800 && cp <= 0xDBFF && i + 3 < byte_len) {
+            uint16_t low = (data[i + 2] << 8) | data[i + 3];
+            if (low >= 0xDC00 && low <= 0xDFFF) {
+                /* Valid surrogate pair - decode to full codepoint */
+                uint32_t full = 0x10000 + ((cp - 0xD800) << 10) + (low - 0xDC00);
+                out_pos += encode_utf8(full, out + out_pos, out_max - out_pos);
+                i += 2;  /* Skip low surrogate */
+                continue;
+            }
+        }
+        
+        out_pos += encode_utf8(cp, out + out_pos, out_max - out_pos);
+    }
+    
+    out[out_pos] = '\0';
+    return out_pos;
+}
+
+size_t latin1_to_utf8(const uint8_t *data, size_t len, char *out, size_t out_max) {
+    size_t out_pos = 0;
+    
+    for (size_t i = 0; i < len && out_pos < out_max - 2; i++) {
+        uint8_t c = data[i];
+        
+        if (c == 0) break;
+        
+        if (c < 0x80) {
+            /* ASCII - copy directly (skip control chars except space) */
+            if (c >= 0x20) out[out_pos++] = c;
+        } else {
+            /* Latin-1 extended (0x80-0xFF) -> 2-byte UTF-8 */
+            if (out_pos + 2 >= out_max) break;
+            out[out_pos++] = 0xC0 | (c >> 6);
+            out[out_pos++] = 0x80 | (c & 0x3F);
+        }
+    }
+    
+    out[out_pos] = '\0';
+    return out_pos;
+}

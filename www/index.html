@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clubtagger</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { text-align: center; margin-bottom: 20px; color: #00d4ff; }
+        
+        /* VU Meter */
+        .vu-container {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: #0f0f1a;
+            border-radius: 10px;
+        }
+        .vu-channel {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 5px;
+        }
+        .vu-label { font-size: 12px; color: #888; }
+        .vu-bar-container {
+            width: 40px;
+            height: 200px;
+            background: #222;
+            border-radius: 5px;
+            position: relative;
+            overflow: hidden;
+        }
+        .vu-bar {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            background: linear-gradient(to top, #00ff00 0%, #ffff00 70%, #ff0000 90%);
+            transition: height 50ms ease-out;
+        }
+        .vu-peak {
+            position: absolute;
+            width: 100%;
+            height: 3px;
+            background: #fff;
+            transition: bottom 50ms ease-out;
+        }
+        
+        /* Now Playing */
+        .now-playing {
+            text-align: center;
+            padding: 20px;
+            background: #0f0f1a;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+        .now-playing-label { font-size: 12px; color: #888; margin-bottom: 10px; }
+        .now-playing-artist { font-size: 24px; font-weight: bold; color: #00d4ff; }
+        .now-playing-title { font-size: 18px; color: #ccc; margin-top: 5px; }
+        
+        /* CDJ Decks */
+        .decks-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+        .deck {
+            background: #0f0f1a;
+            border-radius: 10px;
+            padding: 15px;
+            border-left: 4px solid #333;
+            transition: border-color 0.3s, background 0.3s;
+        }
+        .deck.playing { border-left-color: #4caf50; }
+        .deck.on-air { background: #1a2a1a; border-left-color: #ff5722; }
+        .deck-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .deck-num {
+            font-size: 18px;
+            font-weight: bold;
+            color: #00d4ff;
+        }
+        .deck-status {
+            display: flex;
+            gap: 8px;
+        }
+        .deck-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            text-transform: uppercase;
+        }
+        .deck-badge.playing { background: #1a4d1a; color: #4caf50; }
+        .deck-badge.paused { background: #4d4d1a; color: #ffeb3b; }
+        .deck-badge.on-air { background: #4d1a1a; color: #ff5722; }
+        .deck-track {
+            font-size: 14px;
+        }
+        .deck-artist {
+            font-weight: bold;
+            color: #eee;
+            margin-bottom: 3px;
+        }
+        .deck-title {
+            color: #888;
+            font-size: 13px;
+        }
+        .deck-meta {
+            margin-top: 8px;
+            font-size: 11px;
+            color: #666;
+        }
+        .deck-bpm {
+            color: #00d4ff;
+            font-weight: bold;
+        }
+        .no-decks {
+            text-align: center;
+            color: #666;
+            padding: 20px;
+            background: #0f0f1a;
+            border-radius: 10px;
+            margin-bottom: 30px;
+        }
+        
+        /* Tracklist */
+        .tracklist {
+            background: #0f0f1a;
+            border-radius: 10px;
+            padding: 20px;
+        }
+        .tracklist h2 { margin-bottom: 15px; color: #888; font-size: 14px; }
+        .track {
+            padding: 10px 0;
+            border-bottom: 1px solid #222;
+            display: flex;
+            gap: 15px;
+        }
+        .track:last-child { border-bottom: none; }
+        .track-time { color: #666; font-size: 12px; min-width: 60px; }
+        .track-info { flex: 1; }
+        .track-artist { font-weight: bold; }
+        .track-title { color: #888; }
+        
+        /* Connection status */
+        .status {
+            position: fixed;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 5px;
+            font-size: 12px;
+        }
+        .status.connected { background: #1a4d1a; color: #4caf50; }
+        .status.disconnected { background: #4d1a1a; color: #f44336; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Clubtagger</h1>
+        
+        <div class="vu-container">
+            <div class="vu-channel">
+                <div class="vu-bar-container">
+                    <div class="vu-bar" id="vu-left"></div>
+                    <div class="vu-peak" id="peak-left"></div>
+                </div>
+                <span class="vu-label">L</span>
+            </div>
+            <div class="vu-channel">
+                <div class="vu-bar-container">
+                    <div class="vu-bar" id="vu-right"></div>
+                    <div class="vu-peak" id="peak-right"></div>
+                </div>
+                <span class="vu-label">R</span>
+            </div>
+        </div>
+        
+        <div class="decks-container" id="decks">
+            <div class="no-decks">No CDJs detected</div>
+        </div>
+        
+        <div class="now-playing">
+            <div class="now-playing-label">NOW PLAYING</div>
+            <div class="now-playing-artist" id="now-artist">—</div>
+            <div class="now-playing-title" id="now-title"></div>
+        </div>
+        
+        <div class="tracklist">
+            <h2>RECENT TRACKS</h2>
+            <div id="tracks"></div>
+        </div>
+    </div>
+    
+    <div class="status disconnected" id="status">Disconnected</div>
+    
+    <script src="app.js"></script>
+</body>
+</html>

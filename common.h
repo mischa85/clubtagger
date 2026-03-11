@@ -1,0 +1,105 @@
+/*
+ * common.h - Shared utilities and globals for clubtagger
+ */
+#ifndef CLUBTAGGER_COMMON_H
+#define CLUBTAGGER_COMMON_H
+
+#include <signal.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef HAVE_PCAP
+#include <pcap.h>
+#endif
+#ifdef HAVE_ALSA
+#include <alsa/asoundlib.h>
+#endif
+#ifdef HAVE_AF_XDP
+#include <xdp/xsk.h>
+#endif
+
+#include "types.h"
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Global state
+ * ───────────────────────────────────────────────────────────────────────────── */
+extern volatile sig_atomic_t g_running;
+extern int g_verbose;
+extern int verbose;  /* Alias for prolink modules */
+extern int match_threshold;  /* 0-100 similarity % for fuzzy matching (default 60) */
+#ifdef HAVE_PCAP
+extern pcap_t *g_pcap_handle;
+#endif
+#ifdef HAVE_ALSA
+extern snd_pcm_t *g_alsa_handle;
+#endif
+#ifdef HAVE_AF_XDP
+extern struct xsk_socket *g_xsk;
+#endif
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Logging functions
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* Log a message with tag (always prints) */
+void logmsg(const char *tag, const char *fmt, ...);
+
+/* Log a message with tag (only if verbose enabled) */
+void vlogmsg(const char *tag, const char *fmt, ...);
+
+/* Log a CDJ message (shorthand for vlogmsg("cdj", ...)) */
+#define log_message(...) vlogmsg("cdj", __VA_ARGS__)
+
+/* Format current time to a buffer */
+void now_timestamp(char *out, size_t out_sz);
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * String utilities
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* Normalize a string for comparison (lowercase, remove punctuation, collapse spaces) */
+void normalize_str(char *s);
+
+/* Check if two TrackID structs identify the same track */
+int same_track(const TrackID *a, const TrackID *b);
+
+/* Levenshtein edit distance between two strings (case-insensitive) */
+int levenshtein_distance(const char *s1, const char *s2);
+
+/* Similarity percentage (0-100) based on Levenshtein distance
+ * Normalizes strings first (lowercase, alphanumeric only) */
+int str_similarity(const char *s1, const char *s2);
+
+/* Check if needle is a substring of haystack (normalized, case-insensitive) */
+int str_contains(const char *haystack, const char *needle);
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * UTF-8 utilities
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* Copy string with UTF-8-safe truncation (won't split multi-byte sequences) */
+void utf8_safe_copy(char *dst, const char *src, size_t dst_sz);
+
+/* Escape string for JSON output (handles ", \, control chars) */
+void json_escape(const char *in, char *out, size_t out_max);
+
+/* Convert UTF-16LE to UTF-8 (handles surrogate pairs for emoji/CJK) */
+size_t utf16le_to_utf8(const uint8_t *data, size_t byte_len, char *out, size_t out_max);
+
+/* Convert UTF-16BE to UTF-8 (handles surrogate pairs for emoji/CJK) */
+size_t utf16be_to_utf8(const uint8_t *data, size_t byte_len, char *out, size_t out_max);
+
+/* Convert Latin-1 (ISO-8859-1) to UTF-8 */
+size_t latin1_to_utf8(const uint8_t *data, size_t len, char *out, size_t out_max);
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Misc utilities
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/* Fill buffer with random bytes */
+void random_bytes(void *dst, size_t n);
+
+/* Generate a UUID v4 string (37 chars including null) */
+void uuid4(char out[37]);
+
+#endif /* CLUBTAGGER_COMMON_H */
