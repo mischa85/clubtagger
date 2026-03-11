@@ -10,6 +10,7 @@
 #include "slink_protocol.h"
 
 #include <pcap.h>
+#include <stdatomic.h>
 
 void *capture_pcap(void *arg) {
     App *app = (App *)arg;
@@ -49,8 +50,6 @@ void *capture_pcap(void *arg) {
     const u_char *pkt;
     uint32_t buf_idx = 0;
     int last_seq = -1; /* Sequence counter tracking */
-    uint64_t loss_events = 0;
-    (void)loss_events; /* TODO: report this */
 
     while (g_running) {
         pkt = pcap_next(handle, &hdr);
@@ -68,9 +67,11 @@ void *capture_pcap(void *arg) {
             if (last_seq >= 0) {
                 int expected = (last_seq + 1) & SLINK_SEQ_MASK;
                 if (seq != expected) {
-                    loss_events++;
-                    logmsg("cap", "sequence discontinuity: expected %02X got %02X",
-                           expected, seq);
+                    /* Calculate how many packets were lost */
+                    int lost = (seq - expected) & SLINK_SEQ_MASK;
+                    atomic_fetch_add_explicit(&app->audio_lost, lost, memory_order_relaxed);
+                    logmsg("cap", "sequence discontinuity: expected %02X got %02X (%d lost)",
+                           expected, seq, lost);
                 }
             }
             last_seq = seq;
@@ -79,6 +80,7 @@ void *capture_pcap(void *arg) {
             slink_to_le24_stereo(slink, &buf[buf_idx * fb]);
 
             buf_idx++;
+            atomic_fetch_add_explicit(&app->audio_frames, 1, memory_order_relaxed);
             if (buf_idx >= cfg->frames_per_read) {
                 asyncwr_append(&app->aw, buf, cfg->frames_per_read);
                 buf_idx = 0;

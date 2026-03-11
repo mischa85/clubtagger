@@ -38,12 +38,13 @@ typedef enum {
 
 /* Shazam thread state (for web UI status display) */
 typedef enum {
-    SHAZAM_IDLE = 0,       /* Thread started, waiting for audio */
+    SHAZAM_IDLE = 0,       /* Thread started, waiting for audio or in hold period */
     SHAZAM_LISTENING,      /* Enough audio, checking RMS */
     SHAZAM_FINGERPRINTING, /* Generating fingerprint */
     SHAZAM_QUERYING,       /* Sending to Shazam API */
     SHAZAM_CONFIRMING,     /* Got match, waiting for confirmations */
     SHAZAM_MATCHED,        /* Track confirmed and logged */
+    SHAZAM_THROTTLED,      /* Waiting between API calls */
     SHAZAM_DISABLED,       /* libvibra not available */
 } shazam_state_t;
 
@@ -198,6 +199,15 @@ typedef struct {
     _Atomic int shazam_state;      /* shazam_state_t value */
     char shazam_candidate[512];    /* protected by db_mu: "Artist — Title" of pending match */
     int shazam_confirms;           /* protected by db_mu: confirmation count (e.g., 2/3) */
+    int shazam_confidence;         /* protected by db_mu: current confidence % */
+    int shazam_confirms_needed;    /* protected by db_mu: how many confirms needed (2 or 3) */
+    int shazam_cdj_confirmed;      /* protected by db_mu: 1 if CDJ confirmed the match */
+    char last_source[16];          /* protected by db_mu: "audio", "cdj", or "both" */
+    int last_confidence;           /* protected by db_mu: confidence of last match */
+    /* Audio statistics (for web UI nerd info) */
+    _Atomic uint32_t audio_rms;    /* current RMS level */
+    _Atomic uint64_t audio_lost;   /* total lost samples (sequence discontinuities) */
+    _Atomic uint64_t audio_frames; /* total frames captured */
 } App;
 
 #endif /* CLUBTAGGER_TYPES_H */

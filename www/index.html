@@ -45,8 +45,8 @@
             position: absolute;
             bottom: 0;
             width: 100%;
-            background: linear-gradient(to top, #00ff00 0%, #ffff00 70%, #ff0000 90%);
-            transition: height 50ms ease-out;
+            background: #00ff00;
+            transition: height 50ms ease-out, background-color 50ms ease-out;
         }
         .vu-peak {
             position: absolute;
@@ -206,6 +206,49 @@
         .shazam-status.confirming { border-left-color: #ffeb3b; color: #ffeb3b; }
         .shazam-status.matched { border-left-color: #4caf50; color: #4caf50; }
         .shazam-status.disabled { border-left-color: #f44336; color: #f44336; }
+        .shazam-status.throttled { border-left-color: #795548; color: #795548; }
+        
+        .audio-stats {
+            font-size: 11px;
+            color: #666;
+            padding: 4px 8px;
+            font-family: monospace;
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .audio-stats .stat { white-space: nowrap; }
+        .audio-stats .recording { color: #f44336; font-weight: bold; }
+        .audio-stats .lost { color: #ff9800; }
+        
+        /* Source badges */
+        .source-badge {
+            display: inline-block;
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 3px;
+            text-transform: uppercase;
+            margin-right: 6px;
+        }
+        .source-badge.audio { background: #1a3d5c; color: #2196f3; }
+        .source-badge.cdj { background: #3d1a5c; color: #9c27b0; }
+        .source-badge.both { background: #1a4d1a; color: #4caf50; }
+        .confidence {
+            font-size: 11px;
+            color: #888;
+        }
+        .track-meta {
+            display: flex;
+            align-items: center;
+            margin-top: 3px;
+        }
+        .now-playing-meta {
+            margin-top: 10px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 8px;
+        }
     </style>
 </head>
 <body>
@@ -237,10 +280,13 @@
             <span class="shazam-text">Idle</span>
         </div>
         
+        <div class="audio-stats" id="audio-stats"></div>
+        
         <div class="now-playing">
             <div class="now-playing-label">NOW PLAYING</div>
             <div class="now-playing-artist" id="now-artist">—</div>
             <div class="now-playing-title" id="now-title"></div>
+            <div class="now-playing-meta" id="now-meta"></div>
         </div>
         
         <div class="tracklist">

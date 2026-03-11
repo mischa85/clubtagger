@@ -9,10 +9,12 @@
     const peakRight = document.getElementById('peak-right');
     const nowArtist = document.getElementById('now-artist');
     const nowTitle = document.getElementById('now-title');
+    const nowMeta = document.getElementById('now-meta');
     const tracksEl = document.getElementById('tracks');
     const statusEl = document.getElementById('status');
     const decksEl = document.getElementById('decks');
     const shazamEl = document.getElementById('shazam-status');
+    const audioStatsEl = document.getElementById('audio-stats');
     
     // Shazam state names
     const SHAZAM_STATES = {
@@ -22,7 +24,8 @@
         3: { text: 'Querying Shazam...', class: 'querying' },
         4: { text: 'Confirming...', class: 'confirming' },
         5: { text: 'Matched!', class: 'matched' },
-        6: { text: 'Disabled', class: 'disabled' }
+        6: { text: 'Waiting...', class: 'throttled' },
+        7: { text: 'Disabled', class: 'disabled' }
     };
     
     // Slot names
@@ -42,6 +45,26 @@
         return pct;
     }
     
+    // Get VU color based on level (green -> yellow -> red)
+    function vuColor(pct) {
+        if (pct < 70) {
+            // Green to yellow (0-70%)
+            const t = pct / 70;
+            const r = Math.round(255 * t);
+            return `rgb(${r}, 255, 0)`;
+        } else if (pct < 90) {
+            // Yellow to orange (70-90%)
+            const t = (pct - 70) / 20;
+            const g = Math.round(255 * (1 - t * 0.5));
+            return `rgb(255, ${g}, 0)`;
+        } else {
+            // Orange to red (90-100%)
+            const t = (pct - 90) / 10;
+            const g = Math.round(128 * (1 - t));
+            return `rgb(255, ${g}, 0)`;
+        }
+    }
+    
     // Update VU meters
     function updateVU(left, right) {
         const lPct = toPercent(left);
@@ -49,6 +72,8 @@
         
         vuLeft.style.height = lPct + '%';
         vuRight.style.height = rPct + '%';
+        vuLeft.style.backgroundColor = vuColor(lPct);
+        vuRight.style.backgroundColor = vuColor(rPct);
         
         // Peak hold with decay
         if (lPct > peakLVal) {
@@ -82,10 +107,37 @@
     }
     setInterval(decayPeaks, 16);
     
+    // Update audio stats display
+    function updateAudioStats(data) {
+        if (!audioStatsEl) return;
+        const parts = [];
+        if (data.rate) parts.push(`<span class="stat">${data.rate/1000}kHz ${data.ch}ch</span>`);
+        if (data.rec) parts.push(`<span class="stat recording">● REC</span>`);
+        if (data.rms !== undefined) parts.push(`<span class="stat">RMS ${data.rms}</span>`);
+        if (data.lost > 0) parts.push(`<span class="stat lost">Lost ${data.lost}</span>`);
+        if (data.frames) parts.push(`<span class="stat">${(data.frames/data.rate).toFixed(0)}s</span>`);
+        audioStatsEl.innerHTML = parts.join('');
+    }
+    
     // Update now playing
-    function updateNowPlaying(artist, title) {
+    function updateNowPlaying(artist, title, source, confidence) {
         nowArtist.textContent = artist || '—';
         nowTitle.textContent = title || '';
+        if (nowMeta) {
+            nowMeta.innerHTML = sourceBadge(source, confidence);
+        }
+    }
+    
+    // Source badge HTML helper
+    function sourceBadge(src, conf) {
+        if (!src) return '';
+        const badges = {
+            'audio': '<span class="source-badge audio">🎵 Audio</span>',
+            'cdj': '<span class="source-badge cdj">💿 CDJ</span>',
+            'both': '<span class="source-badge both">✓ Matched</span>'
+        };
+        const confText = conf ? `<span class="confidence">${conf}%</span>` : '';
+        return (badges[src] || '') + confText;
     }
     
     // Update Shazam status
@@ -95,9 +147,12 @@
         shazamEl.className = 'shazam-status ' + stateInfo.class;
         
         if (data.state === 4 && data.candidate) {  // SHAZAM_CONFIRMING
+            const needed = data.needed || 3;
+            const confPct = data.conf ? ` (${data.conf}%)` : '';
+            const cdjMatch = data.cdj ? ' 💿' : '';
             shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>` +
-                `<span class="shazam-candidate">${escapeHtml(data.candidate)}</span>` +
-                `<span class="shazam-confirms">${data.confirms}/3</span>`;
+                `<span class="shazam-candidate">${escapeHtml(data.candidate)}${confPct}${cdjMatch}</span>` +
+                `<span class="shazam-confirms">${data.confirms}/${needed}</span>`;
         } else {
             shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>`;
         }
@@ -142,7 +197,7 @@
     }
     
     // Add track to list
-    function addTrack(artist, title, timestamp) {
+    function addTrack(artist, title, timestamp, source, confidence) {
         let time;
         if (timestamp) {
             // Parse timestamp from database (format: "YYYY-MM-DD HH:MM:SS")
@@ -165,6 +220,7 @@
                 <span class="track-artist">${escapeHtml(artist)}</span>
                 <span class="track-title"> — ${escapeHtml(title)}</span>
             </div>
+            <div class="track-meta">${sourceBadge(source, confidence)}</div>
         `;
         
         // Insert at top
@@ -211,6 +267,7 @@
                 const data = JSON.parse(e.data);
                 if (typeof data.l === 'number' && typeof data.r === 'number') {
                     updateVU(data.l, data.r);
+                    updateAudioStats(data);
                 }
             } catch (err) {
                 console.error('Parse error:', err);
@@ -221,8 +278,8 @@
             try {
                 const data = JSON.parse(e.data);
                 if (data.a || data.t) {
-                    updateNowPlaying(data.a, data.t);
-                    addTrack(data.a, data.t);
+                    updateNowPlaying(data.a, data.t, data.src, data.conf);
+                    addTrack(data.a, data.t, null, data.src, data.conf);
                 }
             } catch (err) {
                 console.error('Track parse error:', err);
@@ -244,11 +301,12 @@
                 // Add tracks in reverse order (oldest first, so newest ends up at top)
                 for (let i = tracks.length - 1; i >= 0; i--) {
                     const t = tracks[i];
-                    addTrack(t.a, t.t, t.ts);
+                    addTrack(t.a, t.t, t.ts, t.src, t.conf);
                 }
                 // Update now playing with most recent track
                 if (tracks.length > 0) {
-                    updateNowPlaying(tracks[0].a, tracks[0].t);
+                    const latest = tracks[0];
+                    updateNowPlaying(latest.a, latest.t, latest.src, latest.conf);
                 }
             } catch (err) {
                 console.error('History parse error:', err);

@@ -22,6 +22,7 @@ void db_insert_play(App *app, const char *timestamp, const char *artist,
  * Returns number of tracks written to the output arrays (up to max_tracks)
  * Arrays must be pre-allocated with at least max_tracks elements */
 int db_get_recent_tracks(App *app, int max_tracks,
-                         char timestamps[][32], char artists[][256], char titles[][256]);
+                         char timestamps[][32], char artists[][256], char titles[][256],
+                         char sources[][16], int confidences[]);
 
 #endif /* CLUBTAGGER_DATABASE_H */

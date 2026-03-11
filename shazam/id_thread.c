@@ -283,6 +283,8 @@ void *id_main(void *arg) {
                                             pthread_mutex_lock(&app->db_mu);
                                             snprintf(app->last_artist, sizeof(app->last_artist), "%s", cdj_artist);
                                             snprintf(app->last_title, sizeof(app->last_title), "%s", cdj_title);
+                                            snprintf(app->last_source, sizeof(app->last_source), "cdj");
+                                            app->last_confidence = CDJ_ONLY_CONFIDENCE;
                                             app->shazam_candidate[0] = '\0';
                                             app->shazam_confirms = 0;
                                             pthread_mutex_unlock(&app->db_mu);
@@ -297,6 +299,15 @@ void *id_main(void *arg) {
                                         pending_confirms = 1;
                                         pending_confidence = CDJ_ONLY_CONFIDENCE;
                                         vlogmsg("id", "CDJ candidate: %s — %s (deck %d)", cdj_artist, cdj_title, cdj_deck);
+                                        /* Show as confirming state */
+                                        pthread_mutex_lock(&app->db_mu);
+                                        snprintf(app->shazam_candidate, sizeof(app->shazam_candidate), "%s — %s", cdj_artist, cdj_title);
+                                        app->shazam_confirms = 1;
+                                        app->shazam_confirms_needed = 2;
+                                        app->shazam_confidence = CDJ_ONLY_CONFIDENCE;
+                                        app->shazam_cdj_confirmed = 1;
+                                        pthread_mutex_unlock(&app->db_mu);
+                                        atomic_store_explicit(&app->shazam_state, SHAZAM_CONFIRMING, memory_order_release);
                                     }
                                 } else {
                                     /* Same track still playing */
@@ -308,6 +319,63 @@ void *id_main(void *arg) {
                     }
                 } else {
                     logmsg("id", "recognize: empty");
+                    /* Try CDJ fallback when Shazam API fails */
+                    if (app->prolink) {
+                        char cdj_title[256] = {0}, cdj_artist[256] = {0};
+                        int cdj_deck = 0;
+                        if (prolink_get_playing_track(app->prolink,
+                                                      cdj_title, sizeof(cdj_title),
+                                                      cdj_artist, sizeof(cdj_artist),
+                                                      &cdj_deck) == 0 && cdj_title[0]) {
+                            TrackID cdj_match = {0};
+                            cdj_match.valid = 1;
+                            snprintf(cdj_match.artist, sizeof(cdj_match.artist), "%s", cdj_artist);
+                            snprintf(cdj_match.title, sizeof(cdj_match.title), "%s", cdj_title);
+                            
+                            if (!current.valid || !same_track(&cdj_match, &current)) {
+                                if (pending.valid && same_track(&cdj_match, &pending)) {
+                                    pending_confirms++;
+                                    vlogmsg("id", "CDJ confirming (API fail): %s — %s (%d/2)", cdj_artist, cdj_title, pending_confirms);
+                                    if (pending_confirms >= 2) {
+                                        current = cdj_match;
+                                        last_good_match = time(NULL);
+                                        char tsbuf[64];
+                                        now_timestamp(tsbuf, sizeof(tsbuf));
+                                        logmsg("id", "%s MATCH: %s — %s (%d%%, cdj)", tsbuf, cdj_artist, cdj_title, CDJ_ONLY_CONFIDENCE);
+                                        db_insert_play(app, tsbuf, cdj_artist, cdj_title, "", CDJ_ONLY_CONFIDENCE, "cdj");
+                                        pthread_mutex_lock(&app->db_mu);
+                                        snprintf(app->last_artist, sizeof(app->last_artist), "%s", cdj_artist);
+                                        snprintf(app->last_title, sizeof(app->last_title), "%s", cdj_title);
+                                        snprintf(app->last_source, sizeof(app->last_source), "cdj");
+                                        app->last_confidence = CDJ_ONLY_CONFIDENCE;
+                                        app->shazam_candidate[0] = '\0';
+                                        app->shazam_confirms = 0;
+                                        pthread_mutex_unlock(&app->db_mu);
+                                        atomic_store_explicit(&app->shazam_state, SHAZAM_MATCHED, memory_order_release);
+                                        atomic_fetch_add_explicit(&app->track_seq, 1, memory_order_release);
+                                        pending.valid = 0;
+                                        pending_confirms = 0;
+                                        pending_confidence = 0;
+                                    }
+                                } else {
+                                    pending = cdj_match;
+                                    pending_confirms = 1;
+                                    pending_confidence = CDJ_ONLY_CONFIDENCE;
+                                    vlogmsg("id", "CDJ candidate (API fail): %s — %s (deck %d)", cdj_artist, cdj_title, cdj_deck);
+                                    pthread_mutex_lock(&app->db_mu);
+                                    snprintf(app->shazam_candidate, sizeof(app->shazam_candidate), "%s — %s", cdj_artist, cdj_title);
+                                    app->shazam_confirms = 1;
+                                    app->shazam_confirms_needed = 2;
+                                    app->shazam_confidence = CDJ_ONLY_CONFIDENCE;
+                                    app->shazam_cdj_confirmed = 1;
+                                    pthread_mutex_unlock(&app->db_mu);
+                                    atomic_store_explicit(&app->shazam_state, SHAZAM_CONFIRMING, memory_order_release);
+                                }
+                            } else {
+                                last_good_match = time(NULL);
+                            }
+                        }
+                    }
                 }
                 vibra_free_fingerprint(fp);
             }

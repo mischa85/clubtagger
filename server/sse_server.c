@@ -77,6 +77,7 @@ void *sse_main(void *arg) {
 
     uint32_t last_track_seq = 0;
     int last_shazam_state = -1;
+    int last_shazam_confirms = 0;
 
     while (g_running) {
         /* Accept new connections */
@@ -119,7 +120,9 @@ void *sse_main(void *arg) {
                 char timestamps[SSE_INITIAL_TRACKS][32];
                 char artists[SSE_INITIAL_TRACKS][256];
                 char titles[SSE_INITIAL_TRACKS][256];
-                int count = db_get_recent_tracks(app, SSE_INITIAL_TRACKS, timestamps, artists, titles);
+                char sources[SSE_INITIAL_TRACKS][16];
+                int confidences[SSE_INITIAL_TRACKS];
+                int count = db_get_recent_tracks(app, SSE_INITIAL_TRACKS, timestamps, artists, titles, sources, confidences);
 
                 if (count > 0) {
                     char history_msg[4096];
@@ -130,7 +133,8 @@ void *sse_main(void *arg) {
                         json_escape(titles[t], esc_title, sizeof(esc_title));
                         if (t > 0) history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, ",");
                         history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len,
-                            "{\"ts\":\"%s\",\"a\":\"%s\",\"t\":\"%s\"}", timestamps[t], esc_artist, esc_title);
+                            "{\"ts\":\"%s\",\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d}",
+                            timestamps[t], esc_artist, esc_title, sources[t], confidences[t]);
                     }
                     history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, "]\n\n");
                     send(clients[i], history_msg, history_len, MSG_NOSIGNAL);
@@ -145,8 +149,9 @@ void *sse_main(void *arg) {
                     char esc_cand[1024];
                     json_escape(app->shazam_candidate, esc_cand, sizeof(esc_cand));
                     shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d}\n\n",
-                        state, esc_cand, app->shazam_confirms);
+                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d,\"needed\":%d,\"conf\":%d,\"cdj\":%s}\n\n",
+                        state, esc_cand, app->shazam_confirms, app->shazam_confirms_needed, 
+                        app->shazam_confidence, app->shazam_cdj_confirmed ? "true" : "false");
                     pthread_mutex_unlock(&app->db_mu);
                 } else {
                     shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
@@ -156,11 +161,17 @@ void *sse_main(void *arg) {
             }
         }
 
-        /* Build VU message */
+        /* Build VU message with audio stats */
         uint16_t vu_l = atomic_load_explicit(&app->vu_left, memory_order_relaxed);
         uint16_t vu_r = atomic_load_explicit(&app->vu_right, memory_order_relaxed);
-        char vu_msg[64];
-        int vu_len = snprintf(vu_msg, sizeof(vu_msg), "data: {\"l\":%u,\"r\":%u}\n\n", vu_l, vu_r);
+        uint32_t rms = atomic_load_explicit(&app->audio_rms, memory_order_relaxed);
+        uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
+        uint64_t frames = atomic_load_explicit(&app->audio_frames, memory_order_relaxed);
+        char vu_msg[192];
+        int vu_len = snprintf(vu_msg, sizeof(vu_msg), 
+            "data: {\"l\":%u,\"r\":%u,\"rms\":%u,\"lost\":%llu,\"frames\":%llu,\"rate\":%u,\"ch\":%u,\"rec\":%d}\n\n", 
+            vu_l, vu_r, rms, (unsigned long long)lost, (unsigned long long)frames,
+            app->cfg.rate, app->cfg.channels, app->cfg.enable_record);
 
         /* Check for track change */
         uint32_t track_seq = atomic_load_explicit(&app->track_seq, memory_order_acquire);
@@ -175,8 +186,8 @@ void *sse_main(void *arg) {
             json_escape(app->last_artist, escaped_artist, sizeof(escaped_artist));
             json_escape(app->last_title, escaped_title, sizeof(escaped_title));
             track_len = snprintf(track_msg, sizeof(track_msg),
-                                 "event: track\ndata: {\"a\":\"%s\",\"t\":\"%s\"}\n\n",
-                                 escaped_artist, escaped_title);
+                                 "event: track\ndata: {\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d}\n\n",
+                                 escaped_artist, escaped_title, app->last_source, app->last_confidence);
             pthread_mutex_unlock(&app->db_mu);
         }
 
@@ -237,8 +248,11 @@ void *sse_main(void *arg) {
 
             /* Check for shazam state change and send update */
             int cur_shazam_state = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
-            if (cur_shazam_state != last_shazam_state) {
+            int cur_confirms = (cur_shazam_state == SHAZAM_CONFIRMING) ? app->shazam_confirms : 0;
+            if (cur_shazam_state != last_shazam_state || 
+                (cur_shazam_state == SHAZAM_CONFIRMING && cur_confirms != last_shazam_confirms)) {
                 last_shazam_state = cur_shazam_state;
+                last_shazam_confirms = cur_confirms;
                 char shazam_msg[1024];
                 int shazam_len;
                 if (cur_shazam_state == SHAZAM_CONFIRMING) {
@@ -246,8 +260,9 @@ void *sse_main(void *arg) {
                     char esc_cand[1024];
                     json_escape(app->shazam_candidate, esc_cand, sizeof(esc_cand));
                     shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d}\n\n",
-                        cur_shazam_state, esc_cand, app->shazam_confirms);
+                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d,\"needed\":%d,\"conf\":%d,\"cdj\":%s}\n\n",
+                        cur_shazam_state, esc_cand, app->shazam_confirms, app->shazam_confirms_needed,
+                        app->shazam_confidence, app->shazam_cdj_confirmed ? "true" : "false");
                     pthread_mutex_unlock(&app->db_mu);
                 } else {
                     shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),

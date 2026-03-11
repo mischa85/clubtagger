@@ -623,3 +623,42 @@ void prolink_check_tagging(ProlinkThread *pt) {
         }
     }
 }
+
+int prolink_any_deck_on_air(ProlinkThread *pt) {
+    if (!pt || !atomic_load(&pt->running)) return -1;
+    
+    int has_on_air_info = 0;
+    
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        cdj_device_t *dev = &devices[i];
+        if (!dev->active) continue;
+        if (dev->device_type != DEVICE_TYPE_CDJ) continue;
+        
+        if (dev->on_air_available) {
+            has_on_air_info = 1;
+            if (dev->on_air && dev->playing) {
+                return 1;  /* Found a deck that's on-air and playing */
+            }
+        }
+    }
+    
+    /* Return -1 if no ON_AIR data available (no DJM), 0 if DJM present but no deck on-air */
+    return has_on_air_info ? 0 : -1;
+}
+
+int prolink_active_deck_count(ProlinkThread *pt) {
+    if (!pt || !atomic_load(&pt->running)) return 0;
+    
+    int count = 0;
+    time_t now = time(NULL);
+    
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        cdj_device_t *dev = &devices[i];
+        if (!dev->active) continue;
+        if (dev->device_type != DEVICE_TYPE_CDJ) continue;
+        if (now - dev->last_seen > 10) continue;  /* Stale */
+        count++;
+    }
+    
+    return count;
+}

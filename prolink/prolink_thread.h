@@ -100,4 +100,13 @@ void prolink_enable_tagging(ProlinkThread *pt,
  * This should be called about once per second */
 void prolink_check_tagging(ProlinkThread *pt);
 
+/* Check if any deck is currently ON AIR and playing
+ * Returns 1 if any deck is on_air && playing, 0 otherwise
+ * Returns -1 if no ON_AIR data available (no DJM detected) */
+int prolink_any_deck_on_air(ProlinkThread *pt);
+
+/* Check how many active CDJ decks are detected
+ * Returns the count of active CDJs (0 if none) */
+int prolink_active_deck_count(ProlinkThread *pt);
+
 #endif /* PROLINK_THREAD_H */
