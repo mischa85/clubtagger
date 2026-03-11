@@ -80,7 +80,6 @@ typedef struct {
     unsigned    channels;
     unsigned    frames_per_read;
     unsigned    fingerprint_sec;
-    unsigned    min_rms;
     unsigned    identify_interval_sec;
     const char *user_agent;
     const char *timezone;

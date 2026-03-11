@@ -105,7 +105,7 @@ clubtagger has three main modes that can be combined:
 | `--channels` | Audio channels | `2` |
 | `--bits` | Bit depth (16 or 24) | `16` |
 
-### Recording
+### Recording & detection
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--format` | Output format: `wav` or `flac` | `wav` |
@@ -113,16 +113,17 @@ clubtagger has three main modes that can be combined:
 | `--outdir` | Output directory | `.` |
 | `--max-file-sec` | Max seconds per file | `600` |
 | `--ring-sec` | Ring buffer size | `max-file-sec + 60` |
-| `--threshold` | Amplitude threshold for recording | `50` |
+| `--threshold` | RMS threshold for music detection | `50` |
 | `--sustain-sec` | Seconds above threshold to start | `1.0` |
 | `--silence-sec` | Silence duration to stop | `15` |
+
+The `--threshold` value is used for both recording triggers and Shazam fingerprinting.
 
 ### Audio tagging (requires libvibra)
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--fingerprint-sec` | Fingerprint length | `12` |
 | `--interval` | Seconds between checks | `2` |
-| `--min-rms` | Minimum RMS to trigger | `300` |
 | `--shazam-gap-sec` | Min seconds between lookups | `10` |
 | `--same-track-hold-sec` | Skip lookups for same track | `90` |
 

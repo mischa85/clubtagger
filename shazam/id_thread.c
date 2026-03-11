@@ -46,8 +46,8 @@ void *id_main(void *arg) {
     uint8_t *window = app->id_buf;
     int16_t *window_s16 = app->id_buf_s16;
 
-    logmsg("id", "started: fingerprint=%us interval=%us min_rms=%u",
-           cfg->fingerprint_sec, cfg->identify_interval_sec, cfg->min_rms);
+    logmsg("id", "started: fingerprint=%us interval=%us threshold=%u",
+           cfg->fingerprint_sec, cfg->identify_interval_sec, cfg->threshold);
 
     time_t last_lookup = 0;
     time_t last_good_match = 0;
@@ -80,9 +80,10 @@ void *id_main(void *arg) {
         }
 
         unsigned r = rms_s16_interleaved(window_s16, got, cfg->channels);
-        vlogmsg("id", "peek=%zu frames, rms=%u (min_rms=%u)", got, r, cfg->min_rms);
+        vlogmsg("id", "peek=%zu frames, rms=%u (threshold=%u)", got, r, cfg->threshold);
 
-        if (got > 0 && r >= cfg->min_rms && got >= (size_t)(cfg->rate * cfg->fingerprint_sec * 3 / 4)) {
+        /* Use same threshold as writer for "is there music" detection */
+        if (got > 0 && r >= cfg->threshold && got >= (size_t)(cfg->rate * cfg->fingerprint_sec * 3 / 4)) {
             time_t nowt = time(NULL);
             if (current.valid && (unsigned)(nowt - last_good_match) < cfg->same_track_hold_sec) {
                 vlogmsg("id", "hold: same-track window active (%us)", cfg->same_track_hold_sec);

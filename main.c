@@ -76,7 +76,7 @@ static void usage(const char *argv0) {
 #ifdef HAVE_VIBRA
             "Audio tagging options (for --audio-tag):\n"
             "  --fingerprint-sec 12   Seconds of audio to send to Shazam\n"
-            "  --min-rms 300          Minimum RMS to attempt recognition\n"
+
             "  --interval 2           Seconds between recognition attempts\n"
             "  --user-agent UA        Override User-Agent header\n"
             "  --shazam-gap-sec 10    Min seconds between Shazam lookups\n"
@@ -126,8 +126,6 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             cfg->frames_per_read = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--fingerprint-sec") && i + 1 < argc)
             cfg->fingerprint_sec = (unsigned)strtoul(argv[++i], NULL, 10);
-        else if (!strcmp(a, "--min-rms") && i + 1 < argc)
-            cfg->min_rms = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--interval") && i + 1 < argc)
             cfg->identify_interval_sec = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--user-agent") && i + 1 < argc)
@@ -255,7 +253,6 @@ int main(int argc, char **argv) {
         .channels = 2,
         .frames_per_read = 1024,
         .fingerprint_sec = 12,
-        .min_rms = 300,
         .identify_interval_sec = 2,
         .user_agent = NULL,
         .timezone = NULL,
