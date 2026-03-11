@@ -8,6 +8,7 @@
 #ifndef PACKET_HANDLER_H
 #define PACKET_HANDLER_H
 
+#include "../common.h"
 #include <sys/types.h>
 #include <stdint.h>
 #include <sys/time.h>
@@ -18,9 +19,7 @@
  * ============================================================================
  */
 
-#ifdef HAVE_PCAP
-#include <pcap/pcap.h>
-#else
+#ifndef HAVE_PCAP
 /* pcap_pkthdr-compatible struct for AF_XDP-only builds */
 struct pcap_pkthdr {
     struct timeval ts;    /* timestamp */

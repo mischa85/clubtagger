@@ -11,11 +11,15 @@
 #include <sys/types.h>
 #include <time.h>
 
+/* AF_XDP must come before pcap: linux/bpf.h defines struct bpf_insn.
+ * Include linux/filter.h to set __LINUX_FILTER_H__ which tells pcap/bpf.h
+ * to skip its bpf_insn definition while keeping struct bpf_program. */
+#ifdef HAVE_AF_XDP
+#include <linux/filter.h>
+#include <xdp/xsk.h>
+#endif
 #ifdef HAVE_PCAP
 #include <pcap.h>
-#endif
-#ifdef HAVE_AF_XDP
-#include <xdp/xsk.h>
 #endif
 
 /* Forward declarations */
