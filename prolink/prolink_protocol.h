@@ -133,6 +133,7 @@ typedef enum {
 /* Player slot limits */
 #define MAX_PLAYERS_NXS2         4     /* Maximum players on NXS2 network */
 #define MAX_PLAYERS_CDJ3000      6     /* Maximum players on CDJ-3000 network */
+#define MAX_DEVICE_NUM           15    /* Highest device number we'll try (0x0F) */
 
 /*
  * ============================================================================

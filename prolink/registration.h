@@ -76,6 +76,9 @@ uint8_t get_our_device_num(void);
 /* Handle slot conflict when another device claims our slot */
 void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_name);
 
+/* Try to move to a better (lower) slot when one becomes available */
+void try_optimize_slot(void);
+
 /* Dynamic device number (0 = not registered) */
 extern uint8_t our_device_num;
 

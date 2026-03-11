@@ -438,6 +438,9 @@ int prolink_init(ProlinkThread *pt, const char *interface, int verbose_level) {
     /* Set CDJ verbose level */
     verbose = verbose_level;
     
+    /* Stay registered for continuous monitoring (don't release slot after timeout) */
+    active_mode = 1;
+    
     g_prolink = pt;
     
     /* Start thread */

@@ -129,6 +129,9 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
                 do_full_registration(capture_interface);
                 last_keepalive_sent = time(NULL);
             }
+            
+            /* Check if a better slot became available (device went away) */
+            try_optimize_slot();
         }
     }
     
@@ -439,8 +442,18 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
                         if (pdb->artist[0]) {
                             utf8_safe_copy(dev->track_artist, pdb->artist, sizeof(dev->track_artist));
+                            found = 1;  /* Only consider "found" if we have artist too */
+                        } else {
+                            /* PDB has title but no artist - try dbserver for better metadata */
+                            log_message("[PDB] Track %u has title but no artist, trying dbserver", 
+                                       dev->rekordbox_id);
+                            retry_later = try_resolve_track_name(dev);
+                            /* If dbserver also fails, use PDB title at least */
+                            if (dev->track_title[0] == '\0') {
+                                utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
+                            }
+                            found = (dev->track_title[0] != '\0');
                         }
-                        found = 1;
                     } else {
                         /* Fall back to DBServer query */
                         retry_later = try_resolve_track_name(dev);

@@ -554,6 +554,14 @@ int dbserver_query_metadata(uint32_t device_ip, uint8_t our_device_param, uint8_
     uint8_t our_device = get_our_device_num();
     (void)our_device_param;  /* Suppress unused warning */
     
+    /* Check if we're on a valid slot for dbserver queries.
+     * Slots above max_players won't work with dbserver (non-standard player number).
+     * In this case, rely on NFS/PDB for metadata instead. */
+    if (our_device > get_max_players()) {
+        vlogmsg("DBSERVER", "Skipping query - slot %d incompatible with dbserver (use NFS)", our_device);
+        return CDJ_ERR_CONNECT;
+    }
+    
     log_message("[DBSERVER] Connecting to %s...", ip_to_str(device_ip));
     int sock = dbserver_connect(device_ip);
     if (sock < 0) {

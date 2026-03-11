@@ -118,32 +118,36 @@ int get_max_players(void) {
     return has_any_cdj ? MAX_PLAYERS_CDJ3000 : MAX_PLAYERS_NXS2;
 }
 
-/* Find a free device slot, returns 0 if none available */
+/* Find a free device slot.
+ * Takes the lowest available slot. If a real CDJ claims it later,
+ * handle_slot_conflict() will move us to another slot.
+ * Slots 1-4/1-6 allow dbserver queries, higher slots use NFS/PDB only. */
 uint8_t find_free_slot(void) {
-    int max_players = get_max_players();
     time_t now = time(NULL);
     
     /* Track which slots are occupied */
-    uint8_t occupied[7] = {0};  /* Index 1-6 */
+    uint8_t occupied[MAX_DEVICE_NUM + 1] = {0};
     
     for (int i = 0; i < MAX_DEVICES; i++) {
         if (devices[i].active && 
             (now - devices[i].last_seen) < DEVICE_TIMEOUT_SEC &&
             devices[i].device_num >= 1 && 
-            devices[i].device_num <= MAX_PLAYERS_CDJ3000) {
+            devices[i].device_num <= MAX_DEVICE_NUM) {
             occupied[devices[i].device_num] = 1;
         }
     }
     
-    /* Prefer highest available slot within the network's max player limit.
-     * After observation period, we know which slots are actually occupied. */
-    for (int slot = max_players; slot >= 1; slot--) {
+    /* Take the lowest available slot */
+    for (int slot = 1; slot <= MAX_DEVICE_NUM; slot++) {
         if (!occupied[slot]) {
+            if (slot > get_max_players()) {
+                log_message("[REG] Using slot %d (no dbserver, NFS only)", slot);
+            }
             return slot;
         }
     }
     
-    return 0;  /* No free slots */
+    return 0;  /* All slots taken */
 }
 
 /* Check if any device has a track that needs active query (DBServer) */
@@ -166,29 +170,53 @@ int needs_active_query(void) {
     return 0;
 }
 
-/* Check if we should release our slot (ONLY if network is full) */
+/* Check if we should release our slot.
+ * We never proactively release - if a real CDJ claims our slot, 
+ * handle_slot_conflict() will move us to another slot (including slot 7 fallback).
+ * This ensures we always receive STATUS packets. */
 int should_release_slot(void) {
+    /* Never release proactively. Slot conflicts are handled reactively
+     * by handle_slot_conflict() which will move us to a free slot. */
+    return 0;
+}
+
+/* Check if we can move to a better (lower) slot for dbserver compatibility.
+ * Called when we see network activity - if a CDJ has gone silent, take its slot. */
+void try_optimize_slot(void) {
+    if (registration_state != REG_ACTIVE || our_device_num == 0) return;
+    
     int max_players = get_max_players();
+    
+    /* Only bother if we're on a high slot (no dbserver) */
+    if (our_device_num <= max_players) return;
+    
     time_t now = time(NULL);
     
-    /* Count active CDJs (excluding us) */
-    int cdj_count = 0;
-    for (int i = 0; i < MAX_DEVICES; i++) {
-        if (devices[i].active && 
-            devices[i].device_type == DEVICE_TYPE_CDJ &&
-            (now - devices[i].last_seen) < DEVICE_TIMEOUT_SEC &&
-            devices[i].device_num != our_device_num) {
-            cdj_count++;
+    /* Find lowest slot that's now free (device timed out) */
+    for (int slot = 1; slot <= max_players; slot++) {
+        int slot_in_use = 0;
+        for (int i = 0; i < MAX_DEVICES; i++) {
+            if (devices[i].active &&
+                devices[i].device_num == slot &&
+                (now - devices[i].last_seen) < DEVICE_TIMEOUT_SEC) {
+                slot_in_use = 1;
+                break;
+            }
+        }
+        
+        if (!slot_in_use) {
+            log_message("[REG] ✅ Slot %d now free - switching from %d (dbserver enabled)",
+                        slot, our_device_num);
+            our_device_num = slot;
+            keepalives_sent_active = 0;
+            
+            /* Send immediate keepalive on new slot */
+            if (capture_interface) {
+                send_prolink_keepalive(capture_interface);
+            }
+            return;
         }
     }
-    
-    /* ONLY release if network is full (another CDJ needs this slot) */
-    /* We must stay registered to receive PKT_TYPE_CDJ_STATUS packets! */
-    if (cdj_count >= max_players - 1) {
-        return 1;
-    }
-    
-    return 0;
 }
 
 /* Get our current device number (0 if not registered) */
@@ -218,14 +246,19 @@ void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_nam
     /* Find a new free slot */
     uint8_t new_slot = find_free_slot();
     if (new_slot == 0) {
-        log_message("[REG] No free slots available, going passive");
+        log_message("[REG] No free slots available (even slot 7 taken!), going passive");
         our_device_num = 0;
         registration_state = REG_PASSIVE;
         return;
     }
     
-    log_message("[REG] ✅ Switched from slot %d to slot %d",
-                our_device_num, new_slot);
+    if (new_slot > get_max_players()) {
+        log_message("[REG] ✅ Switched from slot %d to passive slot %d (NFS only, no dbserver)",
+                    our_device_num, new_slot);
+    } else {
+        log_message("[REG] ✅ Switched from slot %d to slot %d",
+                    our_device_num, new_slot);
+    }
     our_device_num = new_slot;
     keepalives_sent_active = 0;  /* Reset keepalive counter for new slot */
     
@@ -481,39 +514,9 @@ void check_go_passive(void) {
     if (registration_state != REG_ACTIVE) return;
     if (active_mode) return;
     
-    /* We need to STAY registered to receive PKT_TYPE_CDJ_STATUS packets!
-     * Without registration, CDJs only send PKT_TYPE_BEAT packets.
-     * Only release if network is full OR truly timed out. */
-    
-    int max_players = get_max_players();
-    time_t now = time(NULL);
-    
-    /* Count active CDJs (excluding us) */
-    int cdj_count = 0;
-    for (int i = 0; i < MAX_DEVICES; i++) {
-        if (devices[i].active && 
-            devices[i].device_type == DEVICE_TYPE_CDJ &&
-            (now - devices[i].last_seen) < DEVICE_TIMEOUT_SEC &&
-            devices[i].device_num != our_device_num) {
-            cdj_count++;
-        }
-    }
-    
-    /* Only release if network is full (another CDJ might need our slot) */
-    int network_full = (cdj_count >= max_players - 1);
-    int timeout = (keepalives_sent_active > KEEPALIVE_TIMEOUT_COUNT);
-    
-    if (network_full || timeout) {
-        log_message("[REG] Releasing slot %d - %s", 
-                    our_device_num,
-                    network_full ? "network full" : "timeout");
-        our_device_num = 0;
-        registration_state = REG_PASSIVE;
-        if (announce_socket >= 0) {
-            close(announce_socket);
-            announce_socket = -1;
-        }
-    }
+    /* With slot 7 fallback, we never need to go passive.
+     * If a real CDJ claims our slot, handle_slot_conflict() moves us.
+     * This function only matters if active_mode=0 (legacy/testing). */
 }
 
 int ensure_registration_active(void) {
