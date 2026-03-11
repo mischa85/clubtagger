@@ -270,11 +270,9 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     uint8_t request[512];
     uint8_t response[1024];
     
-    (void)nfs_port;  /* Always use NFS_PORT */
-    
     if (verbose) {
-        log_message("[NFS] LOOKUP '%s' in dir fh[0..3]=%02x%02x%02x%02x", 
-                    name, dir_fh[0], dir_fh[1], dir_fh[2], dir_fh[3]);
+        log_message("[NFS] LOOKUP '%s' in dir fh[0..3]=%02x%02x%02x%02x (port %u)", 
+                    name, dir_fh[0], dir_fh[1], dir_fh[2], dir_fh[3], nfs_port);
     }
     
     /* Use NFS version 2 */
@@ -296,7 +294,7 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     }
     while (pos % 4 != 0) request[pos++] = 0;
     
-    int received = nfs_rpc_call(server_ip, NFS_PORT, request, pos, response, sizeof(response));
+    int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, sizeof(response));
     if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(nfs_lookup_reply_t))) {
         if (verbose) log_message("[NFS] LOOKUP '%s' failed: short response (%d bytes)", name, received);
         return -1;
@@ -331,11 +329,9 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
 /* NFS READ - read file data */
 int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                   uint8_t *buf, size_t buf_len, size_t *bytes_read) {
-    (void)nfs_port;  /* Always use NFS_PORT */
-    
     if (verbose) {
-        log_message("[NFS] READ file fh[0..3]=%02x%02x%02x%02x", 
-                    file_fh[0], file_fh[1], file_fh[2], file_fh[3]);
+        log_message("[NFS] READ file fh[0..3]=%02x%02x%02x%02x (port %u)", 
+                    file_fh[0], file_fh[1], file_fh[2], file_fh[3], nfs_port);
     }
     
     size_t total_read = 0;
@@ -357,7 +353,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         RPC_PUT_U32((uint8_t *)&args->totalcount, 0);  /* Unused in NFSv2 */
         pos += sizeof(nfs_read_args_t);
         
-        int received = nfs_rpc_call(server_ip, NFS_PORT, request, pos, response, 1536);
+        int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, 1536);
         if (received < (int)sizeof(rpc_reply_header_t)) {
             if (verbose) log_message("[NFS] Read failed: only received %d bytes", received);
             free(response);
@@ -547,6 +543,155 @@ static void remove_pending_lookup(uint32_t xid, uint32_t server_ip) {
     }
 }
 
+/*
+ * Passive PDB reassembly - capture export.pdb when another device fetches it.
+ */
+#define MAX_PDB_REASSEMBLY 4  /* Track up to 4 concurrent PDB transfers */
+
+typedef struct {
+    uint32_t server_ip;           /* CDJ serving the file */
+    uint32_t client_ip;           /* Device requesting it */
+    uint8_t  fh[NFS_FHSIZE];      /* File handle for export.pdb */
+    uint32_t file_size;           /* Expected size from fattr */
+    uint32_t received;            /* Bytes received so far */
+    uint8_t *buffer;              /* Reassembly buffer */
+    time_t   last_activity;       /* For timeout */
+} pdb_reassembly_t;
+
+static pdb_reassembly_t pdb_reassembly[MAX_PDB_REASSEMBLY];
+
+/* Pending READ cache - track READ requests to correlate with responses */
+#define PENDING_READ_SIZE 64
+
+typedef struct {
+    uint32_t xid;
+    uint32_t client_ip;
+    uint32_t server_ip;
+    uint8_t  fh[NFS_FHSIZE];
+    uint32_t offset;
+    uint32_t count;
+    time_t   timestamp;
+} pending_read_t;
+
+static pending_read_t pending_reads[PENDING_READ_SIZE];
+static int pending_read_count = 0;
+
+static void add_pending_read(uint32_t xid, uint32_t client_ip, uint32_t server_ip,
+                             const uint8_t *fh, uint32_t offset, uint32_t count) {
+    time_t now = time(NULL);
+    /* Evict stale entries */
+    for (int i = 0; i < pending_read_count; ) {
+        if (now - pending_reads[i].timestamp > 10) {
+            pending_reads[i] = pending_reads[--pending_read_count];
+        } else {
+            i++;
+        }
+    }
+    if (pending_read_count < PENDING_READ_SIZE) {
+        pending_read_t *p = &pending_reads[pending_read_count++];
+        p->xid = xid;
+        p->client_ip = client_ip;
+        p->server_ip = server_ip;
+        memcpy(p->fh, fh, NFS_FHSIZE);
+        p->offset = offset;
+        p->count = count;
+        p->timestamp = now;
+    }
+}
+
+static pending_read_t *find_pending_read(uint32_t xid, uint32_t server_ip) {
+    for (int i = 0; i < pending_read_count; i++) {
+        if (pending_reads[i].xid == xid && pending_reads[i].server_ip == server_ip) {
+            return &pending_reads[i];
+        }
+    }
+    return NULL;
+}
+
+static void remove_pending_read(uint32_t xid, uint32_t server_ip) {
+    for (int i = 0; i < pending_read_count; i++) {
+        if (pending_reads[i].xid == xid && pending_reads[i].server_ip == server_ip) {
+            pending_reads[i] = pending_reads[--pending_read_count];
+            return;
+        }
+    }
+}
+
+static pdb_reassembly_t *find_pdb_reassembly(uint32_t server_ip, const uint8_t *fh) {
+    for (int i = 0; i < MAX_PDB_REASSEMBLY; i++) {
+        if (pdb_reassembly[i].buffer && pdb_reassembly[i].server_ip == server_ip &&
+            memcmp(pdb_reassembly[i].fh, fh, NFS_FHSIZE) == 0) {
+            return &pdb_reassembly[i];
+        }
+    }
+    return NULL;
+}
+
+static void start_pdb_reassembly(uint32_t server_ip, uint32_t client_ip,
+                                  const uint8_t *fh, uint32_t file_size) {
+    /* Find free slot or evict oldest */
+    pdb_reassembly_t *slot = NULL;
+    time_t oldest = time(NULL);
+    int oldest_idx = 0;
+    
+    for (int i = 0; i < MAX_PDB_REASSEMBLY; i++) {
+        if (!pdb_reassembly[i].buffer) {
+            slot = &pdb_reassembly[i];
+            break;
+        }
+        if (pdb_reassembly[i].last_activity < oldest) {
+            oldest = pdb_reassembly[i].last_activity;
+            oldest_idx = i;
+        }
+    }
+    
+    if (!slot) {
+        /* Evict oldest */
+        slot = &pdb_reassembly[oldest_idx];
+        free(slot->buffer);
+        slot->buffer = NULL;
+    }
+    
+    slot->buffer = calloc(1, file_size);
+    if (!slot->buffer) return;
+    
+    slot->server_ip = server_ip;
+    slot->client_ip = client_ip;
+    memcpy(slot->fh, fh, NFS_FHSIZE);
+    slot->file_size = file_size;
+    slot->received = 0;
+    slot->last_activity = time(NULL);
+    
+    log_message("[NFS-SNIFF] Started passive PDB capture from %s (%u bytes)",
+               ip_to_str(server_ip), file_size);
+}
+
+static void add_pdb_data(pdb_reassembly_t *r, uint32_t offset, const uint8_t *data, uint32_t len) {
+    if (offset + len > r->file_size) {
+        len = r->file_size - offset;  /* Clamp */
+    }
+    if (offset < r->file_size) {
+        memcpy(r->buffer + offset, data, len);
+        /* Simple tracking - mark high water mark */
+        if (offset + len > r->received) {
+            r->received = offset + len;
+        }
+        r->last_activity = time(NULL);
+    }
+}
+
+static void complete_pdb_reassembly(pdb_reassembly_t *r) {
+    log_message("[NFS-SNIFF] Passive PDB capture complete from %s (%u bytes)",
+               ip_to_str(r->server_ip), r->received);
+    
+    /* Parse the captured database */
+    parse_pdb_buffer(r->buffer, r->received, r->server_ip);
+    
+    /* Cleanup */
+    free(r->buffer);
+    r->buffer = NULL;
+}
+
 /* Skip AUTH credentials in RPC packet, return position after credentials+verifier */
 static size_t skip_rpc_auth(const uint8_t *data, size_t len, size_t pos) {
     if (pos + 8 > len) return len;
@@ -616,6 +761,9 @@ void parse_nfs_request(const uint8_t *data, size_t len,
         uint32_t offset = RPC_GET_U32((uint8_t *)&args->offset);
         uint32_t count = RPC_GET_U32((uint8_t *)&args->count);
         
+        /* Track this READ for passive PDB capture */
+        add_pending_read(xid, src_ip, dst_ip, args->fh, offset, count);
+        
         /* Look up what file this handle refers to */
         fh_cache_entry_t *fh_entry = find_fh_cache(args->fh, dst_ip);
         
@@ -671,18 +819,30 @@ void parse_nfs_response(const uint8_t *data, size_t len,
                            ip_to_str(src_ip), full_path);
             }
             
-            /* If this is export.pdb, we're seeing database access! */
+            /* If this is export.pdb, start passive capture */
             if (strstr(pending->name, "export.pdb") || 
                 strstr(pending->name, "EXPORT.PDB")) {
                 log_message("[NFS-SNIFF] Detected PDB access: %s requesting '%s' from %s",
                            ip_to_str(pending->client_ip), full_path, ip_to_str(src_ip));
+                
+                /* Get file size from fattr (follows file handle in response) */
+                pos += sizeof(uint32_t) + NFS_FHSIZE;  /* status + fh */
+                if (pos + sizeof(nfs_fattr_t) <= len) {
+                    nfs_fattr_t *fattr = (nfs_fattr_t *)(data + pos);
+                    uint32_t file_size = RPC_GET_U32((uint8_t *)&fattr->size);
+                    if (file_size > 0 && file_size < 50 * 1024 * 1024) {  /* Sanity: <50MB */
+                        start_pdb_reassembly(src_ip, pending->client_ip, reply->fh, file_size);
+                    }
+                }
             }
         }
         
         remove_pending_lookup(xid, src_ip);
     }
     else {
-        /* Could be a READ response - check if we have data */
+        /* Check if this is a READ response we're tracking */
+        pending_read_t *pread = find_pending_read(xid, src_ip);
+        
         size_t pos = sizeof(rpc_reply_header_t);
         
         if (pos + sizeof(nfs_read_reply_t) > len) return;
@@ -700,9 +860,27 @@ void parse_nfs_response(const uint8_t *data, size_t len,
             pos += 4;
             
             if (data_len > 0 && pos + data_len <= len) {
-                /* We have NFS READ data - scan for embedded metadata */
-                scan_nfs_data_for_metadata(data + pos, data_len, src_ip, dst_ip);
+                const uint8_t *read_data = data + pos;
+                
+                /* Check if this is for a PDB we're reassembling */
+                if (pread) {
+                    pdb_reassembly_t *r = find_pdb_reassembly(src_ip, pread->fh);
+                    if (r) {
+                        add_pdb_data(r, pread->offset, read_data, data_len);
+                        
+                        /* Check if complete */
+                        if (r->received >= r->file_size) {
+                            complete_pdb_reassembly(r);
+                        }
+                    }
+                    remove_pending_read(xid, src_ip);
+                }
+                
+                /* Legacy: scan for embedded metadata */
+                scan_nfs_data_for_metadata(read_data, data_len, src_ip, dst_ip);
             }
+        } else if (pread) {
+            remove_pending_read(xid, src_ip);
         }
     }
 }

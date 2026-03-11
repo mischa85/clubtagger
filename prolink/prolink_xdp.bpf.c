@@ -2,10 +2,13 @@
 /*
  * XDP BPF program for Pro DJ Link packet capture
  * 
- * Filters packets for Pro DJ Link protocol and related traffic:
+ * Filters packets for Pro DJ Link protocol:
  * - UDP 50000-50002: Pro DJ Link keepalive, status, beat sync
- * - UDP 2049: NFS (CDJ database access)
  * - TCP 1051: dbserver (CDJ metadata queries)
+ *
+ * NOTE: NFS traffic (port 2049) is deliberately NOT filtered here.
+ * The nfs_client.c uses kernel UDP sockets for active NFS requests.
+ * Redirecting NFS to AF_XDP would prevent kernel sockets from receiving responses.
  *
  * Designed for SPAN port capture where we observe CDJ-to-CDJ traffic.
  * All matching packets are redirected to AF_XDP socket for userspace processing.
@@ -26,9 +29,6 @@
 #define PROLINK_KEEPALIVE_PORT  50000
 #define PROLINK_STATUS_PORT     50001
 #define PROLINK_BEAT_PORT       50002
-
-/* NFS port (for passive eavesdropping on CDJ database access) */
-#define NFS_PORT                2049
 
 /* dbserver port (CDJ metadata query protocol) */
 #define DBSERVER_PORT           1051
@@ -53,9 +53,12 @@ static __always_inline int check_udp_ports(struct udphdr *udp)
         dport == PROLINK_BEAT_PORT)
         return 1;
     
-    /* NFS traffic (either direction) */
-    if (sport == NFS_PORT || dport == NFS_PORT)
-        return 1;
+    /* NOTE: NFS traffic is NOT redirected to AF_XDP.
+     * The nfs_client.c uses kernel UDP sockets for NFS requests.
+     * If we redirect NFS responses here, they never reach the kernel
+     * socket and nfs_rpc_call() times out.
+     * CDJs also use non-standard NFS ports (not 2049), discovered via portmapper.
+     */
     
     return 0;
 }

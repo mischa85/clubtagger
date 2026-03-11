@@ -286,8 +286,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             remove_pdb_database(dev->ip_addr, SLOT_SD);
         }
         
-        /* Proactively fetch databases when media is detected */
-        if (capture_interface && our_ip != 0 && dev->ip_addr != 0) {
+        /* Proactively fetch databases when media is detected.
+         * Must wait for registration to be ready (5 keepalives sent) or CDJ will refuse NFS. */
+        if (capture_interface && our_ip != 0 && dev->ip_addr != 0 &&
+            keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
             /* Fetch USB database if USB is present and not yet fetched */
             if (dev->usb_present && !dev->usb_db_fetched) {
                 log_message("📥 Device %d: Fetching USB database...", device_num);

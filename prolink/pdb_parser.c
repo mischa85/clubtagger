@@ -404,9 +404,11 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
  */
 
 /* Internal helper for NFS lookup with just dir_fh and output fh */
+static uint16_t g_nfs_port = 2049;  /* Cached NFS port from portmapper */
+
 static int nfs_lookup_simple(uint32_t server_ip, const uint8_t *dir_fh, 
                              const char *name, uint8_t *file_fh) {
-    return nfs_lookup(server_ip, NFS_PORT, dir_fh, name, file_fh);
+    return nfs_lookup(server_ip, g_nfs_port, dir_fh, name, file_fh);
 }
 
 int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *db) {
@@ -443,6 +445,15 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
         return -1;
     }
     
+    /* Query portmapper for NFS port (CDJs often use non-standard ports) */
+    int nfs_port = rpc_portmap_getport(device_ip, NFS_PROGRAM, NFS_VERSION);
+    if (nfs_port <= 0) {
+        log_message("⚠️ NFS port query failed, using default 2049");
+        nfs_port = 2049;
+    } else {
+        log_message("✅ NFS port: %d", nfs_port);
+    }
+    g_nfs_port = (uint16_t)nfs_port;
     log_message("✅ Mount port: %d", mount_port);
     
     /* Step 2: Mount the export */
@@ -492,7 +503,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     log_message("📖 Reading export.pdb...");
     
     size_t total_read = 0;
-    if (nfs_read_file(device_ip, NFS_PORT, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read) != 0) {
+    if (nfs_read_file(device_ip, g_nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read) != 0) {
         log_message("❌ Read error");
         nfs_close_socket();
         free(pdb_data);
@@ -518,4 +529,25 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     db->fetched_at = time(NULL);
     
     return 0;
+}
+
+/*
+ * Parse a PDB buffer captured passively from NFS traffic.
+ * Used when we observe another device fetching the database.
+ */
+void parse_pdb_buffer(const uint8_t *data, size_t len, uint32_t device_ip) {
+    /* Use slot 0xFF to indicate passively captured database */
+    pdb_database_t *db = find_pdb_database(device_ip, 0xFF);
+    if (!db) {
+        db = create_pdb_database(device_ip, 0xFF);
+    }
+    
+    if (parse_pdb_file(data, len, db) != 0) {
+        log_message("[NFS-SNIFF] Passive PDB parse found no tracks");
+    } else {
+        log_message("[NFS-SNIFF] ✅ Passively captured %d tracks from %s",
+                   db->track_count, ip_to_str(device_ip));
+    }
+    
+    db->fetched_at = time(NULL);
 }

@@ -208,13 +208,16 @@ static void *prolink_thread_afxdp(void *arg) {
         return NULL;
     }
 
-    /* Get xsks_map and update it with our socket */
+    /* Get xsks_map and update it with our socket for ALL queues.
+     * This ensures packets arriving on any RX queue (due to RSS hashing)
+     * get redirected to our single XSK socket. */
     struct bpf_map *xsks_map = bpf_object__find_map_by_name(obj, "prolink_xsks_map");
     if (xsks_map) {
         int xsks_map_fd = bpf_map__fd(xsks_map);
-        int key = 0;
         int xsk_fd = xsk_socket__fd(xsk.xsk);
-        bpf_map_update_elem(xsks_map_fd, &key, &xsk_fd, 0);
+        for (int key = 0; key < 64; key++) {
+            bpf_map_update_elem(xsks_map_fd, &key, &xsk_fd, 0);
+        }
     }
 
     prolink_xsk_populate_fill_ring(&umem);
@@ -224,6 +227,23 @@ static void *prolink_thread_afxdp(void *arg) {
     clear_track_cache();
     capture_interface = pt->interface;
     passive_only = 0;
+
+#ifdef HAVE_PCAP
+    /* Open secondary pcap handle for NFS observation.
+     * NFS traffic is XDP_PASS'd to the kernel, so pcap can see it.
+     * This enables passive NFS sniffing while using AF_XDP for Pro DJ Link. */
+    char errbuf[PCAP_ERRBUF_SIZE];
+    pcap_t *nfs_pcap = pcap_open_live(pt->interface, 1500, 1, 1, errbuf);
+    if (nfs_pcap) {
+        struct bpf_program nfs_fp;
+        if (pcap_compile(nfs_pcap, &nfs_fp, "udp port 2049", 1, PCAP_NETMASK_UNKNOWN) == 0) {
+            pcap_setfilter(nfs_pcap, &nfs_fp);
+            pcap_freecode(&nfs_fp);
+        }
+        pcap_setnonblock(nfs_pcap, 1, errbuf);
+        vlogmsg("cdj", "NFS observation enabled via pcap");
+    }
+#endif
 
     /* Send initial keepalives */
     for (int i = 0; i < 3; i++) {
@@ -287,7 +307,20 @@ keepalive_check:
             do_full_registration(pt->interface);
             last_ka = now;
         }
+
+#ifdef HAVE_PCAP
+        /* Process any NFS packets captured via pcap (passive observation) */
+        if (nfs_pcap) {
+            pcap_dispatch(nfs_pcap, 10, packet_handler, NULL);
+        }
+#endif
     }
+
+#ifdef HAVE_PCAP
+    if (nfs_pcap) {
+        pcap_close(nfs_pcap);
+    }
+#endif
 
     /* Cleanup */
     xsk_socket__delete(xsk.xsk);

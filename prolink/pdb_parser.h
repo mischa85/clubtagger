@@ -78,4 +78,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db);
 /* Fetch rekordbox database from CDJ via NFS */
 int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *db);
 
+/* Parse a passively captured PDB buffer (from NFS sniffing) */
+void parse_pdb_buffer(const uint8_t *data, size_t len, uint32_t device_ip);
+
 #endif /* PDB_PARSER_H */
