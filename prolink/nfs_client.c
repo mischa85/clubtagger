@@ -711,6 +711,9 @@ static size_t skip_rpc_auth(const uint8_t *data, size_t len, size_t pos) {
 
 void parse_nfs_request(const uint8_t *data, size_t len,
                        uint32_t src_ip, uint32_t dst_ip) {
+    /* Ignore our own NFS requests (we already know what we're doing) */
+    if (src_ip == our_ip) return;
+    
     /* Minimum size: RPC header (24) + some args */
     if (len < sizeof(rpc_call_header_t)) return;
     
@@ -776,6 +779,9 @@ void parse_nfs_request(const uint8_t *data, size_t len,
 
 void parse_nfs_response(const uint8_t *data, size_t len,
                         uint32_t src_ip, uint32_t dst_ip) {
+    /* Ignore responses to our own NFS requests */
+    if (dst_ip == our_ip) return;
+    
     /* Minimum size: RPC reply header (24) */
     if (len < sizeof(rpc_reply_header_t)) return;
     

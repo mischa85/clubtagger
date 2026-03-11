@@ -302,6 +302,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         logmsg("cdj", "✅ Device %d: USB database loaded (%d tracks)", 
                                device_num, db->track_count);
                         dev->usb_db_fetched = 1;
+                        /* Clear failed lookup to force re-lookup now that we have PDB */
+                        if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0') {
+                            dev->lookup_failed_id = 0;
+                        }
                     } else {
                         log_message("[FETCH] USB database fetch failed");
                         dev->usb_db_fetched = 1;  /* Don't retry */
@@ -317,6 +321,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         logmsg("cdj", "✅ Device %d: SD database loaded (%d tracks)", 
                                device_num, db->track_count);
                         dev->sd_db_fetched = 1;
+                        /* Clear failed lookup to force re-lookup now that we have PDB */
+                        if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0') {
+                            dev->lookup_failed_id = 0;
+                        }
                     } else {
                         log_message("[FETCH] SD database fetch failed");
                         dev->sd_db_fetched = 1;  /* Don't retry */
