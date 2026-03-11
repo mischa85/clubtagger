@@ -1,0 +1,41 @@
+# Clubtagger nginx configuration example
+# Copy to /etc/nginx/sites-available/clubtagger and symlink to sites-enabled
+
+upstream clubtagger {
+    server unix:/run/clubtagger.sock;
+}
+
+server {
+    listen 80;
+    server_name _;  # or your hostname
+    
+    # Static files (HTML, JS, CSS)
+    location / {
+        root /var/www/clubtagger;
+        index index.html;
+        try_files $uri $uri/ =404;
+    }
+    
+    # SSE proxy to clubtagger Unix socket
+    location /sse {
+        proxy_pass http://clubtagger;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        
+        # Disable buffering for SSE
+        proxy_buffering off;
+        proxy_cache off;
+        
+        # Long timeout for SSE connections
+        proxy_read_timeout 24h;
+        proxy_send_timeout 24h;
+        
+        # Prevent nginx from closing idle connections
+        keepalive_timeout 24h;
+    }
+    
+    # Optional: REST endpoint for track history (not implemented yet)
+    # location /tracks {
+    #     proxy_pass http://clubtagger;
+    # }
+}

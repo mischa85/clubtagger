@@ -21,6 +21,10 @@ dist/
 # core dumps
 core
 core.*
-test.db
+
+# databases
+*.db
+
+# audio captures (already above but ensure coverage)
 *.flac
 *.wav

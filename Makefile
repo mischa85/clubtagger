@@ -9,7 +9,35 @@
 #   CC=clang CFLAGS_EXTRA="-DUSE_SOMETHING" VIBRA_LIBS="-L/path -lvibra -lstdc++"
 
 APP      := clubtagger
-SRC      := clubtagger.c
+
+# Source files - modular architecture
+SRC      := main.c \
+            common.c \
+            audio/audio_buffer.c \
+            audio/audio_analysis.c \
+            audio/capture.c \
+            audio/capture_pcap.c \
+            audio/capture_alsa.c \
+            audio/capture_afxdp.c \
+            shazam/shazam.c \
+            shazam/id_thread.c \
+            writer/async_writer.c \
+            writer/writer_thread.c \
+            server/sse_server.c \
+            db/database.c
+
+# Pro DJ Link CDJ integration (optional, enabled with --prolink-interface)
+PROLINK_SRC := prolink/prolink_thread.c \
+               prolink/cdj_types.c \
+               prolink/prolink.c \
+               prolink/registration.c \
+               prolink/packet_handler.c \
+               prolink/dbserver.c \
+               prolink/nfs_client.c \
+               prolink/pdb_parser.c \
+               prolink/track_cache.c
+
+SRC      += $(PROLINK_SRC)
 OBJ      := $(SRC:.c=.o)
 
 PREFIX   ?= /usr/local
@@ -29,12 +57,17 @@ ifdef ALSA_LIBS
 endif
 CURL_CFLAGS  := $(shell pkg-config --cflags libcurl 2>/dev/null)
 CURL_LIBS    := $(shell pkg-config --libs libcurl 2>/dev/null)
+
+# pcap support (optional with AF_XDP, disable with DISABLE_PCAP=1)
+ifndef DISABLE_PCAP
 PCAP_CFLAGS  := $(shell pkg-config --cflags libpcap 2>/dev/null)
 PCAP_LIBS    := $(shell pkg-config --libs libpcap 2>/dev/null)
 ifeq ($(PCAP_LIBS),)
   PCAP_LIBS := -lpcap
 endif
 PCAP_CFLAGS += -DHAVE_PCAP
+endif
+
 SQLITE_CFLAGS := $(shell pkg-config --cflags sqlite3 2>/dev/null)
 SQLITE_LIBS   := $(shell pkg-config --libs sqlite3 2>/dev/null)
 ifeq ($(SQLITE_LIBS),)
@@ -90,15 +123,37 @@ $(APP): $(OBJ)
 	$(CC) $(OBJ) -o $@ $(LDFLAGS)
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) -I. -c $< -o $@
+
+# Subdirectory compilation rules
+audio/%.o: audio/%.c
+	$(CC) $(CFLAGS) -I. -c $< -o $@
+
+shazam/%.o: shazam/%.c
+	$(CC) $(CFLAGS) -I. -c $< -o $@
+
+writer/%.o: writer/%.c
+	$(CC) $(CFLAGS) -I. -c $< -o $@
+
+server/%.o: server/%.c
+	$(CC) $(CFLAGS) -I. -c $< -o $@
+
+db/%.o: db/%.c
+	$(CC) $(CFLAGS) -I. -c $< -o $@
+
+prolink/%.o: prolink/%.c
+	$(CC) $(CFLAGS) -I. -c $< -o $@
 
 # BPF program compilation (requires clang and libbpf headers)
 ifdef ENABLE_AF_XDP
-BPF_OBJ := slink_xdp.bpf.o
+BPF_OBJ := audio/slink_xdp.bpf.o prolink/prolink_xdp.bpf.o
 CLANG  ?= clang
 BPFTOOL ?= bpftool
 
-$(BPF_OBJ): slink_xdp.bpf.c
+audio/slink_xdp.bpf.o: audio/slink_xdp.bpf.c
+	$(CLANG) -O2 -g -target bpf -c $< -o $@
+
+prolink/prolink_xdp.bpf.o: prolink/prolink_xdp.bpf.c
 	$(CLANG) -O2 -g -target bpf -c $< -o $@
 
 bpf: $(BPF_OBJ)
@@ -111,10 +166,11 @@ install: $(APP)
 	install -m 0755 $(APP) "$(DESTDIR)$(BINDIR)/$(APP)"
 ifdef ENABLE_AF_XDP
 	install -d "$(DESTDIR)$(PREFIX)/share/clubtagger"
-	install -m 0644 $(BPF_OBJ) "$(DESTDIR)$(PREFIX)/share/clubtagger/$(BPF_OBJ)"
+	install -m 0644 audio/slink_xdp.bpf.o "$(DESTDIR)$(PREFIX)/share/clubtagger/"
+	install -m 0644 prolink/prolink_xdp.bpf.o "$(DESTDIR)$(PREFIX)/share/clubtagger/"
 endif
 
 clean:
-	$(RM) $(OBJ) $(APP) slink_xdp.bpf.o
+	$(RM) $(OBJ) $(APP) *.o audio/*.o shazam/*.o writer/*.o server/*.o db/*.o prolink/*.o
 
 .PHONY: all debug clean install bpf
