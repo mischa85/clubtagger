@@ -164,16 +164,18 @@ prolink/%.o: prolink/%.c
 	$(CC) $(CFLAGS) -I. -c $< -o $@
 
 # BPF program compilation (requires clang and libbpf headers)
+# BPF_CFLAGS can be used for cross-compilation (e.g., -nostdinc -isystem /path/to/sysroot/include)
 ifdef ENABLE_AF_XDP
 BPF_OBJ := audio/slink_xdp.bpf.o prolink/prolink_xdp.bpf.o
 CLANG  ?= clang
 BPFTOOL ?= bpftool
+BPF_CFLAGS ?=
 
 audio/slink_xdp.bpf.o: audio/slink_xdp.bpf.c
-	$(CLANG) -O2 -g -target bpf -c $< -o $@
+	$(CLANG) -O2 -g -target bpf $(BPF_CFLAGS) -c $< -o $@
 
 prolink/prolink_xdp.bpf.o: prolink/prolink_xdp.bpf.c
-	$(CLANG) -O2 -g -target bpf -c $< -o $@
+	$(CLANG) -O2 -g -target bpf $(BPF_CFLAGS) -c $< -o $@
 
 bpf: $(BPF_OBJ)
 

@@ -381,7 +381,7 @@ static void *prolink_thread_pcap(void *arg) {
  */
 
 static void *prolink_thread_main(void *arg) {
-    ProlinkThread *pt = (ProlinkThread *)arg;
+    ProlinkThread *pt __attribute__((unused)) = (ProlinkThread *)arg;
     void *result = NULL;
 
 #ifdef HAVE_AF_XDP
@@ -441,9 +441,11 @@ void prolink_shutdown(ProlinkThread *pt) {
     atomic_store(&pt->running, 0);
     
     /* Break pcap loop if running */
+#ifdef HAVE_PCAP
     if (pt->pcap_handle) {
         pcap_breakloop((pcap_t *)pt->pcap_handle);
     }
+#endif
     
     pthread_join(pt->thread, NULL);
     g_prolink = NULL;

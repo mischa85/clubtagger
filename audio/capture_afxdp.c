@@ -282,7 +282,7 @@ void *capture_afxdp(void *arg) {
 
         /* Refill fill queue with saved addresses - must not leak frames */
         uint32_t idx_fq = 0;
-        while (xsk_ring_prod__reserve(&umem.fq, rcvd, &idx_fq) != (int)rcvd) {
+        while (xsk_ring_prod__reserve(&umem.fq, rcvd, &idx_fq) != rcvd) {
             /* Fill ring full, kernel hasn't consumed yet - brief spin */
             if (!g_running) break;
         }

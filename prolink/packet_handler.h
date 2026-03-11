@@ -9,6 +9,7 @@
 #define PACKET_HANDLER_H
 
 #include <sys/types.h>
+#include <stdint.h>
 #include <sys/time.h>
 
 /*
