@@ -49,6 +49,9 @@ WARN     ?= -Wall -Wextra -Werror=return-type -Wno-missing-field-initializers
 OPT      ?= -O2 -pipe
 THREAD   ?= -pthread
 
+# Feature test macros - needed for BSD types (pcap) and GNU extensions (strcasestr)
+FEATURE_MACROS := -D_DEFAULT_SOURCE -D_GNU_SOURCE
+
 # Try to pick up system cflags/libs via pkg-config when available
 ALSA_CFLAGS  := $(shell pkg-config --cflags alsa 2>/dev/null)
 ALSA_LIBS    := $(shell pkg-config --libs alsa 2>/dev/null)
@@ -100,13 +103,29 @@ ifdef ENABLE_AF_XDP
   endif
 endif
 
-# Required libraries; vibra usually doesn't ship a pkg-config file
-# You can override VIBRA_LIBS from the environment if needed.
-VIBRA_LIBS  ?= -lvibra -lstdc++
+# Vibra library detection (no pkg-config, check if library exists)
+# Check common library paths for libvibra
+VIBRA_CHECK := $(shell $(CC) -lvibra -lstdc++ -o /dev/null -x c /dev/null 2>/dev/null && echo yes)
+ifdef VIBRA_CHECK
+  VIBRA_LIBS   := -lvibra -lstdc++
+  VIBRA_CFLAGS := -DHAVE_VIBRA
+else
+  # Try with explicit path
+  VIBRA_CHECK_USR := $(shell $(CC) -L/usr/local/lib -lvibra -lstdc++ -o /dev/null -x c /dev/null 2>/dev/null && echo yes)
+  ifdef VIBRA_CHECK_USR
+    VIBRA_LIBS   := -L/usr/local/lib -lvibra -lstdc++
+    VIBRA_CFLAGS := -DHAVE_VIBRA
+  else
+    $(warning libvibra not found, audio fingerprinting (--audio-tag) disabled)
+    VIBRA_LIBS   :=
+    VIBRA_CFLAGS :=
+  endif
+endif
+
 MATH_LIBS   ?= -lm
 
 # Build flags - use := to override any environment LDFLAGS
-CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS)
+CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(FEATURE_MACROS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS)
 LDFLAGS  := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib
 
 # Extra flags opt-in
@@ -115,7 +134,7 @@ LDFLAGS  += $(LDFLAGS_EXTRA)
 
 all: $(APP)
 
-debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(CFLAGS_EXTRA)
+debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(FEATURE_MACROS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(CFLAGS_EXTRA)
 debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
 debug: clean $(APP)
 
