@@ -168,7 +168,7 @@ typedef enum {
 
 const char *ip_to_str(uint32_t ip);
 const char *mac_to_str(const uint8_t *mac);
-const char *slot_name(uint8_t slot);
+const char *cdj_slot_name(uint8_t slot);
 const char *device_type_name(uint8_t type);
 
 /* Find device by device number */

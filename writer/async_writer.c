@@ -50,6 +50,8 @@ static void *asyncwr_thread_main(void *arg) {
 
         if (nframes > 0) {
             asyncwr_do_write(aw, data, nframes, from, to, start_time);
+            /* Track bytes written to disk */
+            atomic_fetch_add_explicit(&aw->bytes_on_disk, nframes * aw->frame_bytes, memory_order_relaxed);
         }
 
         pthread_mutex_lock(&aw->mu);
@@ -77,6 +79,7 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     aw->bytes_per_sample = bytes_per_sample;
     aw->capacity = capacity_frames;
     atomic_init(&aw->total_written, 0);
+    atomic_init(&aw->bytes_on_disk, 0);
 
     aw->data = (uint8_t *)malloc(capacity_frames * aw->frame_bytes);
     if (!aw->data) return -1;

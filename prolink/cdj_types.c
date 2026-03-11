@@ -51,7 +51,7 @@ const char *mac_to_str(const uint8_t *mac) {
     return buf[idx];
 }
 
-const char *slot_name(uint8_t slot) {
+const char *cdj_slot_name(uint8_t slot) {
     switch (slot) {
         case SLOT_UNKNOWN:  return "----";
         case SLOT_CD:       return "CD";

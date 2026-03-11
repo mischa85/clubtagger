@@ -361,7 +361,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         
         if (verbose) {
             log_message("[STATUS] Parsed CDJ%d: rekordbox_id=%u track_num=%u slot=%s",
-                       device_num, dev->rekordbox_id, dev->track_number, slot_name(dev->track_slot));
+                       device_num, dev->rekordbox_id, dev->track_number, cdj_slot_name(dev->track_slot));
         }
         
         dev->playing = (pkt->play_state == PLAY_STATE_PLAYING || 
@@ -416,7 +416,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             /* Only log on track change to avoid spam during retry attempts */
             if (verbose && track_changed) {
                 log_message("[LOOKUP] CDJ %d: Looking up rekordbox_id=%u (track_id=%d, slot=%s)",
-                           device_num, dev->rekordbox_id, dev->track_id, slot_name(dev->track_slot));
+                           device_num, dev->rekordbox_id, dev->track_id, cdj_slot_name(dev->track_slot));
             }
             
             int found = 0;
@@ -496,7 +496,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         
         if (verbose > 1) {
             log_message("[STATUS] CDJ #%d: track=%d slot=%s type=%d playing=%d bpm=%.2f",
-                       device_num, dev->track_id, slot_name(dev->track_slot),
+                       device_num, dev->track_id, cdj_slot_name(dev->track_slot),
                        dev->track_type, dev->playing, dev->bpm_raw / 100.0f);
         }
     }
@@ -617,7 +617,7 @@ int try_resolve_track_name(cdj_device_t *dev) {
                 query_slot = dev->track_slot;  /* Use track_slot which has the actual media type */
                 query_target = dev->track_source_player;  /* DMST target = source player */
                 log_message("[DBSERVER] Link track: src_player=%d src_slot=%s src_ip=%s",
-                           dev->track_source_player, slot_name(query_slot), ip_to_str(query_ip));
+                           dev->track_source_player, cdj_slot_name(query_slot), ip_to_str(query_ip));
             } else {
                 /* Source device not discovered yet - rate-limit retries */
                 last_query_time = now;  /* Prevent retry flood */
@@ -633,7 +633,7 @@ int try_resolve_track_name(cdj_device_t *dev) {
         last_query_id = dev->rekordbox_id;
         
         log_message("[DBSERVER] Query for slot=%s id=%u (target=%d)",
-                   slot_name(query_slot), dev->rekordbox_id, query_target);
+                   cdj_slot_name(query_slot), dev->rekordbox_id, query_target);
         
         /* Strategy 1: Try with detected track type first */
         int result = dbserver_query_metadata(query_ip, 0, query_target,
@@ -708,7 +708,7 @@ int try_resolve_track_name(cdj_device_t *dev) {
     else if (dev->track_slot > 0) {
         /* No rekordbox_id available */
         log_message("[DBSERVER] Skip query - rekordbox_id=%u slot=%s", 
-                   dev->rekordbox_id, slot_name(dev->track_slot));
+                   dev->rekordbox_id, cdj_slot_name(dev->track_slot));
     }
     return 0;
 }
@@ -724,8 +724,8 @@ void check_media_change(cdj_device_t *dev) {
     
     if (dev->track_slot != dev->last_slot && dev->last_slot != 0) {
         log_message("[MEDIA] Device %d changed from %s to %s",
-                   dev->device_num, slot_name(dev->last_slot), 
-                   slot_name(dev->track_slot));
+                   dev->device_num, cdj_slot_name(dev->last_slot), 
+                   cdj_slot_name(dev->track_slot));
         
         dev->db_fetched = 0;
         dev->track_title[0] = '\0';

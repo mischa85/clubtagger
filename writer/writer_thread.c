@@ -119,6 +119,7 @@ void *writer_main(void *arg) {
 
                 recording = true;
                 below_cnt = 0;
+                atomic_store_explicit(&app->is_recording, 1, memory_order_relaxed);
 
                 logmsg("wrt", "TRIGGER avg=%u (prebuffer %.1f sec, cursor=%zu)",
                        avg, (double)prebuffer_frames / cfg->rate, write_cursor);
@@ -170,6 +171,7 @@ void *writer_main(void *arg) {
                 }
                 recording = false;
                 below_cnt = 0;
+                atomic_store_explicit(&app->is_recording, 0, memory_order_relaxed);
                 app->current_wav[0] = '\0';
                 logmsg("wrt", "STOP (silence)");
             }

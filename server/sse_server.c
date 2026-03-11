@@ -10,12 +10,21 @@
 #include <fcntl.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <mach/mach.h>
+#include <sys/sysctl.h>
+#else
+#include <sys/sysinfo.h>
+#endif
 
 /* Number of recent tracks to send when a client connects */
 #define SSE_INITIAL_TRACKS 5
@@ -164,14 +173,53 @@ void *sse_main(void *arg) {
         /* Build VU message with audio stats */
         uint16_t vu_l = atomic_load_explicit(&app->vu_left, memory_order_relaxed);
         uint16_t vu_r = atomic_load_explicit(&app->vu_right, memory_order_relaxed);
-        uint32_t rms = atomic_load_explicit(&app->audio_rms, memory_order_relaxed);
         uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
-        uint64_t frames = atomic_load_explicit(&app->audio_frames, memory_order_relaxed);
-        char vu_msg[192];
+        uint64_t frames = atomic_load_explicit(&app->aw.total_written, memory_order_relaxed);
+        uint64_t disk_bytes = atomic_load_explicit(&app->aw.bytes_on_disk, memory_order_relaxed);
+        int is_rec = atomic_load_explicit(&app->is_recording, memory_order_relaxed);
+        
+        /* Get system load average */
+        double loadavg[1] = {0};
+        getloadavg(loadavg, 1);
+        
+        /* Get memory stats */
+        uint64_t mem_used = 0, mem_total = 0;
+#ifdef __APPLE__
+        struct task_basic_info info;
+        mach_msg_type_number_t count = TASK_BASIC_INFO_COUNT;
+        if (task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) {
+            mem_used = info.resident_size;
+        }
+        int mib[2] = {CTL_HW, HW_MEMSIZE};
+        size_t len = sizeof(mem_total);
+        sysctl(mib, 2, &mem_total, &len, NULL, 0);
+#else
+        struct sysinfo si;
+        if (sysinfo(&si) == 0) {
+            mem_total = si.totalram * si.mem_unit;
+            mem_used = (si.totalram - si.freeram) * si.mem_unit;
+        }
+#endif
+        
+        /* Get disk space */
+        uint64_t disk_free = 0, disk_total = 0;
+        const char *outdir = app->cfg.outdir ? app->cfg.outdir : ".";
+        struct statvfs svfs;
+        if (statvfs(outdir, &svfs) == 0) {
+            disk_free = (uint64_t)svfs.f_bavail * svfs.f_frsize;
+            disk_total = (uint64_t)svfs.f_blocks * svfs.f_frsize;
+        }
+        
+        char vu_msg[512];
         int vu_len = snprintf(vu_msg, sizeof(vu_msg), 
-            "data: {\"l\":%u,\"r\":%u,\"rms\":%u,\"lost\":%llu,\"frames\":%llu,\"rate\":%u,\"ch\":%u,\"rec\":%d}\n\n", 
-            vu_l, vu_r, rms, (unsigned long long)lost, (unsigned long long)frames,
-            app->cfg.rate, app->cfg.channels, app->cfg.enable_record);
+            "data: {\"l\":%u,\"r\":%u,\"lost\":%llu,\"frames\":%llu,\"rate\":%u,\"ch\":%u,"
+            "\"rec\":%d,\"load\":%.2f,\"written\":%llu,\"mem\":%llu,\"memtot\":%llu,"
+            "\"diskfree\":%llu,\"disktot\":%llu}\n\n", 
+            vu_l, vu_r, (unsigned long long)lost, (unsigned long long)frames,
+            app->cfg.rate, app->cfg.channels, is_rec, loadavg[0],
+            (unsigned long long)disk_bytes, (unsigned long long)mem_used,
+            (unsigned long long)mem_total, (unsigned long long)disk_free,
+            (unsigned long long)disk_total);
 
         /* Check for track change */
         uint32_t track_seq = atomic_load_explicit(&app->track_seq, memory_order_acquire);

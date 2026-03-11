@@ -158,6 +158,9 @@ typedef struct {
     const char     *prefix;
     const char     *format;
     
+    /* Stats */
+    _Atomic uint64_t bytes_on_disk;  /* total audio bytes written to disk */
+    
     /* Threading */
     pthread_mutex_t mu;
     pthread_cond_t  cv;
@@ -205,10 +208,12 @@ typedef struct {
     char last_source[16];          /* protected by db_mu: "audio", "cdj", or "both" */
     int last_confidence;           /* protected by db_mu: confidence of last match */
     char last_isrc[64];            /* protected by db_mu: ISRC code if available */
+    int last_deck;                 /* protected by db_mu: CDJ deck number (0 if none) */
     /* Audio statistics (for web UI nerd info) */
     _Atomic uint32_t audio_rms;    /* current RMS level */
     _Atomic uint64_t audio_lost;   /* total lost samples (sequence discontinuities) */
     _Atomic uint64_t audio_frames; /* total frames captured */
+    _Atomic int is_recording;      /* 1 if actively writing to file */
 } App;
 
 #endif /* CLUBTAGGER_TYPES_H */

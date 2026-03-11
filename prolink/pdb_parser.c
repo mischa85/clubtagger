@@ -430,7 +430,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     }
     
     log_message("📥 Fetching database from %s (slot %s, export %s)...", 
-                ip_to_str(device_ip), slot_name(slot), export_path);
+                ip_to_str(device_ip), cdj_slot_name(slot), export_path);
     
     db->fetch_in_progress = 1;
     

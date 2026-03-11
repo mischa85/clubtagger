@@ -127,7 +127,9 @@
             statLost.textContent = data.lost || 0;
             statLost.className = 'stat-value' + (data.lost > 0 ? ' warn' : ' ok');
         }
-        // CPU would come from backend - placeholder for now
+        if (statCpu && data.load !== undefined) {
+            statCpu.textContent = data.load.toFixed(2);
+        }
     }
     
     // Update now playing
@@ -190,11 +192,12 @@
             const slotName = SLOTS[d.slot] || '';
             const bpmText = d.bpm > 0 ? `<span class="deck-bpm">${d.bpm} BPM</span>` : '';
             const slotText = slotName ? ` · ${slotName}` : '';
+            const deckLabel = (d.name || 'CDJ') + ' (' + d.n + ')';
             
             return `
                 <div class="${classes.join(' ')}">
                     <div class="deck-header">
-                        <span class="deck-num">${d.name || 'CDJ ' + d.n}</span>
+                        <span class="deck-num">${deckLabel}</span>
                         <div class="deck-status">
                             ${d.playing ? '<span class="deck-badge playing">▶ Playing</span>' : '<span class="deck-badge paused">❚❚ Paused</span>'}
                             ${d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : ''}
