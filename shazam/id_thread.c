@@ -99,7 +99,7 @@ void *id_main(void *arg) {
                 const char *uri = vibra_get_uri_from_fingerprint(fp);
                 unsigned sample_ms = vibra_get_sample_ms_from_fingerprint(fp);
                 char url[512];
-                char body[2048];
+                char body[32768];  /* Fingerprint URI can be ~13KB */
                 char json[65536];
                 build_shazam_request(uri, sample_ms, cfg->timezone, url, body, sizeof(body));
                 const char *ua = cfg->user_agent ? cfg->user_agent : "Dalvik/2.1.0 (Linux; U; Android 5.0.2; VS980 4G Build/LRX22G)";
