@@ -15,6 +15,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#ifdef HAVE_VIBRA
 /* External vibra library functions */
 typedef struct Fingerprint Fingerprint;
 extern Fingerprint *vibra_get_fingerprint_from_signed_pcm(const char *raw_pcm, int pcm_data_size,
@@ -23,11 +24,22 @@ extern Fingerprint *vibra_get_fingerprint_from_signed_pcm(const char *raw_pcm, i
 extern const char *vibra_get_uri_from_fingerprint(Fingerprint *fingerprint);
 extern unsigned int vibra_get_sample_ms_from_fingerprint(Fingerprint *fingerprint);
 extern void vibra_free_fingerprint(Fingerprint *fingerprint);
+#endif /* HAVE_VIBRA */
 
 void *id_main(void *arg) {
     App *app = (App *)arg;
     Config *cfg = &app->cfg;
 
+#ifndef HAVE_VIBRA
+    /* libvibra not available - audio fingerprinting disabled */
+    logmsg("id", "WARNING: libvibra not available, audio fingerprinting disabled");
+    logmsg("id", "Use --cdj-tag for CDJ-only track identification");
+    while (g_running) {
+        struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+#else
     const size_t look_frames = app->id_buf_frames;
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
     uint8_t *window = app->id_buf;
@@ -277,4 +289,5 @@ void *id_main(void *arg) {
 
     logmsg("id", "exit");
     return NULL;
+#endif /* HAVE_VIBRA */
 }
