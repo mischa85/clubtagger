@@ -46,6 +46,8 @@ typedef enum {
     SHAZAM_MATCHED,        /* Track confirmed and logged */
     SHAZAM_THROTTLED,      /* Waiting between API calls */
     SHAZAM_DISABLED,       /* libvibra not available */
+    SHAZAM_NO_MATCH,       /* Shazam returned no suggestions */
+    SHAZAM_ERROR,          /* Shazam API error */
 } shazam_state_t;
 
 typedef struct TrackID {

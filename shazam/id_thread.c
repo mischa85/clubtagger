@@ -256,7 +256,8 @@ void *id_main(void *arg) {
                             }
                         }
                     } else {
-                        vlogmsg("id", "no track in response");
+                        logmsg("id", "no track in response");
+                        int cdj_handled = 0;
                         /* Try CDJ fallback when fingerprint fails */
                         if (app->prolink) {
                             char cdj_title[256] = {0}, cdj_artist[256] = {0};
@@ -265,6 +266,7 @@ void *id_main(void *arg) {
                                                           cdj_title, sizeof(cdj_title),
                                                           cdj_artist, sizeof(cdj_artist),
                                                           &cdj_deck) == 0 && cdj_title[0]) {
+                                cdj_handled = 1;
                                 /* Use CDJ info as fallback */
                                 TrackID cdj_match = {0};
                                 cdj_match.valid = 1;
@@ -320,9 +322,14 @@ void *id_main(void *arg) {
                                 }
                             }
                         }
+                        /* Show NO_MATCH briefly if neither Shazam nor CDJ found anything */
+                        if (!cdj_handled) {
+                            atomic_store_explicit(&app->shazam_state, SHAZAM_NO_MATCH, memory_order_release);
+                        }
                     }
                 } else {
                     logmsg("id", "recognize: empty");
+                    int cdj_handled = 0;
                     /* Try CDJ fallback when Shazam API fails */
                     if (app->prolink) {
                         char cdj_title[256] = {0}, cdj_artist[256] = {0};
@@ -331,6 +338,7 @@ void *id_main(void *arg) {
                                                       cdj_title, sizeof(cdj_title),
                                                       cdj_artist, sizeof(cdj_artist),
                                                       &cdj_deck) == 0 && cdj_title[0]) {
+                            cdj_handled = 1;
                             TrackID cdj_match = {0};
                             cdj_match.valid = 1;
                             snprintf(cdj_match.artist, sizeof(cdj_match.artist), "%s", cdj_artist);
@@ -381,14 +389,22 @@ void *id_main(void *arg) {
                             }
                         }
                     }
+                    /* Show ERROR briefly if neither Shazam nor CDJ found anything */
+                    if (!cdj_handled) {
+                        atomic_store_explicit(&app->shazam_state, SHAZAM_ERROR, memory_order_release);
+                    }
                 }
                 vibra_free_fingerprint(fp);
             }
         }
     sleep_loop:
-        /* Back to listening state (unless we're still confirming a candidate) */
-        if (atomic_load_explicit(&app->shazam_state, memory_order_relaxed) != SHAZAM_CONFIRMING) {
-            atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
+        /* Back to listening state (unless we're still confirming, matched, no_match, or error) */
+        {
+            int cur_state = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
+            if (cur_state != SHAZAM_CONFIRMING && cur_state != SHAZAM_MATCHED &&
+                cur_state != SHAZAM_NO_MATCH && cur_state != SHAZAM_ERROR) {
+                atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
+            }
         }
 
         for (unsigned s = 0; s < cfg->identify_interval_sec && g_running; ++s) {

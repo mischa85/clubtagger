@@ -19,10 +19,12 @@
     // Stats elements
     const statFormat = document.getElementById('stat-format');
     const statRuntime = document.getElementById('stat-runtime');
-    const statFrames = document.getElementById('stat-frames');
-    const statRecording = document.getElementById('stat-recording');
     const statLost = document.getElementById('stat-lost');
-    const statCpu = document.getElementById('stat-cpu');
+    const statLoad = document.getElementById('stat-load');
+    const statMem = document.getElementById('stat-mem');
+    const statDisk = document.getElementById('stat-disk');
+    const statWritten = document.getElementById('stat-written');
+    const recStatus = document.getElementById('rec-status');
     
     // Shazam state names
     const SHAZAM_STATES = {
@@ -33,7 +35,9 @@
         4: { text: 'Confirming...', class: 'confirming' },
         5: { text: 'Matched!', class: 'matched' },
         6: { text: 'Waiting...', class: 'throttled' },
-        7: { text: 'Disabled', class: 'disabled' }
+        7: { text: 'Disabled', class: 'disabled' },
+        8: { text: 'No Match', class: 'no-match' },
+        9: { text: 'Error', class: 'error' }
     };
     
     // Slot names
@@ -103,6 +107,14 @@
         return h + 'h ' + m + 'm';
     }
     
+    // Format bytes to human readable
+    function formatBytes(bytes) {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+        if (bytes < 1073741824) return (bytes / 1048576).toFixed(1) + ' MB';
+        return (bytes / 1073741824).toFixed(2) + ' GB';
+    }
+    
     // Update audio stats display
     function updateAudioStats(data) {
         if (statFormat && data.rate) {
@@ -111,24 +123,33 @@
         if (statRuntime && data.frames && data.rate) {
             statRuntime.textContent = formatRuntime(Math.floor(data.frames/data.rate));
         }
-        if (statFrames && data.frames) {
-            statFrames.textContent = data.frames.toLocaleString();
-        }
-        if (statRecording) {
+        if (recStatus) {
             if (data.rec) {
-                statRecording.textContent = '● REC';
-                statRecording.className = 'stat-value recording';
+                recStatus.textContent = '● REC';
+                recStatus.className = 'rec-status recording';
             } else {
-                statRecording.textContent = 'Standby';
-                statRecording.className = 'stat-value';
+                recStatus.textContent = 'Standby';
+                recStatus.className = 'rec-status standby';
             }
         }
         if (statLost) {
             statLost.textContent = data.lost || 0;
-            statLost.className = 'stat-value' + (data.lost > 0 ? ' warn' : ' ok');
+            statLost.className = 'value' + (data.lost > 0 ? ' warn' : ' ok');
         }
-        if (statCpu && data.load !== undefined) {
-            statCpu.textContent = data.load.toFixed(2);
+        if (statLoad && data.load !== undefined) {
+            statLoad.textContent = data.load.toFixed(2);
+        }
+        if (statMem && data.mem !== undefined && data.memtot !== undefined) {
+            const pct = ((data.mem / data.memtot) * 100).toFixed(0);
+            statMem.textContent = formatBytes(data.mem) + ' (' + pct + '%)';
+        }
+        if (statDisk && data.diskfree !== undefined && data.disktot !== undefined) {
+            const pct = ((data.diskfree / data.disktot) * 100).toFixed(0);
+            statDisk.textContent = formatBytes(data.diskfree) + ' free';
+            statDisk.className = 'value' + (pct < 10 ? ' warn' : '');
+        }
+        if (statWritten && data.written !== undefined) {
+            statWritten.textContent = formatBytes(data.written);
         }
     }
     
