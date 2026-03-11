@@ -62,7 +62,9 @@ endif
 CURL_CFLAGS  := $(shell pkg-config --cflags libcurl 2>/dev/null)
 CURL_LIBS    := $(shell pkg-config --libs libcurl 2>/dev/null)
 
-# pcap support (optional with AF_XDP, disable with DISABLE_PCAP=1)
+# pcap support - mutually exclusive with AF_XDP due to header conflicts
+# AF_XDP uses raw sockets for NFS observation instead
+ifndef ENABLE_AF_XDP
 ifndef DISABLE_PCAP
 PCAP_CFLAGS  := $(shell pkg-config --cflags libpcap 2>/dev/null)
 PCAP_LIBS    := $(shell pkg-config --libs libpcap 2>/dev/null)
@@ -70,6 +72,7 @@ ifeq ($(PCAP_LIBS),)
   PCAP_LIBS := -lpcap
 endif
 PCAP_CFLAGS += -DHAVE_PCAP
+endif
 endif
 
 SQLITE_CFLAGS := $(shell pkg-config --cflags sqlite3 2>/dev/null)
