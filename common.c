@@ -105,12 +105,95 @@ int same_track(const TrackID *a, const TrackID *b) {
     return strcmp(aa, bb) == 0;
 }
 
-/* Normalize for fuzzy matching: lowercase, keep only alphanumeric + space */
+/* Transliterate common UTF-8 diacritical characters to ASCII equivalents */
+static int utf8_to_ascii(const unsigned char *src, size_t *consumed) {
+    unsigned char c1 = src[0];
+    
+    /* ASCII passthrough */
+    if (c1 < 0x80) {
+        *consumed = 1;
+        return c1;
+    }
+    
+    /* 2-byte UTF-8 sequences (Latin Extended characters) */
+    if ((c1 & 0xE0) == 0xC0 && src[1]) {
+        unsigned char c2 = src[1];
+        *consumed = 2;
+        
+        /* C3 8x-9x range: À-ß */
+        if (c1 == 0xC3) {
+            /* À Á Â Ã Ä Å → a */
+            if (c2 >= 0x80 && c2 <= 0x85) return 'a';
+            if (c2 == 0x86) return 'a'; /* Æ → a (or could be "ae") */
+            if (c2 == 0x87) return 'c'; /* Ç → c */
+            /* È É Ê Ë → e */
+            if (c2 >= 0x88 && c2 <= 0x8B) return 'e';
+            /* Ì Í Î Ï → i */
+            if (c2 >= 0x8C && c2 <= 0x8F) return 'i';
+            if (c2 == 0x90) return 'd'; /* Ð → d */
+            if (c2 == 0x91) return 'n'; /* Ñ → n */
+            /* Ò Ó Ô Õ Ö → o */
+            if (c2 >= 0x92 && c2 <= 0x96) return 'o';
+            if (c2 == 0x98) return 'o'; /* Ø → o */
+            /* Ù Ú Û Ü → u */
+            if (c2 >= 0x99 && c2 <= 0x9C) return 'u';
+            if (c2 == 0x9D) return 'y'; /* Ý → y */
+            if (c2 == 0x9F) return 's'; /* ß → s */
+            /* à á â ã ä å → a */
+            if (c2 >= 0xA0 && c2 <= 0xA5) return 'a';
+            if (c2 == 0xA6) return 'a'; /* æ → a */
+            if (c2 == 0xA7) return 'c'; /* ç → c */
+            /* è é ê ë → e */
+            if (c2 >= 0xA8 && c2 <= 0xAB) return 'e';
+            /* ì í î ï → i */
+            if (c2 >= 0xAC && c2 <= 0xAF) return 'i';
+            if (c2 == 0xB0) return 'd'; /* ð → d */
+            if (c2 == 0xB1) return 'n'; /* ñ → n */
+            /* ò ó ô õ ö → o */
+            if (c2 >= 0xB2 && c2 <= 0xB6) return 'o';
+            if (c2 == 0xB8) return 'o'; /* ø → o */
+            /* ù ú û ü → u */
+            if (c2 >= 0xB9 && c2 <= 0xBC) return 'u';
+            if (c2 == 0xBD) return 'y'; /* ý → y */
+            if (c2 == 0xBF) return 'y'; /* ÿ → y */
+        }
+        /* Skip unknown 2-byte sequences */
+        return -1;
+    }
+    
+    /* 3-byte UTF-8 sequences */
+    if ((c1 & 0xF0) == 0xE0 && src[1] && src[2]) {
+        *consumed = 3;
+        return -1; /* Skip 3-byte chars (CJK, etc.) */
+    }
+    
+    /* 4-byte UTF-8 sequences */
+    if ((c1 & 0xF8) == 0xF0 && src[1] && src[2] && src[3]) {
+        *consumed = 4;
+        return -1; /* Skip 4-byte chars (emoji, etc.) */
+    }
+    
+    /* Invalid UTF-8, skip byte */
+    *consumed = 1;
+    return -1;
+}
+
+/* Normalize for fuzzy matching: transliterate UTF-8, lowercase, keep alphanumeric + space */
 static void normalize_for_match(const char *src, char *dst, size_t dst_sz) {
     size_t j = 0;
-    for (size_t i = 0; src[i] && j < dst_sz - 1; i++) {
-        unsigned char c = (unsigned char)src[i];
+    const unsigned char *p = (const unsigned char *)src;
+    
+    while (*p && j < dst_sz - 1) {
+        size_t consumed = 1;
+        int c = utf8_to_ascii(p, &consumed);
+        p += consumed;
+        
+        if (c < 0) continue; /* Skip unmapped characters */
+        
+        /* Lowercase */
         if (c >= 'A' && c <= 'Z') c = c - 'A' + 'a';
+        
+        /* Keep only alphanumeric and space */
         if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == ' ') {
             dst[j++] = (char)c;
         }
