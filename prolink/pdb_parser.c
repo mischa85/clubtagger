@@ -118,6 +118,48 @@ TrackID *lookup_pdb_track(uint32_t rekordbox_id) {
  * ============================================================================
  */
 
+/* Forward declaration */
+static int parse_devicesql_string(const uint8_t *data, size_t data_len, size_t offset,
+                                   char *out, size_t out_len);
+
+/* Parse DeviceSQL ISRC string (special format with 0x03 prefix)
+ * ISRC strings are marked with kind 0x90 but contain ASCII data:
+ * [0x90][length_lo][length_hi][pad][0x03][ASCII data...][0x00]
+ */
+static int parse_isrc_string(const uint8_t *data, size_t data_len, size_t offset,
+                              char *out, size_t out_len) {
+    if (offset >= data_len || out_len == 0) return -1;
+    
+    const uint8_t *str_ptr = data + offset;
+    uint8_t flags = str_ptr[0];
+    
+    /* ISRC should be a long string with 0x90 flag */
+    if (flags & PDB_STRING_FLAG_SHORT) return -1;
+    if (offset + 5 > data_len) return -1;
+    
+    uint16_t field_len = str_ptr[1] | (str_ptr[2] << 8);
+    if (field_len < 6) return -1;  /* Need at least header + 0x03 + 1 char + null */
+    
+    /* Skip: flags(1) + length(2) + pad(1) + 0x03(1) */
+    size_t str_start = offset + 5;
+    size_t str_len = field_len - 6;  /* Subtract header and trailing null */
+    
+    if (str_start + str_len + 1 > data_len) return -1;
+    
+    /* Check for 0x03 prefix byte */
+    if (str_ptr[4] != 0x03) {
+        /* Fall back to normal parsing if no 0x03 prefix */
+        return parse_devicesql_string(data, data_len, offset, out, out_len);
+    }
+    
+    /* Copy ASCII ISRC (standard format: 12 characters like NLCK42225004) */
+    size_t copy_len = (str_len < out_len - 1) ? str_len : out_len - 1;
+    memcpy(out, data + str_start, copy_len);
+    out[copy_len] = '\0';
+    
+    return (out[0] != '\0') ? 0 : -1;
+}
+
 /* Parse DeviceSQL string at given offset */
 static int parse_devicesql_string(const uint8_t *data, size_t data_len, size_t offset, 
                                    char *out, size_t out_len) {
@@ -373,15 +415,24 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
                                 track->artist, sizeof(track->artist));
             }
             
+            /* Read ISRC from string_offsets[PDB_STR_ISRC] (index 0) */
+            uint16_t isrc_offset = row->string_offsets[PDB_STR_ISRC];
+            if (isrc_offset > 0 && isrc_offset < 500) {
+                parse_isrc_string(data, len, pos + isrc_offset, 
+                                 track->isrc, sizeof(track->isrc));
+                track->has_isrc = (track->isrc[0] != '\0');
+            }
+            
             if (track->title[0] == '\0') {
                 snprintf(track->title, sizeof(track->title), "Track %u", row->id);
             }
             
             track->valid = (track->title[0] != '\0' || track->artist[0] != '\0');
             
-            log_message("[PDB] Parsed track ID=%u: \"%s\" by \"%s\" (%d BPM)", 
+            log_message("[PDB] Parsed track ID=%u: \"%s\" by \"%s\" (%d BPM)%s%s", 
                        track->rekordbox_id, track->title, 
-                       track->artist[0] ? track->artist : "(unknown)", track->bpm);
+                       track->artist[0] ? track->artist : "(unknown)", track->bpm,
+                       track->has_isrc ? " ISRC=" : "", track->has_isrc ? track->isrc : "");
             
             db->track_count++;
             pos += sizeof(pdb_track_row_t);

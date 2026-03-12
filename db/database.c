@@ -93,12 +93,12 @@ void db_insert_play(App *app, const char *timestamp, const char *artist,
 
 int db_get_recent_tracks(App *app, int max_tracks,
                          char timestamps[][32], char artists[][256], char titles[][256],
-                         char sources[][16], int confidences[]) {
+                         char sources[][16], int confidences[], char isrcs[][64]) {
     if (!app->db) return 0;
 
     pthread_mutex_lock(&app->db_mu);
 
-    const char *sql = "SELECT timestamp, artist, title, source, confidence FROM plays "
+    const char *sql = "SELECT timestamp, artist, title, source, confidence, isrc FROM plays "
                       "ORDER BY id DESC LIMIT ?";
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL);
@@ -117,12 +117,14 @@ int db_get_recent_tracks(App *app, int max_tracks,
         const char *ttl = (const char *)sqlite3_column_text(stmt, 2);
         const char *src = (const char *)sqlite3_column_text(stmt, 3);
         int conf = sqlite3_column_int(stmt, 4);
+        const char *isrc = (const char *)sqlite3_column_text(stmt, 5);
 
         snprintf(timestamps[count], 32, "%s", ts ? ts : "");
         snprintf(artists[count], 256, "%s", art ? art : "");
         snprintf(titles[count], 256, "%s", ttl ? ttl : "");
         snprintf(sources[count], 16, "%s", src ? src : "audio");
         confidences[count] = conf;
+        snprintf(isrcs[count], 64, "%s", isrc ? isrc : "");
         count++;
     }
 

@@ -95,6 +95,7 @@ typedef struct {
     /* Track metadata */
     char     track_title[128];
     char     track_artist[128];
+    char     track_isrc[64];    /* ISRC from PDB (if available) */
     uint32_t lookup_failed_id;  /* rekordbox_id of last failed lookup (prevent retry spam) */
     
     /* Database fetch tracking */

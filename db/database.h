@@ -23,6 +23,6 @@ void db_insert_play(App *app, const char *timestamp, const char *artist,
  * Arrays must be pre-allocated with at least max_tracks elements */
 int db_get_recent_tracks(App *app, int max_tracks,
                          char timestamps[][32], char artists[][256], char titles[][256],
-                         char sources[][16], int confidences[]);
+                         char sources[][16], int confidences[], char isrcs[][64]);
 
 #endif /* CLUBTAGGER_DATABASE_H */

@@ -410,6 +410,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         if (track_changed) {
             dev->track_title[0] = '\0';
             dev->track_artist[0] = '\0';
+            dev->track_isrc[0] = '\0';
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
             dev->logged_rekordbox_id = 0;  /* Allow new track to be logged */
             dev->play_started = dev->playing ? time(NULL) : 0;  /* Reset play timer on track change */
@@ -441,6 +442,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     if (tc->artist[0]) {
                         utf8_safe_copy(dev->track_artist, tc->artist, sizeof(dev->track_artist));
                     }
+                    if (tc->isrc[0]) {
+                        utf8_safe_copy(dev->track_isrc, tc->isrc, sizeof(dev->track_isrc));
+                    }
                     found = 1;
                 } else {
                     /* Try PDB database by rekordbox_id */
@@ -448,6 +452,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     
                     if (pdb && pdb->title[0]) {
                         utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
+                        if (pdb->has_isrc && pdb->isrc[0]) {
+                            utf8_safe_copy(dev->track_isrc, pdb->isrc, sizeof(dev->track_isrc));
+                        }
                         if (pdb->artist[0]) {
                             utf8_safe_copy(dev->track_artist, pdb->artist, sizeof(dev->track_artist));
                             found = 1;  /* Only consider "found" if we have artist too */
@@ -738,6 +745,7 @@ void check_media_change(cdj_device_t *dev) {
         dev->db_fetched = 0;
         dev->track_title[0] = '\0';
         dev->track_artist[0] = '\0';
+        dev->track_isrc[0] = '\0';
     }
     
     dev->last_slot = dev->track_slot;

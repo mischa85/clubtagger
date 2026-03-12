@@ -192,15 +192,21 @@ void *id_main(void *arg) {
 
                                 if (pending_confirms >= 3) {
                                     /* Check CDJ for confirmation boost */
-                                    char cdj_title[256] = {0}, cdj_artist[256] = {0};
+                                    char cdj_title[256] = {0}, cdj_artist[256] = {0}, cdj_isrc[64] = {0};
                                     int cdj_deck = 0;
                                     const char *source = "audio";
                                     int final_confidence = pending_confidence;
                                     if (app->prolink && prolink_get_playing_track(app->prolink, 
                                                                                    cdj_title, sizeof(cdj_title),
                                                                                    cdj_artist, sizeof(cdj_artist),
+                                                                                   cdj_isrc, sizeof(cdj_isrc),
                                                                                    &cdj_deck) == 0) {
-                                        if (prolink_matches_fingerprint(cdj_title, cdj_artist, title, artist)) {
+                                        /* ISRC match is definitive - no fuzzy matching needed */
+                                        if (prolink_isrc_matches(cdj_isrc, isrc)) {
+                                            source = "both";
+                                            final_confidence = 100;  /* ISRC match = 100% confidence */
+                                            vlogmsg("id", "ISRC match! CDJ=%s Shazam=%s (+100%%)", cdj_isrc, isrc);
+                                        } else if (prolink_matches_fingerprint(cdj_title, cdj_artist, title, artist)) {
                                             source = "both";
                                             final_confidence += CDJ_BONUS;
                                             if (final_confidence > 100) final_confidence = 100;
@@ -268,11 +274,12 @@ void *id_main(void *arg) {
                                 
                                 /* Check if we should fall back to CDJ after many unconfirmed attempts */
                                 if (app->prolink && shazam_attempts >= 5) {
-                                    char cdj_title[256] = {0}, cdj_artist[256] = {0};
+                                    char cdj_title[256] = {0}, cdj_artist[256] = {0}, cdj_isrc[64] = {0};
                                     int cdj_deck = 0;
                                     if (prolink_get_playing_track(app->prolink,
                                                                   cdj_title, sizeof(cdj_title),
                                                                   cdj_artist, sizeof(cdj_artist),
+                                                                  cdj_isrc, sizeof(cdj_isrc),
                                                                   &cdj_deck) == 0 && cdj_title[0]) {
                                         /* CDJ has a track - use it instead of unreliable Shazam */
                                         vlogmsg("id", "Shazam unreliable after %d attempts, using CDJ: %s — %s", shazam_attempts, cdj_artist, cdj_title);
@@ -302,11 +309,12 @@ void *id_main(void *arg) {
                         int cdj_handled = 0;
                         /* Try CDJ fallback after several Shazam attempts fail */
                         if (app->prolink && shazam_attempts >= 5) {
-                            char cdj_title[256] = {0}, cdj_artist[256] = {0};
+                            char cdj_title[256] = {0}, cdj_artist[256] = {0}, cdj_isrc[64] = {0};
                             int cdj_deck = 0;
                             if (prolink_get_playing_track(app->prolink,
                                                           cdj_title, sizeof(cdj_title),
                                                           cdj_artist, sizeof(cdj_artist),
+                                                          cdj_isrc, sizeof(cdj_isrc),
                                                           &cdj_deck) == 0 && cdj_title[0]) {
                                 cdj_handled = 1;
                                 /* Use CDJ info as fallback */
@@ -314,6 +322,10 @@ void *id_main(void *arg) {
                                 cdj_match.valid = 1;
                                 snprintf(cdj_match.artist, sizeof(cdj_match.artist), "%s", cdj_artist);
                                 snprintf(cdj_match.title, sizeof(cdj_match.title), "%s", cdj_title);
+                                if (cdj_isrc[0]) {
+                                    snprintf(cdj_match.isrc, sizeof(cdj_match.isrc), "%s", cdj_isrc);
+                                    cdj_match.has_isrc = 1;
+                                }
                                 
                                 if (!current.valid || !same_track(&cdj_match, &current)) {
                                     /* New track from CDJ */
@@ -326,13 +338,13 @@ void *id_main(void *arg) {
                                             char tsbuf[64];
                                             now_timestamp(tsbuf, sizeof(tsbuf));
                                             logmsg("id", "%s MATCH: %s — %s (%d%%, cdj)", tsbuf, cdj_artist, cdj_title, CDJ_ONLY_CONFIDENCE);
-                                            db_insert_play(app, tsbuf, cdj_artist, cdj_title, "", CDJ_ONLY_CONFIDENCE, "cdj");
+                                            db_insert_play(app, tsbuf, cdj_artist, cdj_title, cdj_isrc, CDJ_ONLY_CONFIDENCE, "cdj");
                                             pthread_mutex_lock(&app->db_mu);
                                             snprintf(app->last_artist, sizeof(app->last_artist), "%s", cdj_artist);
                                             snprintf(app->last_title, sizeof(app->last_title), "%s", cdj_title);
                                             snprintf(app->last_source, sizeof(app->last_source), "cdj");
+                                            snprintf(app->last_isrc, sizeof(app->last_isrc), "%s", cdj_isrc);
                                             app->last_confidence = CDJ_ONLY_CONFIDENCE;
-                                            app->last_isrc[0] = '\0';
                                             app->shazam_candidate[0] = '\0';
                                             app->shazam_confirms = 0;
                                             pthread_mutex_unlock(&app->db_mu);
@@ -379,17 +391,22 @@ void *id_main(void *arg) {
                     int cdj_handled = 0;
                     /* Try CDJ fallback after several Shazam attempts fail */
                     if (app->prolink && shazam_attempts >= 5) {
-                        char cdj_title[256] = {0}, cdj_artist[256] = {0};
+                        char cdj_title[256] = {0}, cdj_artist[256] = {0}, cdj_isrc[64] = {0};
                         int cdj_deck = 0;
                         if (prolink_get_playing_track(app->prolink,
                                                       cdj_title, sizeof(cdj_title),
                                                       cdj_artist, sizeof(cdj_artist),
+                                                      cdj_isrc, sizeof(cdj_isrc),
                                                       &cdj_deck) == 0 && cdj_title[0]) {
                             cdj_handled = 1;
                             TrackID cdj_match = {0};
                             cdj_match.valid = 1;
                             snprintf(cdj_match.artist, sizeof(cdj_match.artist), "%s", cdj_artist);
                             snprintf(cdj_match.title, sizeof(cdj_match.title), "%s", cdj_title);
+                            if (cdj_isrc[0]) {
+                                snprintf(cdj_match.isrc, sizeof(cdj_match.isrc), "%s", cdj_isrc);
+                                cdj_match.has_isrc = 1;
+                            }
                             
                             if (!current.valid || !same_track(&cdj_match, &current)) {
                                 if (pending.valid && same_track(&cdj_match, &pending)) {
@@ -401,13 +418,13 @@ void *id_main(void *arg) {
                                         char tsbuf[64];
                                         now_timestamp(tsbuf, sizeof(tsbuf));
                                         logmsg("id", "%s MATCH: %s — %s (%d%%, cdj)", tsbuf, cdj_artist, cdj_title, CDJ_ONLY_CONFIDENCE);
-                                        db_insert_play(app, tsbuf, cdj_artist, cdj_title, "", CDJ_ONLY_CONFIDENCE, "cdj");
+                                        db_insert_play(app, tsbuf, cdj_artist, cdj_title, cdj_isrc, CDJ_ONLY_CONFIDENCE, "cdj");
                                         pthread_mutex_lock(&app->db_mu);
                                         snprintf(app->last_artist, sizeof(app->last_artist), "%s", cdj_artist);
                                         snprintf(app->last_title, sizeof(app->last_title), "%s", cdj_title);
                                         snprintf(app->last_source, sizeof(app->last_source), "cdj");
+                                        snprintf(app->last_isrc, sizeof(app->last_isrc), "%s", cdj_isrc);
                                         app->last_confidence = CDJ_ONLY_CONFIDENCE;
-                                        app->last_isrc[0] = '\0';
                                         app->shazam_candidate[0] = '\0';
                                         app->shazam_confirms = 0;
                                         pthread_mutex_unlock(&app->db_mu);

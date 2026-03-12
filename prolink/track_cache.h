@@ -29,6 +29,7 @@ typedef struct {
     uint32_t track_num;
     char     title[128];
     char     artist[128];
+    char     isrc[64];
     char     filename[128];
     uint32_t src_ip;          /* IP that owns this track */
     time_t   last_seen;

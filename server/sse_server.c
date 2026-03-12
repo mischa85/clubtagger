@@ -131,19 +131,21 @@ void *sse_main(void *arg) {
                 char titles[SSE_INITIAL_TRACKS][256];
                 char sources[SSE_INITIAL_TRACKS][16];
                 int confidences[SSE_INITIAL_TRACKS];
-                int count = db_get_recent_tracks(app, SSE_INITIAL_TRACKS, timestamps, artists, titles, sources, confidences);
+                char isrcs[SSE_INITIAL_TRACKS][64];
+                int count = db_get_recent_tracks(app, SSE_INITIAL_TRACKS, timestamps, artists, titles, sources, confidences, isrcs);
 
                 if (count > 0) {
                     char history_msg[4096];
                     int history_len = snprintf(history_msg, sizeof(history_msg), "event: history\ndata: [");
                     for (int t = 0; t < count; t++) {
-                        char esc_artist[512], esc_title[512];
+                        char esc_artist[512], esc_title[512], esc_isrc[128];
                         json_escape(artists[t], esc_artist, sizeof(esc_artist));
                         json_escape(titles[t], esc_title, sizeof(esc_title));
+                        json_escape(isrcs[t], esc_isrc, sizeof(esc_isrc));
                         if (t > 0) history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, ",");
                         history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len,
-                            "{\"ts\":\"%s\",\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d}",
-                            timestamps[t], esc_artist, esc_title, sources[t], confidences[t]);
+                            "{\"ts\":\"%s\",\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d,\"isrc\":\"%s\"}",
+                            timestamps[t], esc_artist, esc_title, sources[t], confidences[t], esc_isrc);
                     }
                     history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, "]\n\n");
                     send(clients[i], history_msg, history_len, MSG_NOSIGNAL);
@@ -276,18 +278,19 @@ void *sse_main(void *arg) {
                 if (dev->device_type != DEVICE_TYPE_CDJ) continue;
                 if (now - dev->last_seen > 10) continue;  /* Stale */
                 
-                char escaped_title[256], escaped_artist[256], escaped_name[64];
+                char escaped_title[256], escaped_artist[256], escaped_name[64], escaped_isrc[128];
                 json_escape(dev->track_title, escaped_title, sizeof(escaped_title));
                 json_escape(dev->track_artist, escaped_artist, sizeof(escaped_artist));
                 json_escape(dev->name, escaped_name, sizeof(escaped_name));
+                json_escape(dev->track_isrc, escaped_isrc, sizeof(escaped_isrc));
                 
                 if (!first) deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, ",");
                 first = 0;
                 deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len,
                     "{\"n\":%d,\"name\":\"%s\",\"playing\":%d,\"on_air\":%d,"
-                    "\"title\":\"%s\",\"artist\":\"%s\",\"bpm\":%d,\"slot\":%d}",
+                    "\"title\":\"%s\",\"artist\":\"%s\",\"bpm\":%d,\"slot\":%d,\"isrc\":\"%s\"}",
                     dev->device_num, escaped_name, dev->playing ? 1 : 0, dev->on_air ? 1 : 0,
-                    escaped_title, escaped_artist, dev->bpm_raw / 100, dev->track_slot);
+                    escaped_title, escaped_artist, dev->bpm_raw / 100, dev->track_slot, escaped_isrc);
             }
             deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, "]\n\n");
             

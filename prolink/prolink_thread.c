@@ -471,6 +471,7 @@ void prolink_shutdown(ProlinkThread *pt) {
 int prolink_get_playing_track(ProlinkThread *pt,
                                char *title, size_t title_sz,
                                char *artist, size_t artist_sz,
+                               char *isrc, size_t isrc_sz,
                                int *deck_num) {
     if (!pt || !atomic_load(&pt->running)) return -1;
     
@@ -487,12 +488,46 @@ int prolink_get_playing_track(ProlinkThread *pt,
         if (dev->track_title[0]) {
             if (title) utf8_safe_copy(title, dev->track_title, title_sz);
             if (artist) utf8_safe_copy(artist, dev->track_artist, artist_sz);
+            if (isrc) utf8_safe_copy(isrc, dev->track_isrc, isrc_sz);
             if (deck_num) *deck_num = dev->device_num;
             return 0;
         }
     }
     
     return -1;  /* No playing track found */
+}
+
+/* ISRC match - the ultimate comparison when both sides have it */
+int prolink_isrc_matches(const char *cdj_isrc, const char *fp_isrc) {
+    /* Both must have ISRC */
+    if (!cdj_isrc || !fp_isrc) return 0;
+    if (cdj_isrc[0] == '\0' || fp_isrc[0] == '\0') return 0;
+    
+    /* ISRC format: 12 alphanumeric chars (e.g. USRC12345678)
+     * May have hyphens in some formats - compare alphanumeric only */
+    char cdj_norm[16] = {0}, fp_norm[16] = {0};
+    int ci = 0, fi = 0;
+    
+    for (const char *p = cdj_isrc; *p && ci < 12; p++) {
+        if ((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')) {
+            cdj_norm[ci++] = *p;
+        } else if (*p >= 'a' && *p <= 'z') {
+            cdj_norm[ci++] = *p - 32;  /* Uppercase */
+        }
+    }
+    
+    for (const char *p = fp_isrc; *p && fi < 12; p++) {
+        if ((*p >= 'A' && *p <= 'Z') || (*p >= '0' && *p <= '9')) {
+            fp_norm[fi++] = *p;
+        } else if (*p >= 'a' && *p <= 'z') {
+            fp_norm[fi++] = *p - 32;  /* Uppercase */
+        }
+    }
+    
+    /* Must have full 12-char ISRCs to compare */
+    if (ci != 12 || fi != 12) return 0;
+    
+    return memcmp(cdj_norm, fp_norm, 12) == 0;
 }
 
 /*

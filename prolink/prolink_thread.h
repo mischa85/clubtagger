@@ -80,7 +80,12 @@ void prolink_shutdown(ProlinkThread *pt);
 int prolink_get_playing_track(ProlinkThread *pt, 
                                char *title, size_t title_sz,
                                char *artist, size_t artist_sz,
+                               char *isrc, size_t isrc_sz,
                                int *deck_num);
+
+/* Check if ISRCs match between CDJ and fingerprint
+ * Returns 1 if both ISRCs exist and match, 0 otherwise */
+int prolink_isrc_matches(const char *cdj_isrc, const char *fp_isrc);
 
 /* Check if a CDJ track matches fingerprint result (fuzzy match)
  * Returns 1 if match, 0 if no match */

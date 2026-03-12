@@ -219,6 +219,7 @@
             const bpmText = d.bpm > 0 ? `<span class="deck-bpm">${d.bpm} BPM</span>` : '';
             const slotText = slotName ? ` · ${slotName}` : '';
             const deckLabel = (d.name || 'CDJ') + ' (' + d.n + ')';
+            const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
             
             return `
                 <div class="${classes.join(' ')}">
@@ -233,7 +234,7 @@
                         <div class="deck-artist">${escapeHtml(d.artist) || '—'}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}</div>
                     </div>
-                    <div class="deck-meta">${bpmText}${slotText}</div>
+                    <div class="deck-meta">${bpmText}${slotText}${isrcText ? ' · ' + isrcText : ''}</div>
                 </div>
             `;
         }).join('');
