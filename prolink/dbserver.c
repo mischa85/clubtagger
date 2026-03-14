@@ -172,9 +172,13 @@ int dbserver_connect(uint32_t server_ip) {
     if (capture_interface) {
         if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface, 
                        strlen(capture_interface) + 1) < 0) {
-            log_message("[DBSERVER] SO_BINDTODEVICE failed: %s", strerror(errno));
+            log_message("[DBSERVER] SO_BINDTODEVICE(%s) failed: %s", capture_interface, strerror(errno));
             /* Continue anyway - might work without it */
+        } else {
+            if (verbose) log_message("[DBSERVER] Bound to interface %s", capture_interface);
         }
+    } else {
+        log_message("[DBSERVER] Warning: capture_interface not set");
     }
     
     /* Bind to our Pro DJ Link IP */
@@ -218,7 +222,8 @@ int dbserver_connect(uint32_t server_ip) {
     int error = 0;
     socklen_t len = sizeof(error);
     if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len) != 0 || error != 0) {
-        if (verbose) log_message("[DBSERVER] Connect error to %s", ip_to_str(server_ip));
+        log_message("[DBSERVER] Connect error to %s: %s (errno=%d)", 
+                    ip_to_str(server_ip), strerror(error), error);
         close(sock);
         return -1;
     }
