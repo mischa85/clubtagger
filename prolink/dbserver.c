@@ -20,6 +20,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 
 /*
  * ============================================================================
@@ -29,6 +30,7 @@
 
 static uint32_t db_txid = 1;
 extern uint32_t our_ip;  /* From registration module */
+extern const char *capture_interface;  /* From registration module */
 
 /*
  * ============================================================================
@@ -165,6 +167,15 @@ int dbserver_connect(uint32_t server_ip) {
     if (sock < 0) return -1;
     
     log_message("[DBSERVER] our_ip=0x%08x (%s)", our_ip, ip_to_str(our_ip));
+    
+    /* Bind to our Pro DJ Link interface for link-local routing */
+    if (capture_interface) {
+        if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface, 
+                       strlen(capture_interface) + 1) < 0) {
+            log_message("[DBSERVER] SO_BINDTODEVICE failed: %s", strerror(errno));
+            /* Continue anyway - might work without it */
+        }
+    }
     
     /* Bind to our Pro DJ Link IP */
     struct sockaddr_in bind_addr;

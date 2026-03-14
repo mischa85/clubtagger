@@ -19,6 +19,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 
 /*
  * ============================================================================
@@ -29,6 +30,7 @@
 static int nfs_sock = -1;
 static uint32_t nfs_xid = 0x12345678;
 extern uint32_t our_ip;  /* From registration module */
+extern const char *capture_interface;  /* From registration module */
 extern int verbose;      /* From main */
 
 /*
@@ -44,6 +46,15 @@ void nfs_init_socket(void) {
     if (nfs_sock < 0) {
         log_message("[NFS] Failed to create socket");
         return;
+    }
+    
+    /* Bind to interface for link-local routing */
+    if (capture_interface) {
+        if (setsockopt(nfs_sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface,
+                       strlen(capture_interface) + 1) < 0) {
+            log_message("[NFS] SO_BINDTODEVICE failed: %s", strerror(errno));
+            /* Continue anyway */
+        }
     }
     
     /* Bind to our Pro DJ Link IP with ephemeral port */
