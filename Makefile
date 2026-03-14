@@ -127,8 +127,13 @@ endif
 
 MATH_LIBS   ?= -lm
 
+# Git commit hash for version tracking
+GIT_COMMIT := $(shell git rev-parse --short=8 HEAD 2>/dev/null || echo "unknown")
+GIT_DIRTY  := $(shell git diff --quiet 2>/dev/null || echo "-dirty")
+VERSION_FLAGS := -DGIT_COMMIT='"$(GIT_COMMIT)$(GIT_DIRTY)"'
+
 # Build flags - use := to override any environment LDFLAGS
-CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(FEATURE_MACROS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS)
+CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS)
 LDFLAGS  := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib
 
 # Extra flags opt-in
@@ -137,7 +142,7 @@ LDFLAGS  += $(LDFLAGS_EXTRA)
 
 all: $(APP)
 
-debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(FEATURE_MACROS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(CFLAGS_EXTRA)
+debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(CFLAGS_EXTRA)
 debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
 debug: clean $(APP)
 

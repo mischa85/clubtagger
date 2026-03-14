@@ -471,7 +471,12 @@ int main(int argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    /* Log mode information */
+    /* Log version and mode information */
+#ifdef GIT_COMMIT
+    logmsg("main", "clubtagger %s", GIT_COMMIT);
+#else
+    logmsg("main", "clubtagger (unknown version)");
+#endif
     logmsg("main", "mode: record=%s audio-tag=%s cdj-tag=%s",
            cfg.enable_record ? "on" : "off",
            cfg.enable_audio_tag ? "on" : "off",
