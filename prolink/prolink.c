@@ -71,13 +71,19 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
             strncpy(dev->name, name, sizeof(dev->name) - 1);
             dev->ip_addr = src_ip;
             
-            /* Device type from packet, also auto-detect from name */
-            if (device_type == PROLINK_DEVICE_CDJ || strstr(name, "CDJ") != NULL) {
+            /* Device type from packet, also auto-detect from name.
+             * NXS-GW is a gateway device broadcast by CDJ-3000X, not a real CDJ */
+            if (strstr(name, "NXS-GW") != NULL || strstr(name, "-GW") != NULL) {
+                dev->device_type = DEVICE_TYPE_UNKNOWN;  /* Filter out gateway devices */
+            } else if (device_type == PROLINK_DEVICE_CDJ || strstr(name, "CDJ") != NULL) {
                 dev->device_type = DEVICE_TYPE_CDJ;
             } else if (device_type == PROLINK_DEVICE_DJM || strstr(name, "DJM") != NULL) {
                 dev->device_type = DEVICE_TYPE_DJM;
             } else if (device_type == PROLINK_DEVICE_REKORDBOX || strstr(name, "rekordbox") != NULL) {
                 dev->device_type = DEVICE_TYPE_REKORDBOX;
+            } else if (device_num > 16) {
+                /* High device numbers without CDJ/DJM in name are likely auxiliary devices */
+                dev->device_type = DEVICE_TYPE_UNKNOWN;
             } else {
                 dev->device_type = DEVICE_TYPE_CDJ;
             }

@@ -198,10 +198,9 @@ void *id_main(void *arg) {
                             last_good_match = time(NULL);
                             vlogmsg("id", "still playing: %s — %s", artist, title);
                         }
-                        /* KEY SIMPLIFICATION: If Shazam matches CDJ, accept immediately */
+                        /* RULE 1: If Shazam matches CDJ, accept immediately with high confidence */
                         else if (have_cdj && (prolink_isrc_matches(cdj_isrc, isrc) ||
                                               prolink_matches_fingerprint(cdj_title, cdj_artist, title, artist))) {
-                            /* ISRC match = 100%, otherwise use skew confidence + CDJ bonus */
                             int confidence = prolink_isrc_matches(cdj_isrc, isrc) ? 100 : (shazam_confidence + 10 > 100 ? 100 : shazam_confidence + 10);
                             vlogmsg("id", "Shazam+CDJ agree: %s — %s (%d%%)", artist, title, confidence);
                             current = match;
@@ -211,7 +210,13 @@ void *id_main(void *arg) {
                             pending_confirms = 0;
                             shazam_fails = 0;
                         }
-                        /* Same as pending? Confirm it */
+                        /* RULE 2: CDJ has track but Shazam disagrees → ALWAYS trust CDJ */
+                        else if (have_cdj && cdj_title[0]) {
+                            vlogmsg("id", "Shazam (%s — %s) disagrees with CDJ (%s — %s), using CDJ",
+                                   artist, title, cdj_artist, cdj_title);
+                            goto try_cdj_fallback;
+                        }
+                        /* RULE 3: No CDJ track - Shazam only needs 2 confirms */
                         else if (pending.valid && same_track(&match, &pending)) {
                             pending_confirms++;
                             vlogmsg("id", "confirming: %s — %s (%d/2)", artist, title, pending_confirms);
@@ -231,7 +236,7 @@ void *id_main(void *arg) {
                                 pending_confirms = 0;
                             }
                         }
-                        /* New candidate */
+                        /* New candidate (no CDJ track) */
                         else {
                             pending = match;
                             pending_confirms = 1;

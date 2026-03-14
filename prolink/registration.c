@@ -33,7 +33,7 @@ int databases_pending = 0;
 int keepalives_sent_active = 0;
 
 /* Observation period before claiming a slot (seconds) */
-#define OBSERVATION_PERIOD_SEC 3
+#define OBSERVATION_PERIOD_SEC 10
 
 /* Configuration */
 int passive_only = 0;
