@@ -95,6 +95,12 @@ void *id_main(void *arg) {
     TrackID pending = {0};   /* Candidate awaiting confirmation */
     int pending_confirms = 0;
     int shazam_fails = 0;    /* Consecutive Shazam failures */
+    
+    /* CDJ track change detection */
+    char last_cdj_title[256] = {0};
+    char last_cdj_artist[256] = {0};
+    time_t cdj_track_stable_since = 0;  /* When current CDJ track started */
+    #define CDJ_STABLE_THRESHOLD_SEC 30  /* Accept CDJ track after 30s stable playback */
 
     /* Initial state: listening for audio */
     atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
@@ -116,6 +122,59 @@ void *id_main(void *arg) {
 
         unsigned r = rms_s16_interleaved(window_s16, got, cfg->channels);
         vlogmsg("id", "peek=%zu frames, rms=%u (threshold=%u)", got, r, cfg->threshold);
+
+        /* 
+         * CDJ track change detection - check if CDJ has a different track
+         * that's been stable for a while, regardless of Shazam state
+         */
+        {
+            char cdj_title[256] = {0}, cdj_artist[256] = {0}, cdj_isrc[64] = {0};
+            int cdj_deck = 0;
+            time_t now = time(NULL);
+            
+            if (get_cdj_track(app, cdj_title, sizeof(cdj_title),
+                              cdj_artist, sizeof(cdj_artist),
+                              cdj_isrc, sizeof(cdj_isrc), &cdj_deck) == 0 && cdj_title[0]) {
+                
+                /* Did the CDJ track change? */
+                if (strcmp(cdj_title, last_cdj_title) != 0 || 
+                    strcmp(cdj_artist, last_cdj_artist) != 0) {
+                    /* Track changed - reset stable timer */
+                    strncpy(last_cdj_title, cdj_title, sizeof(last_cdj_title) - 1);
+                    strncpy(last_cdj_artist, cdj_artist, sizeof(last_cdj_artist) - 1);
+                    cdj_track_stable_since = now;
+                    vlogmsg("id", "CDJ track changed to: %s — %s", cdj_artist, cdj_title);
+                }
+                
+                /* If CDJ track is stable AND different from current displayed track,
+                 * update after threshold time */
+                if (cdj_track_stable_since > 0 && 
+                    (now - cdj_track_stable_since) >= CDJ_STABLE_THRESHOLD_SEC) {
+                    
+                    /* Check if this is different from what we're currently showing */
+                    int is_different = !current.valid ||
+                                      (strcmp(cdj_title, current.title) != 0 &&
+                                       strcmp(cdj_artist, current.artist) != 0);
+                    
+                    if (is_different) {
+                        logmsg("id", "CDJ track stable for %ds, updating: %s — %s",
+                               CDJ_STABLE_THRESHOLD_SEC, cdj_artist, cdj_title);
+                        
+                        current.valid = 1;
+                        snprintf(current.artist, sizeof(current.artist), "%s", cdj_artist);
+                        snprintf(current.title, sizeof(current.title), "%s", cdj_title);
+                        snprintf(current.isrc, sizeof(current.isrc), "%s", cdj_isrc);
+                        current.has_isrc = cdj_isrc[0] != 0;
+                        
+                        last_good_match = now;
+                        record_match(app, cdj_artist, cdj_title, cdj_isrc, 75, "cdj/stable");
+                        pending.valid = 0;
+                        pending_confirms = 0;
+                        shazam_fails = 0;
+                    }
+                }
+            }
+        }
 
         /* Use same threshold as writer for "is there music" detection */
         if (got > 0 && r >= cfg->threshold && got >= (size_t)(cfg->rate * cfg->fingerprint_sec * 3 / 4)) {
