@@ -475,23 +475,65 @@ int prolink_get_playing_track(ProlinkThread *pt,
                                int *deck_num) {
     if (!pt || !atomic_load(&pt->running)) return -1;
     
-    /* Find first playing CDJ */
     time_t now = time(NULL);
+    cdj_device_t *on_air_dev = NULL;
+    cdj_device_t *longest_playing_dev = NULL;
+    time_t longest_play_duration = 0;
+    int playing_count = 0;
+    
+    /* Find best candidate: on-air deck, or deck with longest continuous playback */
     for (int i = 0; i < MAX_DEVICES; i++) {
         cdj_device_t *dev = &devices[i];
         if (!dev->active) continue;
         if (dev->device_type != DEVICE_TYPE_CDJ) continue;
         if (now - dev->last_seen > 10) continue;  /* Stale device */
         if (!dev->playing) continue;
+        if (dev->track_title[0] == '\0') continue;  /* No metadata */
         
-        /* Found a playing deck */
-        if (dev->track_title[0]) {
-            if (title) utf8_safe_copy(title, dev->track_title, title_sz);
-            if (artist) utf8_safe_copy(artist, dev->track_artist, artist_sz);
-            if (isrc) utf8_safe_copy(isrc, dev->track_isrc, isrc_sz);
-            if (deck_num) *deck_num = dev->device_num;
-            return 0;
+        playing_count++;
+        
+        /* Track on-air deck */
+        if (dev->on_air && !on_air_dev) {
+            on_air_dev = dev;
         }
+        
+        /* Track longest continuous playback */
+        if (dev->play_started > 0) {
+            time_t duration = now - dev->play_started;
+            if (duration > longest_play_duration) {
+                longest_play_duration = duration;
+                longest_playing_dev = dev;
+            }
+        }
+    }
+    
+    /* Decision logic:
+     * 1. If only one deck is playing → that's definitely the live track
+     * 2. If one deck has been playing 30+ seconds uninterrupted → likely live
+     * 3. Otherwise, prefer on-air deck if available
+     */
+    cdj_device_t *best = NULL;
+    
+    if (playing_count == 1 && longest_playing_dev) {
+        /* Only one deck playing - obvious choice */
+        best = longest_playing_dev;
+    } else if (longest_play_duration >= 30 && longest_playing_dev) {
+        /* One deck has been playing 30+ seconds - likely the main track */
+        best = longest_playing_dev;
+    } else if (on_air_dev) {
+        /* Fall back to on-air signal */
+        best = on_air_dev;
+    } else {
+        /* Last resort: longest playing deck */
+        best = longest_playing_dev;
+    }
+    
+    if (best) {
+        if (title) utf8_safe_copy(title, best->track_title, title_sz);
+        if (artist) utf8_safe_copy(artist, best->track_artist, artist_sz);
+        if (isrc) utf8_safe_copy(isrc, best->track_isrc, isrc_sz);
+        if (deck_num) *deck_num = best->device_num;
+        return 0;
     }
     
     return -1;  /* No playing track found */
