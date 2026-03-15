@@ -391,7 +391,10 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
                 continue;
             }
             
-            if (db->track_count >= MAX_PDB_TRACKS) break;
+            if (db->track_count >= MAX_PDB_TRACKS) {
+                log_message("[PDB] Warning: reached max tracks (%d), some tracks may be missing", MAX_PDB_TRACKS);
+                break;
+            }
             
             /* Add track */
             TrackID *track = &db->tracks[db->track_count];
