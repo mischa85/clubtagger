@@ -25,6 +25,7 @@ typedef struct sqlite3 sqlite3;
 
 typedef struct {
     sqlite3  *db;           /* Decrypted SQLite handle (in-memory) */
+    uint8_t  *data;         /* Deserialized buffer (we free, not SQLite) */
     uint32_t  device_ip;    /* CDJ IP that served this database */
     uint8_t   slot;         /* Media slot (2=SD, 3=USB) */
     int       track_count;  /* Number of tracks in database */

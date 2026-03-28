@@ -200,16 +200,15 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
         return -1;
     }
 
-    /* sqlite3_deserialize takes ownership of the buffer with FREEONCLOSE flag.
-     * Available since SQLite 3.36.0 (2021-06-18). */
+    /* Deserialize without FREEONCLOSE — we free the buffer ourselves in
+     * onelibrary_close() to avoid sqlite3_free/malloc mismatch. Read-only
+     * so RESIZEABLE is not needed either. */
     rc = sqlite3_deserialize(db, "main", decrypted_data, (sqlite3_int64)data_len,
-                             (sqlite3_int64)data_len,
-                             SQLITE_DESERIALIZE_FREEONCLOSE |
-                             SQLITE_DESERIALIZE_RESIZEABLE);
+                             (sqlite3_int64)data_len, 0);
     if (rc != SQLITE_OK) {
         log_message("[OLIB] sqlite3_deserialize failed: %s", sqlite3_errmsg(db));
         sqlite3_close(db);
-        /* decrypted_data may already be freed by close, don't double-free */
+        free(decrypted_data);
         return -1;
     }
 
@@ -225,6 +224,7 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
     }
 
     olib->db = db;
+    olib->data = decrypted_data;
     olib->device_ip = device_ip;
     olib->slot = slot;
     olib->track_count = track_count;
@@ -244,6 +244,10 @@ void onelibrary_close(onelibrary_t *olib)
     if (olib->db) {
         sqlite3_close(olib->db);
         olib->db = NULL;
+    }
+    if (olib->data) {
+        free(olib->data);
+        olib->data = NULL;
     }
     olib->track_count = 0;
     olib->fetched_at = 0;

@@ -514,21 +514,26 @@ int do_full_registration(const char *interface) {
             /* Observation complete - log what we found */
             log_detected_devices();
 
-            /* Auto-passive: if we received status/beat packets during observation
-             * without registering, the traffic is already flowing to us.
-             * This means either: SPAN port, hub, or 2+ CDJs already broadcasting.
-             * We can stay passive and avoid consuming a player slot. */
+            /* If we received status packets without registering, traffic is
+             * already flowing (2+ CDJs or SPAN port). Check if a slot is free —
+             * if so, register anyway (needed for NFS/OneLibrary). Only go
+             * passive if all slots are occupied. */
             if (status_packets_seen > 0) {
-                logmsg("cdj", "Auto-passive: received %u status packets during observation — no slot consumed",
-                       status_packets_seen);
-                registration_state = REG_PASSIVE;
-                auto_passive = 1;
-                return 0;
+                uint8_t free_slot = find_free_slot();
+                if (free_slot == 0) {
+                    logmsg("cdj", "Auto-passive: received %u status packets, all slots occupied — no slot consumed",
+                           status_packets_seen);
+                    registration_state = REG_PASSIVE;
+                    auto_passive = 1;
+                    return 0;
+                }
+                logmsg("cdj", "Active mode: received %u status packets but slot %d is free — registering as peer",
+                       status_packets_seen, free_slot);
+            } else {
+                /* No status packets seen — CDJs need a peer to start broadcasting.
+                 * We must register to receive status/beat updates. */
+                logmsg("cdj", "Active mode: no status packets during observation — registering as peer");
             }
-
-            /* No status packets seen — CDJs need a peer to start broadcasting.
-             * We must register to receive status/beat updates. */
-            logmsg("cdj", "Active mode: no status packets during observation — registering as peer");
 
             /* Now claim a slot */
             our_device_num = find_free_slot();
