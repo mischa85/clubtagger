@@ -267,22 +267,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             if (dev2 && dev2->rekordbox_id > 0 && dev2->track_slot > 0) {
                 /* We have a valid track but this packet says zero — skip track fields.
                  * Still update liveness and non-track fields (on-air, play state, etc.) */
+                /* Skip track fields but update liveness and on-air only.
+                 * Don't update play state from zero-data packets — CDJ-3000X
+                 * reports unreliable play_state in these alternating variants. */
                 dev2->last_seen = time(NULL);
                 dev2->ip_addr = src_ip;
-                uint8_t old_playing = dev2->playing;
-                dev2->playing = (pkt->play_state == PLAY_STATE_PLAYING ||
-                                pkt->play_state == PLAY_STATE_LOOPING);
-                dev2->cued = (pkt->play_state == PLAY_STATE_PAUSED ||
-                             pkt->play_state == PLAY_STATE_CUED);
-                /* Reset play timer on interruptions (backcue, scratch, pause) */
-                if (dev2->playing && !old_playing) {
-                    dev2->play_started = time(NULL);
-                    logmsg("cdj", "▶ DECK %d: Playing - %s - %s",
-                           device_num, dev2->track_artist, dev2->track_title);
-                } else if (!dev2->playing && old_playing) {
-                    dev2->play_started = 0;
-                    logmsg("cdj", "⏸ DECK %d: Paused", device_num);
-                }
                 uint8_t old_on_air = dev2->on_air;
                 dev2->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
                 if (dev2->on_air != old_on_air) {
