@@ -266,21 +266,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
 
-        /* CDJ-3000X sends large packets (1152 bytes) with alternating subtype2 values.
-         * Some variants don't carry track data at the standard offsets (read as zeros).
-         * If this packet has rekordbox_id=0 AND slot=0 but we already have a valid track,
-         * this is likely a non-track-data variant — skip the track fields to avoid
-         * flipping between valid data and zeros. */
+        /* CDJ-3000X sends 1152-byte packets with alternating zero-data variants
+         * (rekordbox_id=0, slot=0). ALL fields in these are unreliable — USB status,
+         * play state, etc. Skip everything except liveness and on-air. */
         uint32_t pkt_rekordbox_id = BE32_TO_HOST(pkt->rekordbox_id_be);
         uint8_t pkt_track_slot = pkt->track_slot;
-        if (pkt_rekordbox_id == 0 && pkt_track_slot == 0) {
+        if (pkt_rekordbox_id == 0 && pkt_track_slot == 0 && len > 300) {
             cdj_device_t *dev2 = find_device(device_num);
-            if (dev2 && dev2->rekordbox_id > 0 && dev2->track_slot > 0) {
-                /* We have a valid track but this packet says zero — skip track fields.
-                 * Still update liveness and non-track fields (on-air, play state, etc.) */
-                /* Skip track fields but update liveness and on-air only.
-                 * Don't update play state from zero-data packets — CDJ-3000X
-                 * reports unreliable play_state in these alternating variants. */
+            if (dev2) {
                 dev2->last_seen = time(NULL);
                 dev2->ip_addr = src_ip;
                 uint8_t old_on_air = dev2->on_air;
