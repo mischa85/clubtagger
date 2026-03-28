@@ -268,8 +268,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         }
 
         /* CDJ-3000X sends 1152-byte packets with alternating zero-data variants
-         * (rekordbox_id=0, slot=0). ALL fields in these are unreliable — USB status,
-         * play state, etc. Skip everything except liveness and on-air. */
+         * (rekordbox_id=0, slot=0). Track fields are unreliable in these but
+         * P1 (play_state at 0x7b) and on-air ARE consistent. Update play state,
+         * on-air, and liveness. Skip track/USB fields. */
         uint32_t pkt_rekordbox_id = BE32_TO_HOST(pkt->rekordbox_id_be);
         uint8_t pkt_track_slot = pkt->track_slot;
         if (pkt_rekordbox_id == 0 && pkt_track_slot == 0 && len > 300) {
@@ -277,6 +278,22 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             if (dev2) {
                 dev2->last_seen = time(NULL);
                 dev2->ip_addr = src_ip;
+                /* P1 + P2 play state — same logic as main path */
+                uint8_t old_playing = dev2->playing;
+                uint8_t p2 = data[0x8b];
+                int p1_playing = (pkt->play_state == PLAY_STATE_PLAYING ||
+                                 pkt->play_state == PLAY_STATE_LOOPING);
+                dev2->playing = p1_playing && !(p2 & 0x04);
+                if (dev2->playing && !old_playing) {
+                    dev2->play_started = time(NULL);
+                    if (dev2->track_title[0])
+                        logmsg("cdj", "▶ DECK %d: Playing - %s - %s",
+                               device_num, dev2->track_artist, dev2->track_title);
+                } else if (!dev2->playing && old_playing) {
+                    dev2->play_started = 0;
+                    if (dev2->track_title[0])
+                        logmsg("cdj", "⏸ DECK %d: Paused", device_num);
+                }
                 uint8_t old_on_air = dev2->on_air;
                 dev2->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
                 if (dev2->on_air != old_on_air) {
@@ -453,14 +470,16 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                        device_num, dev->rekordbox_id, dev->track_number, cdj_slot_name(dev->track_slot));
         }
         
-        /* Use status_flags byte F (0x89) bit 6 for play detection — it's
-         * reliable across all packet sizes including CDJ-3000X 1152-byte.
-         * P1 (0x7b) lies during scratch (says PLAYING when actually held).
-         * F bit 6 correctly reflects actual playback state. */
-        dev->playing = (pkt->status_flags & 0x40) != 0;  /* F bit 6 = playing */
+        /* P1 (0x7b) for play state, P2 (0x8b) for jogwheel hold detection.
+         * P1 says PLAYING during jogwheel hold — P2 distinguishes it:
+         * P2=0xfa/0x7a/0x9a = actually playing, P2=0xfe/0x7e/0x9e = stopped/held.
+         * Use P1 && (P2 low bit == 0) as the "truly playing" indicator. */
+        uint8_t p2 = data[0x8b];
+        int p1_playing = (pkt->play_state == PLAY_STATE_PLAYING ||
+                         pkt->play_state == PLAY_STATE_LOOPING);
+        dev->playing = p1_playing && !(p2 & 0x04);  /* P2 bit 2 clear = playing */
         dev->cued = (pkt->play_state == PLAY_STATE_PAUSED ||
-                    pkt->play_state == PLAY_STATE_CUED ||
-                    pkt->play_state == PLAY_STATE_PLATTER_HELD);
+                    pkt->play_state == PLAY_STATE_CUED);
         
         /* Parse on-air status from status flags */
         uint8_t old_on_air = dev->on_air;
@@ -720,19 +739,8 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
     if (track_len > 0 && track_len < 100000)
         dev->track_length_sec = track_len;
 
-    /* Track playhead advancement for stall detection (scratch/hold).
-     * Status packet F bit 6 handles play/pause; this detects stalls
-     * within "playing" state (platter hold while P1 says playing). */
-    time_t now = time(NULL);
-    if (playhead > dev->last_position_ms &&
-        (playhead - dev->last_position_ms) > 500) {
-        dev->last_position_time = now;
-        dev->playhead_stalled = 0;
-    } else if (dev->last_position_time > 0 &&
-               (now - dev->last_position_time) >= 2) {
-        dev->playhead_stalled = 1;
-        dev->play_started = 0;
-    }
+    /* Track playhead for position display (not used for play detection —
+     * P1+P2 from status packets handle that properly). */
     dev->last_position_ms = playhead;
 
     /* Update BPM if valid (0xffffffff means unknown) */
