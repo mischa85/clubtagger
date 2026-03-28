@@ -235,6 +235,21 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
            slot == 3 ? "USB" : (slot == 2 ? "SD" : "?"),
            ip_to_str(device_ip));
 
+    /* Log content_id range for small libraries (debugging ID mismatches) */
+    if (track_count > 0 && track_count <= 5) {
+        sqlite3_stmt *s = NULL;
+        if (sqlite3_prepare_v2(db,
+                "SELECT content_id FROM content ORDER BY content_id", -1, &s, NULL) == SQLITE_OK) {
+            char ids[128] = {0};
+            int pos = 0;
+            while (sqlite3_step(s) == SQLITE_ROW && pos < 120)
+                pos += snprintf(ids + pos, sizeof(ids) - pos, "%s%d",
+                                pos ? "," : "", sqlite3_column_int(s, 0));
+            sqlite3_finalize(s);
+            logmsg("cdj", "📚 OneLibrary content_ids: [%s]", ids);
+        }
+    }
+
     return 0;
 }
 
@@ -346,9 +361,9 @@ int onelibrary_lookup(uint32_t content_id,
         sqlite3_finalize(stmt);
     }
 
-    if (verbose && olib_count > 0) {
-        log_message("[OLIB] Track %u not found in %d databases",
-                   content_id, olib_count);
+    if (olib_count > 0) {
+        logmsg("cdj", "⚠ OneLibrary miss: content_id=%u not found in %d database(s)",
+               content_id, olib_count);
     }
     return -1;
 }
