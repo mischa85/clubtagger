@@ -361,7 +361,7 @@ int onelibrary_lookup(uint32_t content_id,
         sqlite3_finalize(stmt);
     }
 
-    if (olib_count > 0) {
+    if (olib_count > 0 && verbose) {
         logmsg("cdj", "⚠ OneLibrary miss: content_id=%u not found in %d database(s)",
                content_id, olib_count);
     }
