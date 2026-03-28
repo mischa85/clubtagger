@@ -372,6 +372,16 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         uint8_t old_sd = dev->sd_present;
         dev->usb_present = (pkt->usb_local != 0);
         dev->sd_present = (pkt->sd_local != 0);
+
+        /* Log raw media bytes on change for protocol analysis */
+        if (dev->usb_present != old_usb || dev->sd_present != old_sd) {
+            logmsg("cdj", "Dev%d media bytes: [34-3a]=%02x %02x %02x %02x %02x %02x %02x "
+                   "Dr=%d Sr=0x%02x",
+                    device_num,
+                    data[0x34], data[0x35], data[0x36],
+                    data[0x37], data[0x38], data[0x39], data[0x3a],
+                    dev->track_source_player, pkt->track_slot);
+        }
         
         /* USB inserted */
         if (dev->usb_present && !old_usb) {
@@ -415,8 +425,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
             time_t fetch_now = time(NULL);
 
-            /* Fetch USB databases if USB is present and not yet fetched */
-            if (dev->usb_present && (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
+            /* Fetch USB databases if USB is present locally and not yet fetched.
+             * Skip if media is via Link (source_player differs from self) —
+             * NFS fetch will fail since there's no local file to read. */
+            int usb_is_local = dev->usb_present &&
+                               (dev->track_source_player == 0 ||
+                                dev->track_source_player == dev->device_num ||
+                                dev->track_slot != SLOT_USB);
+            if (usb_is_local && (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
                 fetch_now - dev->usb_fetch_attempt >= 10) {
 
                 if (!dev->usb_olib_fetched && onelibrary_key_available()) {
@@ -446,8 +462,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 }
             }
 
-            /* Fetch SD databases - same strategy */
-            if (dev->sd_present && (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
+            /* Fetch SD databases - same strategy, skip if media is via Link */
+            int sd_is_local = dev->sd_present &&
+                              (dev->track_source_player == 0 ||
+                               dev->track_source_player == dev->device_num ||
+                               dev->track_slot != SLOT_SD);
+            if (sd_is_local && (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
                 fetch_now - dev->sd_fetch_attempt >= 10) {
 
                 if (!dev->sd_olib_fetched && onelibrary_key_available()) {
