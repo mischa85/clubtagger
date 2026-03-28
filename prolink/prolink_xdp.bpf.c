@@ -30,8 +30,8 @@
 
 /* Pro DJ Link ports */
 #define PROLINK_KEEPALIVE_PORT  50000
-#define PROLINK_STATUS_PORT     50001
-#define PROLINK_BEAT_PORT       50002
+#define PROLINK_BEAT_PORT       50001
+#define PROLINK_STATUS_PORT     50002
 
 /* XSK map - AF_XDP sockets register here */
 struct {

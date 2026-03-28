@@ -102,4 +102,12 @@ extern int active_mode;       /* Stay active, never go passive */
 extern int show_nfs;          /* Show NFS activity in log */
 extern const char *capture_interface;
 
+/* Status packet counter - incremented by parse_cdj_status() for auto-passive detection.
+ * If we receive status packets during observation (before registering), traffic is
+ * already flowing (SPAN port or 2+ CDJs) and we can stay passive. */
+extern uint32_t status_packets_seen;
+
+/* Track whether we went passive via auto-detection vs explicit --prolink-passive */
+extern int auto_passive;      /* 1 = auto-detected passive (can re-activate if needed) */
+
 #endif /* REGISTRATION_H */

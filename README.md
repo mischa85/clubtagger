@@ -9,7 +9,8 @@ identifies songs via Shazam-compatible lookup, and integrates with Pioneer CDJ/X
 ## Features
 - 🎧 **Live audio capture** — ALSA (Linux) or SLink (Allen & Heath SQ, 24-bit)
 - 🔎 **Local fingerprinting** via `libvibra` (no audio leaves the system)
-- 🎛️ **Pro DJ Link integration** — reads track metadata directly from Pioneer CDJs
+- 🎛️ **Pro DJ Link integration** — reads track metadata directly from Pioneer CDJs/XDJs
+- 📚 **OneLibrary support** — decrypts and queries Rekordbox 6+ exportLibrary.db (CDJ-3000X)
 - 🧠 **Smart matching** — requires 3 consecutive confirmations to reduce false positives
 - 🔤 **Fuzzy matching** — Levenshtein distance handles typos and encoding differences
 - 🎵 **Vinyl-friendly** — tolerates pitch variations from turntables
@@ -30,7 +31,7 @@ make
 
 ### macOS (SLink + CDJ)
 ```bash
-brew install curl sqlite libpcap flac
+brew install curl sqlite libpcap flac openssl
 make            # builds without ALSA support
 ```
 
@@ -39,6 +40,7 @@ make            # builds without ALSA support
 - `libvibra` — local acoustic fingerprinting (optional, enables `--audio-tag`)
 - `libsqlite3` — track database
 - `libpcap` — network packet capture (SLink, Pro DJ Link)
+- `libcrypto` (OpenSSL) — OneLibrary decryption (SQLCipher 4)
 - `libFLAC` — FLAC encoding (optional)
 - `libasound2` — ALSA audio capture (Linux only)
 
@@ -83,6 +85,13 @@ clubtagger has three main modes that can be combined:
   --source slink --device en7 \
   --prolink-interface en7 \
   --db tracks.db --sse-socket /tmp/clubtagger.sock
+```
+
+### Passive CDJ tagging (SPAN port, no slot consumed)
+```bash
+./clubtagger --cdj-tag \
+  --prolink-interface eth1 --prolink-passive \
+  --db tracks.db
 ```
 
 ---
@@ -131,6 +140,8 @@ The `--threshold` value is used for both recording triggers and Shazam fingerpri
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--prolink-interface` | Network interface for CDJ traffic | (required) |
+| `--prolink-passive` | SPAN/mirror port mode (eavesdrop only, no registration) | Off |
+| `--olib-key KEY` | OneLibrary (exportLibrary.db) decryption passphrase | (none) |
 
 ### Matching (combined --audio-tag + --cdj-tag)
 | Option | Description | Default |
@@ -148,20 +159,73 @@ The `--threshold` value is used for both recording triggers and Shazam fingerpri
 
 ## Pro DJ Link Integration
 
-clubtagger passively monitors Pro DJ Link network traffic to:
+clubtagger supports two modes for Pro DJ Link integration:
 
-1. **Read track metadata** from CDJ status packets (rekordbox ID, BPM, position)
-2. **Query DBServer** (port 1051) for track title/artist
-3. **Fetch PDB databases** via NFS to cache all tracks on USB/SD
+### Auto-detection (default)
+
+On startup, clubtagger observes the network for 10 seconds without sending anything. If status/beat packets are already flowing (because 2+ CDJs or a CDJ + DJM are already communicating), it stays **passive** — no player slot consumed, completely invisible to the DJ network.
+
+If no status packets are seen during observation (single CDJ with no peers, or CDJs waiting for a peer before broadcasting), clubtagger registers as a virtual CDJ (**active mode**), occupying one player slot.
+
+| Situation | Auto-detected mode | Slot used? |
+|-----------|-------------------|------------|
+| SPAN/mirror port | Passive | No |
+| 2+ CDJs on switch | Passive | No |
+| CDJ + DJM on switch | Passive | No |
+| Single CDJ, no other peers | Active | Yes (1 slot) |
+
+In both modes, clubtagger can:
+1. **Receive status packets** from CDJs (rekordbox ID, BPM, play state, on-air)
+2. **Receive beat/position packets** with real-time playback position (CDJ-3000: ~30ms)
+3. **Passively capture databases** (PDB and OneLibrary) from NFS traffic between CDJs
 4. **Correlate with fingerprints** for higher confidence matches
+
+Active mode additionally enables:
+5. **Fetch databases** (OneLibrary + PDB) directly from CDJs via NFS
+6. **Query DBServer** (port 1051) for track title/artist as a fallback
+
+If a track can't be resolved passively, clubtagger can temporarily re-activate to query DBServer, then return to passive.
+
+### Forced passive mode — `--prolink-passive`
+
+Forces passive mode regardless of auto-detection. Use this when you know you're on a SPAN port and want to guarantee zero network footprint.
+
+```bash
+./clubtagger --cdj-tag --prolink-interface eth1 --prolink-passive --db tracks.db
+```
+
+**Limitation:** Passive mode (both auto and forced) requires at least two devices on the DJ network. A single CDJ with no peers won't broadcast status or beat packets. Use active mode (omit `--prolink-passive`) for single-CDJ setups — auto-detection handles this automatically.
 
 ### How it works
 
 ```
-CDJ Status Packet → rekordbox_id → PDB lookup → track_cache
-                                 ↘ DBServer query (fallback)
+CDJ Status Packet → rekordbox_id → OneLibrary lookup (SQLite)
+                                 ↘ PDB lookup (fallback)
+                                 ↘ DBServer query (last resort)
                                                ↘ Fuzzy match with Shazam result
 ```
+
+### OneLibrary (CDJ-3000X)
+
+CDJ-3000X and newer hardware export databases in the OneLibrary format — a SQLCipher 4 encrypted SQLite database (`PIONEER/rekordbox/exportLibrary.db`). clubtagger:
+
+1. Fetches the encrypted database via NFSv2
+2. Derives the decryption key using PBKDF2-HMAC-SHA512 (256,000 iterations)
+3. Decrypts all pages with AES-256-CBC
+4. Loads the result as an in-memory SQLite database
+5. Queries tracks by content_id with artist JOINs
+
+OneLibrary provides richer metadata than the legacy PDB format (26 tables including playlists, cue points, history, and more). If OneLibrary is not available (older USB sticks without Rekordbox 6+ export), clubtagger falls back to the PDB parser.
+
+### Supported hardware
+
+| Device | Database | Position Packets | Max Players |
+|--------|----------|-----------------|-------------|
+| CDJ-2000NXS2 | PDB only | No | 4 |
+| CDJ-3000 | PDB + OneLibrary | Yes (~30ms) | 6 |
+| CDJ-3000X | PDB + OneLibrary | Yes (~30ms) | 6 |
+| DJM-900NXS2 | — | — | (mixer) |
+| DJM-V10 | — | — | (6ch mixer) |
 
 ### Fuzzy matching
 
@@ -236,18 +300,20 @@ SELECT timestamp, artist, title, confidence, source FROM plays ORDER BY timestam
 
 ```
 clubtagger/
-├── audio/           # Audio capture (ALSA, SLink, AF_XDP)
-├── prolink/         # Pro DJ Link protocol implementation
-│   ├── prolink.c    # Packet parsing (keepalive, status, beat)
-│   ├── dbserver.c   # DBServer queries (port 1051)
-│   ├── nfs_client.c # NFS v2 client for PDB files
-│   ├── pdb_parser.c # Rekordbox export.pdb parser
+├── audio/            # Audio capture (ALSA, SLink, AF_XDP)
+├── prolink/          # Pro DJ Link protocol implementation
+│   ├── prolink.c     # Packet parsing (keepalive, status, beat, position)
+│   ├── registration.c # Virtual CDJ registration and slot management
+│   ├── dbserver.c    # DBServer queries (port 1051)
+│   ├── nfs_client.c  # NFS v2 client for database fetching
+│   ├── pdb_parser.c  # Rekordbox export.pdb parser (legacy)
+│   ├── onelibrary.c  # OneLibrary exportLibrary.db decrypt + SQLite query
 │   └── track_cache.c # In-memory metadata cache
-├── shazam/          # Audio fingerprinting
-├── writer/          # Async WAV/FLAC writing
-├── server/          # SSE server for web UI
-├── db/              # SQLite integration
-└── www/             # Web UI (HTML/JS)
+├── shazam/           # Audio fingerprinting
+├── writer/           # Async WAV/FLAC writing
+├── server/           # SSE server for web UI
+├── db/               # SQLite integration
+└── www/              # Web UI (HTML/JS)
 ```
 
 ### Ring Buffer
@@ -261,8 +327,9 @@ Audio is captured into a fixed-size ring buffer. Oldest samples are automaticall
 
 ## Notes
 - clubtagger never sends raw audio — only fingerprint hashes
-- CDJ integration is completely passive (no packets sent to players)
+- CDJ integration auto-detects whether to register or stay passive; SPAN ports and multi-CDJ setups consume zero player slots
 - UTF-8 safe throughout: handles accented characters, emoji, CJK
+- Supports streaming tracks (Beatport LINK, etc.) via status packet detection
 - Intended for licensed environments to log playback for rights reporting
 - Respect third-party service terms and copyright laws
 
@@ -276,6 +343,9 @@ MIT — see [`LICENSE`](LICENSE)
 ## Credits
 - [BayernMuller/vibra](https://github.com/BayernMuller/vibra)
 - [Deep Symmetry](https://djl-analysis.deepsymmetry.org/) — Pro DJ Link protocol documentation
+- [alphatheta-connect](https://github.com/erikrichardlarson/alphatheta-connect) — CDJ-3000 protocol details
+- [pyrekordbox](https://github.com/dylanljones/pyrekordbox) — OneLibrary format research
 - [ALSA Project](https://www.alsa-project.org/)
 - [libcurl](https://curl.se/libcurl/)
 - [SQLite](https://sqlite.org/)
+- [OpenSSL](https://www.openssl.org/) — SQLCipher 4 decryption

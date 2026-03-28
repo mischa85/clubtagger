@@ -4,6 +4,8 @@
 #include "sse_server.h"
 #include "../common.h"
 #include "../prolink/cdj_types.h"
+#include "../prolink/onelibrary.h"
+#include "../confidence.h"
 #include "../db/database.h"
 
 #include <errno.h>
@@ -79,6 +81,7 @@ void *sse_main(void *arg) {
 #define SSE_MAX_CLIENTS 8
     int clients[SSE_MAX_CLIENTS];
     int client_needs_init[SSE_MAX_CLIENTS];  /* Flag for sending initial data */
+    uint32_t client_log_seq[SSE_MAX_CLIENTS]; /* Per-client activity log sequence */
     for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
         clients[i] = -1;
         client_needs_init[i] = 0;
@@ -107,6 +110,7 @@ void *sse_main(void *arg) {
                     if (clients[i] < 0) {
                         clients[i] = client_fd;
                         client_needs_init[i] = 1;  /* Mark for initial data send */
+                        client_log_seq[i] = 0;     /* Send full log buffer on connect */
                         fcntl(client_fd, F_SETFL, O_NONBLOCK);
                         logmsg("sse", "client connected (slot %d)", i);
                         added = 1;
@@ -286,14 +290,66 @@ void *sse_main(void *arg) {
                 
                 if (!first) deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, ",");
                 first = 0;
+                /* Calculate play duration */
+                int play_secs = 0;
+                if (dev->playing && dev->play_started > 0) {
+                    play_secs = (int)(now - dev->play_started);
+                }
+                /* Database status */
+                const char *db_src = "";
+                if (dev->usb_olib_fetched && find_onelibrary(dev->ip_addr, SLOT_USB))
+                    db_src = "OneLibrary";
+                else if (dev->usb_db_fetched)
+                    db_src = "PDB";
+                else if (dev->sd_olib_fetched && find_onelibrary(dev->ip_addr, SLOT_SD))
+                    db_src = "OneLibrary";
+                else if (dev->sd_db_fetched)
+                    db_src = "PDB";
+
+                /* Get confidence state for this deck */
+                deck_confidence_t dc;
+                confidence_get_deck(d, &dc);
+                int conf_pct = dc.score / 10;
+                int conf_accepted = dc.accepted;
+                const char *conf_src = confidence_source_string(dc.signals_seen);
+
                 deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len,
                     "{\"n\":%d,\"name\":\"%s\",\"playing\":%d,\"on_air\":%d,"
-                    "\"title\":\"%s\",\"artist\":\"%s\",\"bpm\":%d,\"slot\":%d,\"isrc\":\"%s\"}",
+                    "\"on_air_known\":%d,"
+                    "\"title\":\"%s\",\"artist\":\"%s\",\"bpm\":%d,\"slot\":%d,"
+                    "\"isrc\":\"%s\",\"play_time\":%d,\"position_ms\":%u,"
+                    "\"rekordbox_id\":%u,\"db_src\":\"%s\","
+                    "\"usb\":%d,\"sd\":%d,"
+                    "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
                     dev->device_num, escaped_name, dev->playing ? 1 : 0, dev->on_air ? 1 : 0,
-                    escaped_title, escaped_artist, dev->bpm_raw / 100, dev->track_slot, escaped_isrc);
+                    dev->on_air_available ? 1 : 0,
+                    escaped_title, escaped_artist, dev->bpm_raw / 100, dev->track_slot,
+                    escaped_isrc, play_secs, dev->position_ms,
+                    dev->rekordbox_id, db_src,
+                    dev->usb_present ? 1 : 0, dev->sd_present ? 1 : 0,
+                    conf_pct, conf_accepted, conf_src);
             }
+
+            /* Append audio-only confidence as a lightweight entry for the
+             * identification panel (no deck card, just conf data) */
+            deck_confidence_t audio_dc;
+            confidence_get_audio(&audio_dc);
+            if (audio_dc.title[0]) {
+                char esc_at[256], esc_aa[256];
+                json_escape(audio_dc.title, esc_at, sizeof(esc_at));
+                json_escape(audio_dc.artist, esc_aa, sizeof(esc_aa));
+                if (!first) deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, ",");
+                deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len,
+                    "{\"n\":0,\"name\":\"Audio\",\"audio_only\":1,"
+                    "\"title\":\"%s\",\"artist\":\"%s\","
+                    "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
+                    esc_at, esc_aa,
+                    audio_dc.score / 10, audio_dc.accepted,
+                    confidence_source_string(audio_dc.signals_seen));
+            }
+
             deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, "]\n\n");
-            
+
             /* Send deck status to all clients */
             for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
                 if (clients[i] >= 0) {
@@ -328,6 +384,27 @@ void *sse_main(void *arg) {
                 for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
                     if (clients[i] >= 0) {
                         send(clients[i], shazam_msg, shazam_len, MSG_NOSIGNAL);
+                    }
+                }
+            }
+
+            /* Send activity log messages to each client (per-client sequence tracking) */
+            uint32_t cur_log_seq = atomic_load(&g_activity_log.sequence);
+            for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
+                if (clients[i] < 0) continue;
+                if (client_log_seq[i] >= cur_log_seq) continue;
+
+                char log_data[4096];
+                int log_count = activity_log_since(client_log_seq[i], log_data, sizeof(log_data));
+                client_log_seq[i] = cur_log_seq;
+                if (log_count > 0) {
+                    char log_msg[4200];
+                    int log_len = snprintf(log_msg, sizeof(log_msg),
+                        "event: log\ndata: %s\n\n", log_data);
+                    ssize_t sent = send(clients[i], log_msg, log_len, MSG_NOSIGNAL);
+                    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+                        close(clients[i]);
+                        clients[i] = -1;
                     }
                 }
             }

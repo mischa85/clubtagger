@@ -17,6 +17,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <ifaddrs.h>
+#include <net/if.h>
+#include <sys/ioctl.h>
+#ifdef __APPLE__
+#include <net/if_dl.h>
+#endif
 
 /*
  * ============================================================================
@@ -40,6 +45,8 @@ int passive_only = 0;
 int active_mode = 0;
 int show_nfs = 1;
 const char *capture_interface = NULL;
+uint32_t status_packets_seen = 0;
+int auto_passive = 0;
 
 /* Sockets */
 static int announce_socket = -1;
@@ -274,6 +281,37 @@ void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_nam
  * ============================================================================
  */
 
+/* Get MAC address for interface (for keepalive packets) */
+static uint8_t our_mac[6] = {0};
+
+static void get_interface_mac(const char *interface) {
+#ifdef __APPLE__
+    struct ifaddrs *ifaddr, *ifa;
+    if (getifaddrs(&ifaddr) == -1) return;
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL) continue;
+        if (ifa->ifa_addr->sa_family != AF_LINK) continue;
+        if (strcmp(ifa->ifa_name, interface) != 0) continue;
+        struct sockaddr_dl *sdl = (struct sockaddr_dl *)ifa->ifa_addr;
+        if (sdl->sdl_alen == 6) {
+            memcpy(our_mac, LLADDR(sdl), 6);
+        }
+        break;
+    }
+    freeifaddrs(ifaddr);
+#else
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) return;
+    struct ifreq ifr;
+    memset(&ifr, 0, sizeof(ifr));
+    strncpy(ifr.ifr_name, interface, IFNAMSIZ - 1);
+    if (ioctl(fd, SIOCGIFHWADDR, &ifr) == 0) {
+        memcpy(our_mac, ifr.ifr_hwaddr.sa_data, 6);
+    }
+    close(fd);
+#endif
+}
+
 uint32_t get_link_local_ip(const char *interface) {
     struct ifaddrs *ifaddr, *ifa;
     uint32_t result = 0;
@@ -301,6 +339,7 @@ uint32_t get_link_local_ip(const char *interface) {
  */
 
 int send_prolink_keepalive(const char *interface) {
+    if (passive_only) return 0;
     if (announce_socket < 0) {
         announce_socket = socket(AF_INET, SOCK_DGRAM, 0);
         if (announce_socket < 0) {
@@ -334,7 +373,7 @@ int send_prolink_keepalive(const char *interface) {
         
         log_message("[ANNOUNCE] Socket bound to %s:%d", ip_to_str(our_ip), PROLINK_KEEPALIVE_PORT);
         
-        /* Also create status socket (50001) */
+        /* Also create status socket (port 50002) */
         status_socket = socket(AF_INET, SOCK_DGRAM, 0);
         if (status_socket >= 0) {
             bind_addr.sin_port = htons(PROLINK_STATUS_PORT);
@@ -343,8 +382,8 @@ int send_prolink_keepalive(const char *interface) {
                 status_socket = -1;
             }
         }
-        
-        /* Also create beat socket (50002) */
+
+        /* Also create beat socket (port 50001) */
         beat_socket = socket(AF_INET, SOCK_DGRAM, 0);
         if (beat_socket >= 0) {
             bind_addr.sin_port = htons(PROLINK_BEAT_PORT);
@@ -373,17 +412,25 @@ int send_prolink_keepalive(const char *interface) {
     
     /* Packet structure fields */
     pkt.struct_version = 0x01;
-    pkt.device_type = PROLINK_DEVICE_REKORDBOX;  /* Safer - CDJs won't query our media */
+    pkt.device_type = PROLINK_DEVICE_REKORDBOX;
     pkt.device_num = our_device_num;
     pkt._reserved3 = 0x01;
     
-    /* MAC address left as zeros (works fine) */
-    
+    /* MAC address from our network interface */
+    if (our_mac[0] == 0 && our_mac[1] == 0 && capture_interface) {
+        get_interface_mac(capture_interface);
+    }
+    memcpy(pkt.mac_addr, our_mac, 6);
+
     /* IP address */
     memcpy(pkt.ip_addr, &our_ip, sizeof(pkt.ip_addr));
     
     /* Presence flag */
     pkt.presence_flag = 0x01;
+
+    /* NOTE: CDJ-3000X sets _reserved4[4] = 0xe4 (capability flag: TLS-capable).
+     * We leave it 0x00 (rekordbox type) to avoid CDJs trying TLS connections to us.
+     * See .claude/CDJ3000X-TLS-PROTOCOL.md for TLS protocol analysis. */
     
     /* Send to broadcast */
     struct sockaddr_in dest;
@@ -414,8 +461,11 @@ int send_prolink_keepalive(const char *interface) {
  */
 
 int do_full_registration(const char *interface) {
+    /* In passive/SPAN mode, never register or send keepalives */
+    if (passive_only) return 0;
+
     time_t now = time(NULL);
-    
+
     if (announce_socket < 0) {
         announce_socket = socket(AF_INET, SOCK_DGRAM, 0);
         if (announce_socket < 0) return -1;
@@ -445,21 +495,41 @@ int do_full_registration(const char *interface) {
     
     switch (registration_state) {
         case REG_IDLE:
-            /* Start observation phase - listen to network before claiming slot */
+            /* Start observation phase - listen to network before claiming slot.
+             * During observation we count status/beat packets. If we receive them
+             * without registering, traffic is already flowing (SPAN port or 2+ CDJs
+             * broadcasting) and we can stay passive — no slot consumed. */
             observation_start = now;
+            status_packets_seen = 0;
             registration_state = REG_OBSERVING;
             log_message("[REG] Observing network for %d seconds before joining...", OBSERVATION_PERIOD_SEC);
             return 0;  /* Don't send anything yet */
-            
+
         case REG_OBSERVING:
             /* Wait for observation period to complete */
             if (now - observation_start < OBSERVATION_PERIOD_SEC) {
                 return 0;  /* Still observing, don't send anything */
             }
-            
+
             /* Observation complete - log what we found */
             log_detected_devices();
-            
+
+            /* Auto-passive: if we received status/beat packets during observation
+             * without registering, the traffic is already flowing to us.
+             * This means either: SPAN port, hub, or 2+ CDJs already broadcasting.
+             * We can stay passive and avoid consuming a player slot. */
+            if (status_packets_seen > 0) {
+                logmsg("cdj", "Auto-passive: received %u status packets during observation — no slot consumed",
+                       status_packets_seen);
+                registration_state = REG_PASSIVE;
+                auto_passive = 1;
+                return 0;
+            }
+
+            /* No status packets seen — CDJs need a peer to start broadcasting.
+             * We must register to receive status/beat updates. */
+            logmsg("cdj", "Active mode: no status packets during observation — registering as peer");
+
             /* Now claim a slot */
             our_device_num = find_free_slot();
             if (our_device_num == 0) {
@@ -467,9 +537,10 @@ int do_full_registration(const char *interface) {
                 registration_state = REG_PASSIVE;
                 return -1;
             }
-            
+
             /* Go to active mode */
             registration_state = REG_ACTIVE;
+            auto_passive = 0;
             keepalives_sent_active = 0;
             registration_start = now;
             log_message("[REG] Acquired slot %d, starting keepalives...", our_device_num);

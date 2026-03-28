@@ -13,6 +13,7 @@ APP      := clubtagger
 # Source files - modular architecture
 SRC      := main.c \
             common.c \
+            confidence.c \
             audio/audio_buffer.c \
             audio/audio_analysis.c \
             audio/capture.c \
@@ -36,7 +37,8 @@ PROLINK_SRC := prolink/prolink_thread.c \
                prolink/nfs_client.c \
                prolink/nfs_observer.c \
                prolink/pdb_parser.c \
-               prolink/track_cache.c
+               prolink/track_cache.c \
+               prolink/onelibrary.c
 
 SRC      += $(PROLINK_SRC)
 OBJ      := $(SRC:.c=.o)
@@ -77,6 +79,13 @@ endif
 
 SQLITE_CFLAGS := $(shell pkg-config --cflags sqlite3 2>/dev/null)
 SQLITE_LIBS   := $(shell pkg-config --libs sqlite3 2>/dev/null)
+
+# OpenSSL (for OneLibrary SQLCipher 4 decryption)
+OPENSSL_CFLAGS := $(shell pkg-config --cflags openssl 2>/dev/null)
+OPENSSL_LIBS   := $(shell pkg-config --libs openssl 2>/dev/null)
+ifeq ($(OPENSSL_LIBS),)
+  OPENSSL_LIBS := -lcrypto
+endif
 ifeq ($(SQLITE_LIBS),)
   SQLITE_LIBS := -lsqlite3
 endif
@@ -133,8 +142,8 @@ GIT_DIRTY  := $(shell git diff --quiet 2>/dev/null || echo "-dirty")
 VERSION_FLAGS := -DGIT_COMMIT='"$(GIT_COMMIT)$(GIT_DIRTY)"'
 
 # Build flags - use := to override any environment LDFLAGS
-CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS)
-LDFLAGS  := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib
+CFLAGS   := $(CSTD) $(OPT) $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(OPENSSL_CFLAGS)
+LDFLAGS  := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) $(OPENSSL_LIBS) -Wl,-rpath,/usr/local/lib
 
 # Extra flags opt-in
 CFLAGS   += $(CFLAGS_EXTRA)
@@ -142,8 +151,8 @@ LDFLAGS  += $(LDFLAGS_EXTRA)
 
 all: $(APP)
 
-debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(CFLAGS_EXTRA)
-debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
+debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(OPENSSL_CFLAGS) $(CFLAGS_EXTRA)
+debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) $(OPENSSL_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
 debug: clean $(APP)
 
 $(APP): $(OBJ)

@@ -4,6 +4,7 @@
 #include "common.h"
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,21 +31,79 @@ struct xsk_socket *g_xsk = NULL;
  * Logging functions
  * ───────────────────────────────────────────────────────────────────────────── */
 
+/* Activity log ring buffer */
+activity_log_t g_activity_log = {0};
+
+static void activity_log_push(const char *tag, const char *fmt, va_list ap) {
+    char msg[ACTIVITY_MSG_LEN];
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    int off = snprintf(msg, sizeof(msg), "%02d:%02d:%02d [%s] ",
+                       tm.tm_hour, tm.tm_min, tm.tm_sec, tag);
+    if (off > 0 && (size_t)off < sizeof(msg)) {
+        vsnprintf(msg + off, sizeof(msg) - off, fmt, ap);
+    }
+    int idx = g_activity_log.head % ACTIVITY_LOG_SIZE;
+    memcpy(g_activity_log.messages[idx], msg, ACTIVITY_MSG_LEN - 1);
+    g_activity_log.messages[idx][ACTIVITY_MSG_LEN - 1] = '\0';
+    g_activity_log.head = (idx + 1) % ACTIVITY_LOG_SIZE;
+    atomic_fetch_add(&g_activity_log.sequence, 1);
+}
+
+int activity_log_since(uint32_t since_seq, char *buf, size_t buf_len) {
+    uint32_t cur_seq = atomic_load(&g_activity_log.sequence);
+    if (cur_seq <= since_seq) return 0;
+
+    uint32_t count = cur_seq - since_seq;
+    if (count > ACTIVITY_LOG_SIZE) count = ACTIVITY_LOG_SIZE;
+
+    int pos = 0;
+    pos += snprintf(buf + pos, buf_len - pos, "[");
+    for (uint32_t i = 0; i < count && (size_t)pos < buf_len - 10; i++) {
+        int idx = ((int)g_activity_log.head - (int)count + (int)i + ACTIVITY_LOG_SIZE) % ACTIVITY_LOG_SIZE;
+        /* JSON-escape the message inline (simple: replace " and \ and control chars) */
+        if (i > 0) pos += snprintf(buf + pos, buf_len - pos, ",");
+        pos += snprintf(buf + pos, buf_len - pos, "\"");
+        const char *s = g_activity_log.messages[idx];
+        for (; *s && (size_t)pos < buf_len - 5; s++) {
+            if (*s == '"' || *s == '\\') { buf[pos++] = '\\'; buf[pos++] = *s; }
+            else if ((unsigned char)*s < 0x20) { buf[pos++] = ' '; }
+            else { buf[pos++] = *s; }
+        }
+        pos += snprintf(buf + pos, buf_len - pos, "\"");
+    }
+    pos += snprintf(buf + pos, buf_len - pos, "]");
+    return (int)count;
+}
+
 void logmsg(const char *tag, const char *fmt, ...) {
-    va_list ap;
+    va_list ap, ap2;
     va_start(ap, fmt);
-    fprintf(stderr, "[%s] ", tag);
+    va_copy(ap2, ap);
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    fprintf(stderr, "%02d:%02d:%02d [%s] ",
+            tm.tm_hour, tm.tm_min, tm.tm_sec, tag);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     fflush(stderr);
     va_end(ap);
+    /* Push to activity log for web UI */
+    activity_log_push(tag, fmt, ap2);
+    va_end(ap2);
 }
 
 void vlogmsg(const char *tag, const char *fmt, ...) {
     if (!g_verbose) return;
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "[%s] ", tag);
+    time_t t = time(NULL);
+    struct tm tm;
+    localtime_r(&t, &tm);
+    fprintf(stderr, "%02d:%02d:%02d [%s] ",
+            tm.tm_hour, tm.tm_min, tm.tm_sec, tag);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     fflush(stderr);

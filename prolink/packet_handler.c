@@ -114,13 +114,24 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *byt
             parse_keepalive(payload, payload_len, src_ip);
         }
         else if (dst_port == PROLINK_STATUS_PORT || src_port == PROLINK_STATUS_PORT) {
-            parse_cdj_status(payload, payload_len, src_ip);
+            /* Port 50002: CDJ status packets (may also carry beat subtypes) */
+            if (pkt_type == PKT_TYPE_BEAT) {
+                parse_beat(payload, payload_len, src_ip);
+            } else {
+                parse_cdj_status(payload, payload_len, src_ip);
+            }
         }
         else if (dst_port == PROLINK_BEAT_PORT || src_port == PROLINK_BEAT_PORT) {
+            /* Port 50001: Beat sync, CDJ-3000 position packets */
             if (pkt_type == PKT_TYPE_BEAT) {
                 parse_beat(payload, payload_len, src_ip);
             } else if (pkt_type == PKT_TYPE_CDJ_STATUS) {
-                parse_cdj_status(payload, payload_len, src_ip);
+                /* CDJ-3000 sends position (subtype2=0x00) and status on beat port */
+                if (payload_len >= sizeof(cdj_position_packet_t) && payload[0x20] == 0x00) {
+                    parse_position(payload, payload_len, src_ip);
+                } else {
+                    parse_cdj_status(payload, payload_len, src_ip);
+                }
             } else {
                 parse_beat(payload, payload_len, src_ip);
             }

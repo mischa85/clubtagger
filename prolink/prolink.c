@@ -10,7 +10,9 @@
 #include "track_cache.h"
 #include "dbserver.h"
 #include "pdb_parser.h"
+#include "onelibrary.h"
 #include "registration.h"
+#include "../confidence.h"
 #include "../common.h"
 #include <stdio.h>
 #include <string.h>
@@ -93,8 +95,8 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
             memcpy(dev->mac_addr, pkt->mac_addr, 6);
             
             if (was_new) {
-                log_message("🔗 Device %d: %s connected @ %s", 
-                           device_num, name, ip_to_str(src_ip));
+                logmsg("cdj", "🔗 Device %d: %s connected @ %s",
+                       device_num, name, ip_to_str(src_ip));
                 
                 /* Start registration when we see a new CDJ */
                 if (dev->device_type == DEVICE_TYPE_CDJ && 
@@ -155,7 +157,7 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
 
 /*
  * ============================================================================
- * CDJ Status Packet Parsing (Port 50001)
+ * CDJ Status Packet Parsing (Port 50002)
  * ============================================================================
  */
 
@@ -226,11 +228,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
     }
     
     if (subtype == PKT_TYPE_CDJ_STATUS) {
-        /* Full CDJ status packet - use struct for parsing */
+        /* Full CDJ status packet - use struct for parsing.
+         * Increment counter for auto-passive detection during observation. */
+        status_packets_seen++;
+
         if (verbose) {
             log_message("[STATUS] Got subtype 0x0a packet, len=%zu (need %zu)", len, sizeof(cdj_status_packet_t));
         }
-        
+
         if (len < sizeof(cdj_status_packet_t)) {
             if (verbose) {
                 log_message("[STATUS] Short status packet (%zu < %zu bytes)", 
@@ -241,6 +246,42 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         
         const cdj_status_packet_t *pkt = (const cdj_status_packet_t *)data;
         uint8_t device_num = pkt->device_num;
+        uint8_t subtype2 = pkt->subtype2;
+
+        if (verbose) {
+            log_message("[STATUS] Dev%d: subtype2=0x%02x len=%zu rekordbox_id=%u slot=0x%02x",
+                       device_num, subtype2, len,
+                       BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot);
+        }
+
+        /* CDJ-3000X sends large packets (1152 bytes) with alternating subtype2 values.
+         * Some variants don't carry track data at the standard offsets (read as zeros).
+         * If this packet has rekordbox_id=0 AND slot=0 but we already have a valid track,
+         * this is likely a non-track-data variant — skip the track fields to avoid
+         * flipping between valid data and zeros. */
+        uint32_t pkt_rekordbox_id = BE32_TO_HOST(pkt->rekordbox_id_be);
+        uint8_t pkt_track_slot = pkt->track_slot;
+        if (pkt_rekordbox_id == 0 && pkt_track_slot == 0) {
+            cdj_device_t *dev2 = find_device(device_num);
+            if (dev2 && dev2->rekordbox_id > 0 && dev2->track_slot > 0) {
+                /* We have a valid track but this packet says zero — skip track fields.
+                 * Still update liveness and non-track fields (on-air, play state, etc.) */
+                dev2->last_seen = time(NULL);
+                dev2->ip_addr = src_ip;
+                dev2->playing = (pkt->play_state == PLAY_STATE_PLAYING ||
+                                pkt->play_state == PLAY_STATE_LOOPING);
+                dev2->cued = (pkt->play_state == PLAY_STATE_PAUSED ||
+                             pkt->play_state == PLAY_STATE_CUED);
+                uint8_t old_on_air = dev2->on_air;
+                dev2->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
+                if (dev2->on_air != old_on_air) {
+                    dev2->on_air_available = 1;
+                }
+                uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
+                if (bpm > 2000 && bpm < 25000) dev2->bpm_raw = bpm;
+                return;
+            }
+        }
         
         cdj_device_t *dev = find_device(device_num);
         if (!dev) return;
@@ -274,66 +315,95 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         
         /* USB inserted */
         if (dev->usb_present && !old_usb) {
-            log_message("💾 Device %d: USB inserted", device_num);
-            dev->usb_db_fetched = 0;  /* Reset fetch flag */
+            logmsg("cdj", "💾 Device %d: USB inserted", device_num);
+            dev->usb_db_fetched = 0;
+            dev->usb_olib_fetched = 0;
         }
         /* USB removed */
         if (!dev->usb_present && old_usb) {
-            log_message("💾 Device %d: USB removed", device_num);
+            logmsg("cdj", "💾 Device %d: USB removed", device_num);
             dev->usb_db_fetched = 0;
+            dev->usb_olib_fetched = 0;
             remove_pdb_database(dev->ip_addr, SLOT_USB);
+            remove_onelibrary(dev->ip_addr, SLOT_USB);
         }
         /* SD inserted */
         if (dev->sd_present && !old_sd) {
-            log_message("💾 Device %d: SD inserted", device_num);
-            dev->sd_db_fetched = 0;  /* Reset fetch flag */
+            logmsg("cdj", "💾 Device %d: SD inserted", device_num);
+            dev->sd_db_fetched = 0;
+            dev->sd_olib_fetched = 0;
         }
         /* SD removed */
         if (!dev->sd_present && old_sd) {
-            log_message("💾 Device %d: SD removed", device_num);
+            logmsg("cdj", "💾 Device %d: SD removed", device_num);
             dev->sd_db_fetched = 0;
+            dev->sd_olib_fetched = 0;
             remove_pdb_database(dev->ip_addr, SLOT_SD);
+            remove_onelibrary(dev->ip_addr, SLOT_SD);
         }
         
         /* Proactively fetch databases when media is detected.
          * Must wait for registration to be ready (5 keepalives sent) or CDJ will refuse NFS. */
         if (capture_interface && our_ip != 0 && dev->ip_addr != 0 &&
             keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
-            /* Fetch USB database if USB is present and not yet fetched */
+            /* Fetch USB databases if USB is present and not yet fetched.
+             * Try OneLibrary first (CDJ-3000X), fall back to PDB. */
+            if (dev->usb_present && !dev->usb_olib_fetched && onelibrary_key_available()) {
+                logmsg("cdj", "📥 Device %d: Fetching USB OneLibrary...", device_num);
+                if (fetch_onelibrary_database(dev->ip_addr, SLOT_USB) == 0) {
+                    dev->usb_olib_fetched = 1;
+                    dev->usb_db_fetched = 1;  /* Skip PDB if OneLibrary loaded */
+                    if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0') {
+                        dev->lookup_failed_id = 0;
+                    }
+                } else {
+                    dev->usb_olib_fetched = 1;  /* Don't retry OneLibrary */
+                }
+            }
             if (dev->usb_present && !dev->usb_db_fetched) {
-                log_message("📥 Device %d: Fetching USB database...", device_num);
+                logmsg("cdj", "📥 Device %d: Fetching USB PDB...", device_num);
                 pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_USB);
                 if (db) {
                     if (fetch_rekordbox_database(dev->ip_addr, SLOT_USB, db) == 0) {
-                        logmsg("cdj", "✅ Device %d: USB database loaded (%d tracks)", 
+                        logmsg("cdj", "✅ Device %d: USB PDB loaded (%d tracks)",
                                device_num, db->track_count);
                         dev->usb_db_fetched = 1;
-                        /* Clear failed lookup to force re-lookup now that we have PDB */
                         if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0') {
                             dev->lookup_failed_id = 0;
                         }
                     } else {
-                        log_message("[FETCH] USB database fetch failed");
-                        dev->usb_db_fetched = 1;  /* Don't retry */
+                        log_message("[FETCH] USB PDB fetch failed");
+                        dev->usb_db_fetched = 1;
                     }
                 }
             }
-            /* Fetch SD database if SD is present and not yet fetched */
+            /* Fetch SD databases - same OneLibrary-first strategy */
+            if (dev->sd_present && !dev->sd_olib_fetched && onelibrary_key_available()) {
+                logmsg("cdj", "📥 Device %d: Fetching SD OneLibrary...", device_num);
+                if (fetch_onelibrary_database(dev->ip_addr, SLOT_SD) == 0) {
+                    dev->sd_olib_fetched = 1;
+                    dev->sd_db_fetched = 1;
+                    if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0') {
+                        dev->lookup_failed_id = 0;
+                    }
+                } else {
+                    dev->sd_olib_fetched = 1;
+                }
+            }
             if (dev->sd_present && !dev->sd_db_fetched) {
-                log_message("📥 Device %d: Fetching SD database...", device_num);
+                logmsg("cdj", "📥 Device %d: Fetching SD PDB...", device_num);
                 pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_SD);
                 if (db) {
                     if (fetch_rekordbox_database(dev->ip_addr, SLOT_SD, db) == 0) {
-                        logmsg("cdj", "✅ Device %d: SD database loaded (%d tracks)", 
+                        logmsg("cdj", "✅ Device %d: SD PDB loaded (%d tracks)",
                                device_num, db->track_count);
                         dev->sd_db_fetched = 1;
-                        /* Clear failed lookup to force re-lookup now that we have PDB */
                         if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0') {
                             dev->lookup_failed_id = 0;
                         }
                     } else {
-                        log_message("[FETCH] SD database fetch failed");
-                        dev->sd_db_fetched = 1;  /* Don't retry */
+                        log_message("[FETCH] SD PDB fetch failed");
+                        dev->sd_db_fetched = 1;
                     }
                 }
             }
@@ -389,15 +459,29 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         if (dev->on_air != old_on_air) {
             dev->on_air_available = 1;  /* We've seen on_air change, so DJM is present */
             if (dev->on_air) {
-                logmsg("cdj", "🔴 DECK %d: On Air", device_num);
+                if (dev->track_title[0]) {
+                    logmsg("cdj", "🔴 DECK %d ON AIR: %s — %s", device_num,
+                           dev->track_artist, dev->track_title);
+                } else {
+                    logmsg("cdj", "🔴 DECK %d ON AIR", device_num);
+                }
+                /* Signal confidence: on-air edge (strong) + sustained on-air */
+                int didx = (int)(dev - devices);
+                confidence_signal(didx, SIG_CDJ_ON_AIR_EDGE, 0, NULL, NULL, NULL, 0);
+                confidence_signal(didx, SIG_CDJ_ON_AIR, 0, NULL, NULL, NULL, 0);
             } else {
-                logmsg("cdj", "⚪ DECK %d: Off Air", device_num);
+                logmsg("cdj", "⚪ DECK %d off air", device_num);
             }
         }
         
         /* Track when playback started (for duration-based fallback) */
         if (dev->playing && !old_playing) {
             dev->play_started = time(NULL);
+            /* Signal confidence: deck started playing */
+            if (dev->track_title[0]) {
+                confidence_signal((int)(dev - devices), SIG_CDJ_PLAYING, 0,
+                                  NULL, NULL, NULL, 0);
+            }
         } else if (!dev->playing) {
             dev->play_started = 0;
         }
@@ -420,6 +504,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
             dev->logged_rekordbox_id = 0;  /* Allow new track to be logged */
             dev->play_started = dev->playing ? time(NULL) : 0;  /* Reset play timer on track change */
+            /* Reset confidence for this deck — new track starts at 0 */
+            confidence_reset_deck((int)(dev - devices));
         }
         
         /* Skip lookup if no track loaded, already failed for this ID, or already have title */
@@ -453,7 +539,24 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     }
                     found = 1;
                 } else {
+                    /* Try OneLibrary first (richer metadata from CDJ-3000X) */
+                    char ol_title[128] = {0}, ol_artist[128] = {0}, ol_isrc[64] = {0};
+                    if (onelibrary_lookup(dev->rekordbox_id,
+                                          ol_title, sizeof(ol_title),
+                                          ol_artist, sizeof(ol_artist),
+                                          ol_isrc, sizeof(ol_isrc)) == 0 &&
+                        ol_title[0] != '\0' && ol_artist[0] != '\0') {
+                        utf8_safe_copy(dev->track_title, ol_title, sizeof(dev->track_title));
+                        utf8_safe_copy(dev->track_artist, ol_artist, sizeof(dev->track_artist));
+                        if (ol_isrc[0]) {
+                            utf8_safe_copy(dev->track_isrc, ol_isrc, sizeof(dev->track_isrc));
+                        }
+                        found = 1;
+                        log_message("🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
+                    }
+
                     /* Try PDB database by rekordbox_id */
+                    if (!found) {
                     TrackID *pdb = lookup_pdb_track(dev->rekordbox_id);
                     
                     if (pdb && pdb->title[0]) {
@@ -480,12 +583,21 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         retry_later = try_resolve_track_name(dev);
                         found = (dev->track_title[0] != '\0');
                     }
+                    } /* end if (!found) - OneLibrary/PDB/DBServer chain */
                 }
             }
             
             /* Mark failed lookup to prevent retry spam - but not if temporary skip */
             if (!found && !retry_later && dev->rekordbox_id > 0) {
                 dev->lookup_failed_id = dev->rekordbox_id;
+            }
+
+            /* Signal confidence model when metadata is resolved */
+            if (found && dev->track_title[0]) {
+                int didx = (int)(dev - devices);
+                confidence_signal(didx, SIG_CDJ_LOADED, 0,
+                                  dev->track_artist, dev->track_title,
+                                  dev->track_isrc, dev->rekordbox_id);
             }
         }
         
@@ -525,7 +637,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
 /*
  * ============================================================================
- * Beat Packet Parsing (Port 50002)
+ * Beat Packet Parsing (Port 50001)
  * ============================================================================
  */
 
@@ -546,6 +658,54 @@ void parse_beat(const uint8_t *data, size_t len, uint32_t src_ip) {
         uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
         log_message("[BEAT] CDJ #%d next_beat=%u ms bpm=%.2f beat=%u/4", 
                    device_num, next_beat_ms, bpm / 100.0f, pkt->beat_in_bar);
+    }
+}
+
+/*
+ * ============================================================================
+ * CDJ-3000 Position Packet Parsing (Port 50001, subtype2=0x00)
+ * ============================================================================
+ * CDJ-3000 and newer send absolute position packets every ~30ms.
+ * These provide track length, playhead position, pitch, and BPM.
+ */
+
+void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
+    if (len < sizeof(cdj_position_packet_t)) return;
+
+    const cdj_position_packet_t *pkt = (const cdj_position_packet_t *)data;
+    uint8_t device_num = pkt->device_num;
+
+    cdj_device_t *dev = find_device(device_num);
+    if (!dev) return;
+
+    dev->last_seen = time(NULL);
+    dev->ip_addr = src_ip;
+
+    /* Update position from playhead (milliseconds) */
+    uint32_t playhead = BE32_TO_HOST(pkt->playhead_be);
+    dev->position_ms = playhead;
+
+    /* Update BPM if valid (0xffffffff means unknown) */
+    uint32_t raw_bpm = BE32_TO_HOST(pkt->bpm_be);
+    if (raw_bpm != 0xffffffff && raw_bpm > 0) {
+        /* Position packet BPM is *10, our bpm_raw is *100 */
+        dev->bpm_raw = (uint16_t)(raw_bpm * 10);
+    }
+
+    /* Mark as playing if we're getting position updates with a moving playhead */
+    if (playhead > 0) {
+        dev->playing = 1;
+    }
+
+    if (verbose > 2) {
+        uint32_t track_len = BE32_TO_HOST(pkt->track_length_be);
+        int32_t pitch_raw;
+        memcpy(&pitch_raw, pkt->pitch_be, 4);
+        pitch_raw = (int32_t)BE32_TO_HOST((const uint8_t *)&pitch_raw);
+        log_message("[POSITION] CDJ #%d pos=%u ms len=%u s bpm=%.1f pitch=%.2f%%",
+                   device_num, playhead, track_len,
+                   raw_bpm == 0xffffffff ? 0.0f : raw_bpm / 10.0f,
+                   pitch_raw / 6400.0f);
     }
 }
 
@@ -668,6 +828,10 @@ int try_resolve_track_name(cdj_device_t *dev) {
         /* Track failures for backoff */
         if (result != 0) {
             query_fail_count++;
+            if (query_fail_count <= 2) {
+                logmsg("cdj", "DBServer query failed for track %u (attempt %d)",
+                       dev->rekordbox_id, query_fail_count);
+            }
         } else {
             query_fail_count = 0;
         }
@@ -678,11 +842,9 @@ int try_resolve_track_name(cdj_device_t *dev) {
                 utf8_safe_copy(dev->track_artist, artist, sizeof(dev->track_artist));
             }
             if (artist[0]) {
-                log_message("🎵 %s - %s (via dbserver/%s)", artist, title, 
-                           primary_type == TRACK_REKORDBOX ? "rekordbox" : "unanalyzed");
+                logmsg("cdj", "🎵 %s - %s (via DBServer)", artist, title);
             } else {
-                log_message("🎵 %s (via dbserver/%s)", title, 
-                           primary_type == TRACK_REKORDBOX ? "rekordbox" : "unanalyzed");
+                logmsg("cdj", "🎵 %s (via DBServer)", title);
             }
             
             track_cache_entry_t *tc = add_track_cache(dev->rekordbox_id, dev->ip_addr);
@@ -709,11 +871,9 @@ int try_resolve_track_name(cdj_device_t *dev) {
                     utf8_safe_copy(dev->track_artist, artist, sizeof(dev->track_artist));
                 }
                 if (artist[0]) {
-                    log_message("🎵 %s - %s (via dbserver/%s)", artist, title,
-                               fallback_type == TRACK_REKORDBOX ? "rekordbox" : "unanalyzed");
+                    logmsg("cdj", "🎵 %s - %s (via DBServer)", artist, title);
                 } else {
-                    log_message("🎵 %s (via dbserver/%s)", title,
-                               fallback_type == TRACK_REKORDBOX ? "rekordbox" : "unanalyzed");
+                    logmsg("cdj", "🎵 %s (via DBServer)", title);
                 }
                 
                 track_cache_entry_t *tc = add_track_cache(dev->rekordbox_id, dev->ip_addr);

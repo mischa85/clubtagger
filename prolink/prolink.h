@@ -20,11 +20,14 @@
 /* Parse keepalive packet (port 50000) - device announcements */
 void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip);
 
-/* Parse CDJ status packet (port 50001) - track info, play state */
+/* Parse CDJ status packet (port 50002) - track info, play state */
 void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip);
 
-/* Parse beat packet (port 50002) - beat sync */
+/* Parse beat packet (port 50001) - beat sync */
 void parse_beat(const uint8_t *data, size_t len, uint32_t src_ip);
+
+/* Parse CDJ-3000 position packet (port 50001) - absolute position */
+void parse_position(const uint8_t *data, size_t len, uint32_t src_ip);
 
 /*
  * ============================================================================

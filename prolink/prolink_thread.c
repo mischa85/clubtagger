@@ -227,7 +227,6 @@ static void *prolink_thread_afxdp(void *arg) {
     memset(devices, 0, sizeof(devices));
     clear_track_cache();
     capture_interface = pt->interface;
-    passive_only = 0;
 
     /* Initialize NFS observer for passive traffic sniffing.
      * NFS traffic is XDP_PASS'd to kernel, so we use a raw socket to observe it. */
@@ -235,13 +234,12 @@ static void *prolink_thread_afxdp(void *arg) {
         vlogmsg("cdj", "NFS observation enabled via raw socket");
     }
 
-    /* Send initial keepalives */
-    for (int i = 0; i < 3; i++) {
+    if (!passive_only) {
         do_full_registration(pt->interface);
-        usleep(200000);
+        logmsg("cdj", "Prolink observing network (AF_XDP) — will auto-detect active vs passive");
+    } else {
+        logmsg("cdj", "Prolink ready (forced passive/SPAN mode, AF_XDP) — eavesdrop only");
     }
-
-    logmsg("cdj", "Prolink ready for metadata queries (AF_XDP)");
 
     struct pollfd fds = {
         .fd = xsk_socket__fd(xsk.xsk),
@@ -352,15 +350,16 @@ static void *prolink_thread_pcap(void *arg) {
     
     /* Store interface for registration */
     capture_interface = pt->interface;
-    passive_only = 0;  /* We want active registration for metadata queries */
-    
-    /* Send initial keepalives */
-    for (int i = 0; i < 3; i++) {
+
+    if (!passive_only) {
+        /* Start observation phase — will auto-detect whether we need to register.
+         * If status packets are already flowing (SPAN/multi-CDJ), stays passive.
+         * If no status packets seen after 10s, registers as virtual CDJ. */
         do_full_registration(pt->interface);
-        usleep(200000);
+        logmsg("cdj", "Prolink observing network (pcap) — will auto-detect active vs passive");
+    } else {
+        logmsg("cdj", "Prolink ready (forced passive/SPAN mode, pcap) — eavesdrop only");
     }
-    
-    logmsg("cdj", "Prolink ready for metadata queries (pcap)");
     
     /* Main capture loop */
     while (atomic_load(&pt->running)) {
@@ -680,6 +679,10 @@ void prolink_check_tagging(ProlinkThread *pt) {
                 if (play_duration >= CDJ_TAG_MIN_PLAYTIME_SEC) {
                     should_log = 1;
                     reason = "cdj/duration";
+                } else if (play_duration > 0 && play_duration % 30 == 0) {
+                    /* Log progress every 30s so UI shows we're waiting */
+                    logmsg("cdj", "Deck %d: playing %lds/%ds before auto-tag",
+                           dev->device_num, (long)play_duration, CDJ_TAG_MIN_PLAYTIME_SEC);
                 }
             }
         }

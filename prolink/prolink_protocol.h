@@ -16,8 +16,8 @@
  */
 
 #define PROLINK_KEEPALIVE_PORT  50000
-#define PROLINK_STATUS_PORT     50001
-#define PROLINK_BEAT_PORT       50002
+#define PROLINK_BEAT_PORT       50001   /* Beat sync + CDJ-3000 position */
+#define PROLINK_STATUS_PORT     50002   /* CDJ status updates */
 
 /*
  * ============================================================================
@@ -33,13 +33,13 @@
 typedef enum {
     PKT_TYPE_DEVICE_ANNOUNCE = 0x06,
     PKT_TYPE_KEEPALIVE       = 0x0a,
-    PKT_TYPE_CDJ_STATUS      = 0x0a,  /* On port 50001 */
+    PKT_TYPE_CDJ_STATUS      = 0x0a,  /* On port 50002 */
     PKT_TYPE_BEAT            = 0x28
 } prolink_pkt_type_t;
 
 /*
  * ============================================================================
- * CDJ Status Packet Offsets (Port 50001)
+ * CDJ Status Packet Offsets (Port 50002)
  * ============================================================================
  * 
  * Status packets are 0xd4 (212) bytes for CDJ-2000NXS2.
@@ -248,8 +248,13 @@ typedef enum {
     PLAY_STATE_LOADING  = 0x02,
     PLAY_STATE_PLAYING  = 0x03,
     PLAY_STATE_LOOPING  = 0x04,
-    PLAY_STATE_PAUSED   = 0x05,
-    PLAY_STATE_CUED     = 0x06
+    PLAY_STATE_PAUSED       = 0x05,
+    PLAY_STATE_CUED         = 0x06,
+    PLAY_STATE_CUING        = 0x07,
+    PLAY_STATE_PLATTER_HELD = 0x08,
+    PLAY_STATE_SEARCHING    = 0x09,
+    PLAY_STATE_SPUN_DOWN    = 0x0e,
+    PLAY_STATE_ENDED        = 0x11
 } cdj_play_state_t;
 
 /* Helper macros for big-endian to host conversion */
@@ -292,7 +297,7 @@ typedef struct __attribute__((packed)) {
 /* Compile-time verification of struct size */
 _Static_assert(sizeof(prolink_keepalive_packet_t) == 44, "prolink_keepalive_packet_t must be 44 bytes");
 
-/* Beat packet (96 bytes, subtype 0x28 on port 50001)
+/* Beat packet (96 bytes, subtype 0x28 on port 50001 / PROLINK_BEAT_PORT)
  * Sent on each beat when playing rekordbox-analyzed tracks
  * Reference: https://djl-analysis.deepsymmetry.org/djl-analysis/beats.html
  *
@@ -331,5 +336,32 @@ typedef struct __attribute__((packed)) {
 
 /* Compile-time verification of struct size */
 _Static_assert(sizeof(cdj_beat_packet_t) == 96, "cdj_beat_packet_t must be 96 bytes");
+
+/* CDJ-3000 Absolute Position packet (subtype 0x0a, subtype2 0x00, on port 50001)
+ * Sent every ~30ms while a track is loaded. Only CDJ-3000 and newer.
+ * Reference: alphatheta-connect position packet documentation.
+ *
+ * Verified offsets:
+ *   [0x20]     Subtype2 = 0x00 (identifies position packet)
+ *   [0x21]     Device number
+ *   [0x24-0x27] Track length in seconds (big-endian uint32)
+ *   [0x28-0x2b] Playhead in milliseconds (big-endian uint32)
+ *   [0x2c-0x2f] Pitch * 6400 (big-endian int32)
+ *   [0x30-0x33] BPM * 10 (big-endian uint32, 0xffffffff = unknown) */
+typedef struct __attribute__((packed)) {
+    prolink_header_t header;    /* 0x00-0x0a (0-10): Common header (subtype=0x0a) */
+    char     device_name[20];   /* 0x0b-0x1e (11-30): Device name */
+    uint8_t  sub_indicator;     /* 0x1f (31): Always 0x01 */
+    uint8_t  subtype2;          /* 0x20 (32): 0x00 for position packets */
+    uint8_t  device_num;        /* 0x21 (33): Device number */
+    uint8_t  len_remaining[2];  /* 0x22-0x23 (34-35): Bytes remaining */
+    uint8_t  track_length_be[4];/* 0x24-0x27 (36-39): Track length in seconds (BE) */
+    uint8_t  playhead_be[4];    /* 0x28-0x2b (40-43): Playhead in ms (BE) */
+    uint8_t  pitch_be[4];       /* 0x2c-0x2f (44-47): Pitch * 6400 (BE signed) */
+    uint8_t  bpm_be[4];         /* 0x30-0x33 (48-51): BPM * 10 (BE, 0xffffffff=unknown) */
+} cdj_position_packet_t;
+
+/* Compile-time verification of struct size */
+_Static_assert(sizeof(cdj_position_packet_t) == 52, "cdj_position_packet_t must be 52 bytes");
 
 #endif /* PROLINK_PROTOCOL_H */

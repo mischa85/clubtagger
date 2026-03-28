@@ -124,18 +124,6 @@
         .nerd-stat .value.ok { color: #4caf50; }
         
         /* Now Playing */
-        .now-playing {
-            text-align: center;
-            padding: 15px;
-            background: #0f0f1a;
-            border-radius: 10px;
-            margin-bottom: 20px;
-        }
-        .now-playing-label { font-size: 11px; color: #888; margin-bottom: 8px; }
-        .now-playing-artist { font-size: 20px; font-weight: bold; color: #00d4ff; }
-        .now-playing-title { font-size: 16px; color: #ccc; margin-top: 4px; }
-        .now-playing-isrc { font-size: 10px; color: #555; font-family: monospace; margin-top: 4px; }
-        
         /* CDJ Decks */
         .decks-container {
             display: grid;
@@ -169,12 +157,58 @@
         .deck-badge.playing { background: #1a4d1a; color: #4caf50; }
         .deck-badge.paused { background: #4d4d1a; color: #ffeb3b; }
         .deck-badge.on-air { background: #4d1a1a; color: #ff5722; }
+        .deck-badge.off-air { background: #1a1a1a; color: #555; font-size: 9px; }
         .deck-track { font-size: 12px; }
         .deck-artist { font-weight: bold; color: #eee; margin-bottom: 2px; }
         .deck-title { color: #888; font-size: 11px; }
         .deck-meta { margin-top: 6px; font-size: 10px; color: #666; }
         .deck-bpm { color: #00d4ff; font-weight: bold; }
+        .deck-playtime { color: #aaa; font-size: 11px; font-variant-numeric: tabular-nums; margin-left: 8px; }
+        .deck-position { color: #888; font-variant-numeric: tabular-nums; }
+        .deck-media { color: #5a5; }
+        .deck-db { color: #a5a; font-style: italic; }
         .deck-isrc { color: #888; font-family: monospace; font-size: 9px; }
+        .conf-bar-container {
+            position: relative;
+            height: 14px;
+            background: #1a1a2e;
+            border-radius: 3px;
+            margin: 6px 0 4px;
+            overflow: hidden;
+        }
+        .conf-bar {
+            height: 100%;
+            border-radius: 3px;
+            transition: width 0.5s ease, background 0.3s ease;
+        }
+        .conf-threshold {
+            position: absolute;
+            left: 60%;
+            top: 0;
+            bottom: 0;
+            width: 1px;
+            background: rgba(255,255,255,0.25);
+        }
+        .conf-label {
+            position: absolute;
+            right: 4px;
+            top: 0;
+            line-height: 14px;
+            font-size: 9px;
+            color: #ccc;
+            font-weight: bold;
+        }
+        .identification-panel {
+            background: #0f0f1a;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .id-waiting { color: #555; text-align: center; font-size: 13px; }
+        .id-track { text-align: center; margin-bottom: 8px; }
+        .id-track.accepted .id-artist { color: #4caf50; }
+        .id-artist { font-size: 18px; font-weight: bold; color: #00d4ff; }
+        .id-title { font-size: 14px; color: #aaa; margin-top: 2px; }
         .no-decks {
             text-align: center;
             color: #666;
@@ -186,6 +220,22 @@
         }
         
         /* Tracklist */
+        .activity-section {
+            background: #0a0a14;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        .activity-section h2 { margin-bottom: 10px; color: #888; font-size: 12px; }
+        .activity-log {
+            max-height: 150px;
+            overflow-y: auto;
+            font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+            font-size: 10px;
+            line-height: 1.5;
+            color: #6a6;
+        }
+        .log-line { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .tracklist {
             background: #0f0f1a;
             border-radius: 10px;
@@ -220,52 +270,6 @@
         .status.disconnected { background: #4d1a1a; color: #f44336; }
         
         /* Shazam status */
-        .shazam-status {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 8px 12px;
-            background: #0f0f1a;
-            border-radius: 6px;
-            margin-bottom: 15px;
-            border-left: 3px solid #333;
-            font-size: 12px;
-        }
-        .shazam-status .shazam-text { font-weight: 500; }
-        .shazam-status .shazam-candidate {
-            color: #888;
-            flex: 1;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            font-size: 11px;
-        }
-        .shazam-status .shazam-confirms {
-            font-size: 10px;
-            background: #333;
-            padding: 2px 5px;
-            border-radius: 3px;
-            color: #888;
-        }
-        .shazam-status .shazam-attempts {
-            font-size: 10px;
-            background: #333;
-            padding: 2px 5px;
-            border-radius: 3px;
-            color: #888;
-            margin-left: 8px;
-        }
-        .shazam-status.idle { border-left-color: #666; color: #666; }
-        .shazam-status.listening { border-left-color: #2196f3; color: #2196f3; }
-        .shazam-status.fingerprinting { border-left-color: #9c27b0; color: #9c27b0; }
-        .shazam-status.querying { border-left-color: #ff9800; color: #ff9800; }
-        .shazam-status.confirming { border-left-color: #ffeb3b; color: #ffeb3b; }
-        .shazam-status.matched { border-left-color: #4caf50; color: #4caf50; }
-        .shazam-status.disabled { border-left-color: #f44336; color: #f44336; }
-        .shazam-status.throttled { border-left-color: #795548; color: #795548; }
-        .shazam-status.no-match { border-left-color: #9e9e9e; color: #9e9e9e; }
-        .shazam-status.error { border-left-color: #f44336; color: #f44336; }
-        
         /* Source badges */
         .source-badge {
             display: inline-block;
@@ -280,14 +284,6 @@
         .source-badge.both { background: #1a4d1a; color: #4caf50; }
         .confidence { font-size: 10px; color: #888; }
         .track-meta { display: flex; align-items: center; gap: 4px; margin-top: 2px; }
-        .now-playing-meta {
-            margin-top: 8px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            gap: 6px;
-        }
-        
         /* Mobile responsive */
         @media (max-width: 480px) {
             body { padding: 8px; }
@@ -343,18 +339,15 @@
             <div class="no-decks">No CDJs detected</div>
         </div>
         
-        <div class="shazam-status idle" id="shazam-status">
-            <span class="shazam-text">Idle</span>
+        <div class="identification-panel" id="identification">
+            <div class="id-waiting">Waiting for track...</div>
         </div>
-        
-        <div class="now-playing">
-            <div class="now-playing-label">NOW PLAYING</div>
-            <div class="now-playing-artist" id="now-artist">—</div>
-            <div class="now-playing-title" id="now-title"></div>
-            <div class="now-playing-isrc" id="now-isrc"></div>
-            <div class="now-playing-meta" id="now-meta"></div>
+
+        <div class="activity-section">
+            <h2>ACTIVITY</h2>
+            <div class="activity-log" id="activity-log"></div>
         </div>
-        
+
         <div class="tracklist">
             <h2>RECENT TRACKS</h2>
             <div id="tracks"></div>

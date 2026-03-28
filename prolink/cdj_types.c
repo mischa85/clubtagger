@@ -57,8 +57,10 @@ const char *cdj_slot_name(uint8_t slot) {
         case SLOT_CD:       return "CD";
         case SLOT_SD:       return "SD";
         case SLOT_USB:      return "USB";
-        case SLOT_LINK:     return "LINK";
-        default:            return "????";
+        case SLOT_LINK:      return "LINK";
+        case SLOT_STREAMING: return "STREAM";
+        case SLOT_BEATPORT:  return "BEATPORT";
+        default:             return "????";
     }
 }
 

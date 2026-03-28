@@ -458,7 +458,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
  */
 
 /* Internal helper for NFS lookup with just dir_fh and output fh */
-static uint16_t g_nfs_port = 2049;  /* Cached NFS port from portmapper */
+uint16_t g_nfs_port = 2049;  /* Cached NFS port from portmapper (shared with onelibrary.c) */
 
 static int nfs_lookup_simple(uint32_t server_ip, const uint8_t *dir_fh, 
                              const char *name, uint8_t *file_fh) {

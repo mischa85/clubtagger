@@ -100,8 +100,10 @@ typedef struct {
     const char *slink_backend;     /* "pcap" or "afxdp" */
     const char *sse_socket;        /* Unix socket path for SSE server (NULL = disabled) */
     const char *prolink_interface; /* Network interface for CDJ sniffing (NULL = disabled) */
+    int         prolink_passive;   /* SPAN port mode: no registration, eavesdrop only */
+    const char *olib_key;          /* OneLibrary decryption passphrase (NULL = disabled) */
     unsigned    match_threshold;    /* 0-100 similarity % for fuzzy track matching */
-    
+
     /* Mode flags - which features to enable (default: all off) */
     int         enable_record;     /* Enable audio recording */
     int         enable_audio_tag;  /* Enable Shazam/audio fingerprinting */

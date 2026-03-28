@@ -13,10 +13,13 @@
 #include "../db/database.h"
 #include "shazam.h"
 #include "../prolink/prolink_thread.h"
+#include "../confidence.h"
+#include "../prolink/cdj_types.h"
 
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -31,33 +34,6 @@ extern unsigned int vibra_get_sample_ms_from_fingerprint(Fingerprint *fingerprin
 extern void vibra_free_fingerprint(Fingerprint *fingerprint);
 
 /* Record a confirmed match - updates state and DB */
-static void record_match(App *app, const char *artist, const char *title, 
-                         const char *isrc, int confidence, const char *source) {
-    char tsbuf[64];
-    now_timestamp(tsbuf, sizeof(tsbuf));
-    
-    if (isrc && isrc[0])
-        logmsg("id", "%s MATCH: %s — %s [%s] (%d%%, %s)", tsbuf, artist, title, isrc, confidence, source);
-    else
-        logmsg("id", "%s MATCH: %s — %s (%d%%, %s)", tsbuf, artist, title, confidence, source);
-    
-    db_insert_play(app, tsbuf, artist, title, isrc ? isrc : "", confidence, source);
-    
-    pthread_mutex_lock(&app->db_mu);
-    snprintf(app->last_artist, sizeof(app->last_artist), "%s", artist);
-    snprintf(app->last_title, sizeof(app->last_title), "%s", title);
-    snprintf(app->last_source, sizeof(app->last_source), "%s", source);
-    snprintf(app->last_isrc, sizeof(app->last_isrc), "%s", isrc ? isrc : "");
-    app->last_confidence = confidence;
-    app->shazam_candidate[0] = '\0';
-    app->shazam_confirms = 0;
-    app->shazam_no_match_count = 0;
-    pthread_mutex_unlock(&app->db_mu);
-    
-    atomic_store_explicit(&app->shazam_state, SHAZAM_MATCHED, memory_order_release);
-    atomic_fetch_add_explicit(&app->track_seq, 1, memory_order_release);
-}
-
 /* Get CDJ track info if available */
 static int get_cdj_track(App *app, char *title, size_t tsz, char *artist, size_t asz,
                          char *isrc, size_t isz, int *deck) {
@@ -90,17 +66,7 @@ void *id_main(void *arg) {
            cfg->fingerprint_sec, cfg->identify_interval_sec, cfg->threshold);
 
     time_t last_lookup = 0;
-    time_t last_good_match = 0;
-    TrackID current = {0};   /* Currently confirmed track */
-    TrackID pending = {0};   /* Candidate awaiting confirmation */
-    int pending_confirms = 0;
-    int shazam_fails = 0;    /* Consecutive Shazam failures */
-    
-    /* CDJ track change detection */
-    char last_cdj_title[256] = {0};
-    char last_cdj_artist[256] = {0};
-    time_t cdj_track_stable_since = 0;  /* When current CDJ track started */
-    #define CDJ_STABLE_THRESHOLD_SEC 30  /* Accept CDJ track after 30s stable playback */
+    unsigned shazam_backoff = 0;  /* Extra seconds to wait after API errors */
 
     /* Initial state: listening for audio */
     atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
@@ -123,68 +89,29 @@ void *id_main(void *arg) {
         unsigned r = rms_s16_interleaved(window_s16, got, cfg->channels);
         vlogmsg("id", "peek=%zu frames, rms=%u (threshold=%u)", got, r, cfg->threshold);
 
-        /* 
-         * CDJ track change detection - check if CDJ has a different track
-         * that's been stable for a while, regardless of Shazam state
-         */
-        {
-            char cdj_title[256] = {0}, cdj_artist[256] = {0}, cdj_isrc[64] = {0};
-            int cdj_deck = 0;
-            time_t now = time(NULL);
-            
-            if (get_cdj_track(app, cdj_title, sizeof(cdj_title),
-                              cdj_artist, sizeof(cdj_artist),
-                              cdj_isrc, sizeof(cdj_isrc), &cdj_deck) == 0 && cdj_title[0]) {
-                
-                /* Did the CDJ track change? */
-                if (strcmp(cdj_title, last_cdj_title) != 0 || 
-                    strcmp(cdj_artist, last_cdj_artist) != 0) {
-                    /* Track changed - reset stable timer */
-                    strncpy(last_cdj_title, cdj_title, sizeof(last_cdj_title) - 1);
-                    strncpy(last_cdj_artist, cdj_artist, sizeof(last_cdj_artist) - 1);
-                    cdj_track_stable_since = now;
-                    vlogmsg("id", "CDJ track changed to: %s — %s", cdj_artist, cdj_title);
-                }
-                
-                /* If CDJ track is stable AND different from current displayed track,
-                 * update after threshold time */
-                if (cdj_track_stable_since > 0 && 
-                    (now - cdj_track_stable_since) >= CDJ_STABLE_THRESHOLD_SEC) {
-                    
-                    /* Check if this is different from what we're currently showing */
-                    int is_different = !current.valid ||
-                                      (strcmp(cdj_title, current.title) != 0 &&
-                                       strcmp(cdj_artist, current.artist) != 0);
-                    
-                    if (is_different) {
-                        logmsg("id", "CDJ track stable for %ds, updating: %s — %s",
-                               CDJ_STABLE_THRESHOLD_SEC, cdj_artist, cdj_title);
-                        
-                        current.valid = 1;
-                        snprintf(current.artist, sizeof(current.artist), "%s", cdj_artist);
-                        snprintf(current.title, sizeof(current.title), "%s", cdj_title);
-                        snprintf(current.isrc, sizeof(current.isrc), "%s", cdj_isrc);
-                        current.has_isrc = cdj_isrc[0] != 0;
-                        
-                        last_good_match = now;
-                        record_match(app, cdj_artist, cdj_title, cdj_isrc, 75, "cdj/stable");
-                        pending.valid = 0;
-                        pending_confirms = 0;
-                        shazam_fails = 0;
-                    }
-                }
-            }
-        }
+        /* CDJ track stability and duration are now handled by confidence_tick() */
 
         /* Use same threshold as writer for "is there music" detection */
         if (got > 0 && r >= cfg->threshold && got >= (size_t)(cfg->rate * cfg->fingerprint_sec * 3 / 4)) {
             time_t nowt = time(NULL);
-            if (current.valid && (unsigned)(nowt - last_good_match) < cfg->same_track_hold_sec) {
-                vlogmsg("id", "hold: same-track window active (%us)", cfg->same_track_hold_sec);
-                goto sleep_loop;
+
+            /* If the best deck (or audio-only) is already accepted, skip Shazam */
+            {
+                int best = confidence_best_deck();
+                deck_confidence_t best_state;
+                if (best >= 0) confidence_get_deck(best, &best_state);
+                else confidence_get_audio(&best_state);
+                if (best_state.accepted &&
+                    (unsigned)(nowt - best_state.accepted_at) < cfg->same_track_hold_sec) {
+                    vlogmsg("id", "hold: track accepted, skipping Shazam (%us)",
+                            cfg->same_track_hold_sec);
+                    goto sleep_loop;
+                }
             }
-            if (last_lookup && (unsigned)(nowt - last_lookup) < cfg->shazam_gap_sec) {
-                vlogmsg("id", "throttle: waiting %us between lookups", cfg->shazam_gap_sec);
+            unsigned effective_gap = cfg->shazam_gap_sec + shazam_backoff;
+            if (last_lookup && (unsigned)(nowt - last_lookup) < effective_gap) {
+                vlogmsg("id", "throttle: waiting %us between lookups%s",
+                        effective_gap, shazam_backoff ? " (backoff)" : "");
                 goto sleep_loop;
             }
             last_lookup = nowt;
@@ -216,8 +143,17 @@ void *id_main(void *arg) {
                                               cdj_artist, sizeof(cdj_artist),
                                               cdj_isrc, sizeof(cdj_isrc), &cdj_deck) == 0 && cdj_title[0]);
 
-                if (shazam_post(url, ua, body, json, sizeof(json)) == 0) {
-                    vlogmsg("id", "shazam response: %.500s", json);
+                struct timeval t_start, t_end;
+                gettimeofday(&t_start, NULL);
+                logmsg("id", "Querying Shazam...%s",
+                       have_cdj ? " (CDJ has track, will compare)" : "");
+                int post_ok = shazam_post(url, ua, body, json, sizeof(json));
+                gettimeofday(&t_end, NULL);
+                int query_ms = (int)((t_end.tv_sec - t_start.tv_sec) * 1000 +
+                                     (t_end.tv_usec - t_start.tv_usec) / 1000);
+
+                if (post_ok == 0) {
+                    vlogmsg("id", "shazam response (%dms): %.500s", query_ms, json);
 
                     char title[256] = {0}, artist[256] = {0}, isrc[64] = {0};
                     json_extract_field(json, "title", title, sizeof(title));
@@ -242,129 +178,95 @@ void *id_main(void *arg) {
                     vlogmsg("id", "shazam skew: ts=%.4f fs=%.4f → %d%%", timeskew, freqskew, shazam_confidence);
 
                     if (title[0] || artist[0]) {
-                        shazam_fails = 0;  /* Reset fail counter on any result */
+                        logmsg("id", "Shazam result (%dms): %s — %s (%d%%)",
+                               query_ms, artist, title, shazam_confidence);
+                        shazam_backoff = 0;
 
-                        /* Check if this matches current track */
-                        TrackID match = {0};
-                        match.valid = 1;
-                        snprintf(match.artist, sizeof(match.artist), "%s", artist);
-                        snprintf(match.title, sizeof(match.title), "%s", title);
-                        snprintf(match.isrc, sizeof(match.isrc), "%s", isrc);
-                        match.has_isrc = isrc[0] != 0;
+                        /* Find the best matching CDJ deck for this Shazam result */
+                        int matched_deck = -1;
+                        for (int di = 0; di < MAX_DEVICES; di++) {
+                            cdj_device_t *dd = &devices[di];
+                            if (!dd->active || dd->device_type != DEVICE_TYPE_CDJ) continue;
+                            if (!dd->playing || dd->track_title[0] == '\0') continue;
 
-                        if (current.valid && same_track(&match, &current)) {
-                            /* Same track still playing */
-                            last_good_match = time(NULL);
-                            vlogmsg("id", "still playing: %s — %s", artist, title);
-                        }
-                        /* RULE 1: If Shazam matches CDJ, accept immediately with high confidence */
-                        else if (have_cdj && (prolink_isrc_matches(cdj_isrc, isrc) ||
-                                              prolink_matches_fingerprint(cdj_title, cdj_artist, title, artist))) {
-                            int confidence = prolink_isrc_matches(cdj_isrc, isrc) ? 100 : (shazam_confidence + 10 > 100 ? 100 : shazam_confidence + 10);
-                            vlogmsg("id", "Shazam+CDJ agree: %s — %s (%d%%)", artist, title, confidence);
-                            current = match;
-                            last_good_match = time(NULL);
-                            record_match(app, artist, title, isrc, confidence, "both");
-                            pending.valid = 0;
-                            pending_confirms = 0;
-                            shazam_fails = 0;
-                        }
-                        /* RULE 2: CDJ has track but Shazam disagrees → ALWAYS trust CDJ */
-                        else if (have_cdj && cdj_title[0]) {
-                            vlogmsg("id", "Shazam (%s — %s) disagrees with CDJ (%s — %s), using CDJ",
-                                   artist, title, cdj_artist, cdj_title);
-                            goto try_cdj_fallback;
-                        }
-                        /* RULE 3: No CDJ track - Shazam only needs 2 confirms */
-                        else if (pending.valid && same_track(&match, &pending)) {
-                            pending_confirms++;
-                            vlogmsg("id", "confirming: %s — %s (%d/2)", artist, title, pending_confirms);
-                            
-                            pthread_mutex_lock(&app->db_mu);
-                            snprintf(app->shazam_candidate, sizeof(app->shazam_candidate), "%s — %s", artist, title);
-                            app->shazam_confirms = pending_confirms;
-                            app->shazam_confidence = shazam_confidence;
-                            pthread_mutex_unlock(&app->db_mu);
-                            atomic_store_explicit(&app->shazam_state, SHAZAM_CONFIRMING, memory_order_release);
-
-                            if (pending_confirms >= 2) {
-                                current = match;
-                                last_good_match = time(NULL);
-                                record_match(app, artist, title, isrc, shazam_confidence, "audio");
-                                pending.valid = 0;
-                                pending_confirms = 0;
+                            if (prolink_isrc_matches(dd->track_isrc, isrc)) {
+                                confidence_signal(di, SIG_ISRC_MATCH, 0,
+                                                  artist, title, isrc, 0);
+                                matched_deck = di;
+                                break;
+                            }
+                            if (prolink_matches_fingerprint(dd->track_title, dd->track_artist,
+                                                            title, artist)) {
+                                confidence_signal(di, SIG_FUZZY_MATCH, 0,
+                                                  NULL, NULL, NULL, 0);
+                                matched_deck = di;
+                                break;
                             }
                         }
-                        /* New candidate (no CDJ track) */
-                        else {
-                            pending = match;
-                            pending_confirms = 1;
-                            vlogmsg("id", "candidate: %s — %s (need confirm)", artist, title);
-                            
-                            pthread_mutex_lock(&app->db_mu);
-                            snprintf(app->shazam_candidate, sizeof(app->shazam_candidate), "%s — %s", artist, title);
-                            app->shazam_confirms = 1;
-                            app->shazam_confidence = shazam_confidence;
-                            app->shazam_no_match_count = 0;
-                            pthread_mutex_unlock(&app->db_mu);
-                            atomic_store_explicit(&app->shazam_state, SHAZAM_CONFIRMING, memory_order_release);
+
+                        if (matched_deck >= 0) {
+                            /* Shazam confirmed a CDJ deck — boost that deck */
+                            confidence_signal(matched_deck, SIG_SHAZAM_MATCH, shazam_confidence,
+                                              artist, title, isrc, 0);
+                        } else if (!have_cdj) {
+                            /* Audio-only mode — Shazam is our only source */
+                            /* Check if this is a repeat (confirm) or new candidate */
+                            deck_confidence_t audio_state;
+                            confidence_get_audio(&audio_state);
+                            if (audio_state.title[0] &&
+                                prolink_matches_fingerprint(audio_state.title, audio_state.artist,
+                                                            title, artist)) {
+                                confidence_signal(-1, SIG_SHAZAM_CONFIRM, shazam_confidence,
+                                                  artist, title, isrc, 0);
+                            } else {
+                                confidence_signal(-1, SIG_SHAZAM_MATCH, shazam_confidence,
+                                                  artist, title, isrc, 0);
+                            }
+                        } else {
+                            /* Shazam disagrees with all CDJ decks */
+                            int best = confidence_best_deck();
+                            if (best >= 0) {
+                                confidence_signal(best, SIG_SHAZAM_DISAGREE, 0,
+                                                  NULL, NULL, NULL, 0);
+                            }
+                            /* Also feed Shazam result to audio-only slot as candidate */
+                            deck_confidence_t audio_state;
+                            confidence_get_audio(&audio_state);
+                            if (audio_state.title[0] &&
+                                prolink_matches_fingerprint(audio_state.title, audio_state.artist,
+                                                            title, artist)) {
+                                confidence_signal(-1, SIG_SHAZAM_CONFIRM, shazam_confidence,
+                                                  artist, title, isrc, 0);
+                            } else {
+                                confidence_signal(-1, SIG_SHAZAM_MATCH, shazam_confidence,
+                                                  artist, title, isrc, 0);
+                            }
                         }
                     } else {
                         /* Shazam returned no track */
-                        shazam_fails++;
-                        logmsg("id", "no track in response (%d/3)", shazam_fails);
-                        goto try_cdj_fallback;
+                        if (shazam_backoff < 10) shazam_backoff += 5;
+                        logmsg("id", "Shazam: no match (%dms)", query_ms);
+                        /* Penalize all playing decks mildly */
+                        for (int di = 0; di < MAX_DEVICES; di++) {
+                            if (devices[di].active && devices[di].playing)
+                                confidence_signal(di, SIG_SHAZAM_NO_MATCH, 0,
+                                                  NULL, NULL, NULL, 0);
+                        }
+                        confidence_signal(-1, SIG_SHAZAM_NO_MATCH, 0, NULL, NULL, NULL, 0);
                     }
                 } else {
                     /* Shazam API error */
-                    shazam_fails++;
-                    logmsg("id", "shazam error (%d/3)", shazam_fails);
-                    goto try_cdj_fallback;
-                }
-                goto done_fingerprint;
-
-            try_cdj_fallback:
-                /* After 3 Shazam failures, trust CDJ */
-                pthread_mutex_lock(&app->db_mu);
-                app->shazam_no_match_count = shazam_fails;
-                pthread_mutex_unlock(&app->db_mu);
-                
-                if (shazam_fails >= 3 && have_cdj) {
-                    TrackID cdj_match = {0};
-                    cdj_match.valid = 1;
-                    snprintf(cdj_match.artist, sizeof(cdj_match.artist), "%s", cdj_artist);
-                    snprintf(cdj_match.title, sizeof(cdj_match.title), "%s", cdj_title);
-                    snprintf(cdj_match.isrc, sizeof(cdj_match.isrc), "%s", cdj_isrc);
-                    cdj_match.has_isrc = cdj_isrc[0] != 0;
-
-                    if (!current.valid || !same_track(&cdj_match, &current)) {
-                        vlogmsg("id", "CDJ fallback: %s — %s (deck %d)", cdj_artist, cdj_title, cdj_deck);
-                        current = cdj_match;
-                        last_good_match = time(NULL);
-                        record_match(app, cdj_artist, cdj_title, cdj_isrc, 70, "cdj");
-                        pending.valid = 0;
-                        pending_confirms = 0;
-                        shazam_fails = 0;
-                    } else {
-                        last_good_match = time(NULL);
-                    }
-                } else {
-                    atomic_store_explicit(&app->shazam_state, SHAZAM_NO_MATCH, memory_order_release);
+                    shazam_backoff = (shazam_backoff < 30) ? shazam_backoff + 30 :
+                                    (shazam_backoff < 120) ? shazam_backoff * 2 : 300;
+                    logmsg("id", "Shazam error (%dms, backoff %us)",
+                           query_ms, shazam_backoff);
                 }
 
-            done_fingerprint:
                 vibra_free_fingerprint(fp);
             }
         }
     sleep_loop:
-        /* Back to listening state (unless we're still confirming, matched, no_match, or error) */
-        {
-            int cur_state = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
-            if (cur_state != SHAZAM_CONFIRMING && cur_state != SHAZAM_MATCHED &&
-                cur_state != SHAZAM_NO_MATCH && cur_state != SHAZAM_ERROR) {
-                atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
-            }
-        }
+        atomic_store_explicit(&app->shazam_state, SHAZAM_LISTENING, memory_order_release);
 
         for (unsigned s = 0; s < cfg->identify_interval_sec && g_running; ++s) {
             struct timespec ts = {.tv_sec = 0, .tv_nsec = 200 * 1000 * 1000};

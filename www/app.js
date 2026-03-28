@@ -7,15 +7,9 @@
     const vuRight = document.getElementById('vu-right');
     const peakLeft = document.getElementById('peak-left');
     const peakRight = document.getElementById('peak-right');
-    const nowArtist = document.getElementById('now-artist');
-    const nowTitle = document.getElementById('now-title');
-    const nowIsrc = document.getElementById('now-isrc');
-    const nowMeta = document.getElementById('now-meta');
     const tracksEl = document.getElementById('tracks');
     const statusEl = document.getElementById('status');
     const decksEl = document.getElementById('decks');
-    const shazamEl = document.getElementById('shazam-status');
-    
     // Stats elements
     const statFormat = document.getElementById('stat-format');
     const statRuntime = document.getElementById('stat-runtime');
@@ -26,22 +20,8 @@
     const statWritten = document.getElementById('stat-written');
     const recStatus = document.getElementById('rec-status');
     
-    // Shazam state names
-    const SHAZAM_STATES = {
-        0: { text: 'Idle', class: 'idle' },
-        1: { text: 'Listening...', class: 'listening' },
-        2: { text: 'Fingerprinting...', class: 'fingerprinting' },
-        3: { text: 'Querying Shazam...', class: 'querying' },
-        4: { text: 'Confirming...', class: 'confirming' },
-        5: { text: 'Matched!', class: 'matched' },
-        6: { text: 'Waiting...', class: 'throttled' },
-        7: { text: 'Disabled', class: 'disabled' },
-        8: { text: 'No Match', class: 'no-match' },
-        9: { text: 'Error', class: 'error' }
-    };
-    
     // Slot names
-    const SLOTS = { 0: '', 1: 'CD', 2: 'SD', 3: 'USB', 4: 'Link' };
+    const SLOTS = { 0: '', 1: 'CD', 2: 'SD', 3: 'USB', 4: 'Link', 6: 'Stream', 9: 'Beatport' };
     
     // Peak hold state
     let peakLVal = 0, peakRVal = 0;
@@ -154,87 +134,131 @@
         }
     }
     
-    // Update now playing
-    function updateNowPlaying(artist, title, source, confidence, isrc) {
-        nowArtist.textContent = artist || '—';
-        nowTitle.textContent = title || '';
-        if (nowIsrc) {
-            nowIsrc.textContent = isrc || '';
-        }
-        if (nowMeta) {
-            nowMeta.innerHTML = sourceBadge(source, confidence);
-        }
-    }
-    
     // Source badge HTML helper
     function sourceBadge(src, conf) {
         if (!src) return '';
-        const badges = {
-            'audio': '<span class="source-badge audio">🎵 Audio</span>',
-            'cdj': '<span class="source-badge cdj">💿 CDJ</span>',
-            'both': '<span class="source-badge both">✓ Matched</span>'
-        };
-        const confText = conf ? `<span class="confidence">${conf}%</span>` : '';
-        return (badges[src] || '') + confText;
-    }
-    
-    // Update Shazam status
-    function updateShazam(data) {
-        if (!shazamEl) return;
-        const stateInfo = SHAZAM_STATES[data.state] || { text: 'Unknown', class: 'unknown' };
-        shazamEl.className = 'shazam-status ' + stateInfo.class;
-        
-        if (data.state === 4 && data.candidate) {  // SHAZAM_CONFIRMING
-            const needed = data.needed || 3;
-            const confPct = data.conf ? ` (${data.conf}%)` : '';
-            const cdjMatch = data.cdj ? ' 💿' : '';
-            shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>` +
-                `<span class="shazam-candidate">${escapeHtml(data.candidate)}${confPct}${cdjMatch}</span>` +
-                `<span class="shazam-confirms">${data.confirms}/${needed}</span>`;
-        } else if (data.attempts > 0 && (data.state === 1 || data.state === 2 || data.state === 3 || data.state === 8)) {
-            // Show attempt count when listening/fingerprinting/querying/no-match
-            shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>` +
-                `<span class="shazam-attempts">${data.attempts}/5</span>`;
-        } else {
-            shazamEl.innerHTML = `<span class="shazam-text">${stateInfo.text}</span>`;
+        // Normalize source - handle variations like "cdj/stable"
+        let badge = '';
+        if (src === 'both') {
+            badge = '<span class="source-badge both">✓ Matched</span>';
+        } else if (src.startsWith('cdj')) {
+            const label = src === 'cdj/stable' ? 'CDJ ⏱' : 'CDJ';
+            badge = `<span class="source-badge cdj">💿 ${label}</span>`;
+        } else if (src === 'audio') {
+            badge = '<span class="source-badge audio">🎵 Audio</span>';
         }
+        const confText = conf ? `<span class="confidence">${conf}%</span>` : '';
+        return badge + confText;
     }
     
+    // Update the track identification panel (best candidate across all sources)
+    function updateIdentification(decks) {
+        const idEl = document.getElementById('identification');
+        if (!idEl) return;
+
+        // Find best candidate: highest confidence with a title
+        let best = null;
+        if (decks) {
+            for (const d of decks) {
+                if (!d.title) continue;
+                if (!d.conf && !d.conf_ok) continue;
+                if (!best || d.conf > best.conf) best = d;
+            }
+        }
+
+        if (!best) {
+            idEl.innerHTML = '<div class="id-waiting">Waiting for track...</div>';
+            return;
+        }
+
+        const pct = best.conf || 0;
+        const color = best.conf_ok ? '#4caf50' : pct >= 30 ? '#ff9800' : '#666';
+        const src = best.conf_src && best.conf_src !== 'unknown' ? best.conf_src : '';
+        const deckLabel = best.n > 0 ? `Deck ${best.n}` : 'Audio';
+
+        idEl.innerHTML = `
+            <div class="id-track${best.conf_ok ? ' accepted' : ''}">
+                <div class="id-artist">${escapeHtml(best.artist) || '—'}</div>
+                <div class="id-title">${escapeHtml(best.title)}</div>
+            </div>
+            <div class="conf-bar-container">
+                <div class="conf-bar" style="width:${pct}%;background:${color}"></div>
+                <div class="conf-threshold"></div>
+                <span class="conf-label">${pct}%${best.conf_ok ? ' ✓' : ''}${src ? ' · ' + src : ''} · ${deckLabel}</span>
+            </div>
+        `;
+    }
+
     // Update CDJ deck status
     function updateDecks(decks) {
-        if (!decks || decks.length === 0) {
+        // Filter out audio-only entries (shown in identification panel instead)
+        const cdjDecks = decks ? decks.filter(d => !d.audio_only) : [];
+
+        if (cdjDecks.length === 0) {
             decksEl.innerHTML = '<div class="no-decks">No CDJs detected</div>';
             return;
         }
-        
+
         // Sort by deck number
-        decks.sort((a, b) => a.n - b.n);
+        cdjDecks.sort((a, b) => a.n - b.n);
+        const decksToRender = cdjDecks;
         
-        decksEl.innerHTML = decks.map(d => {
+        decksEl.innerHTML = decksToRender.map(d => {
             const classes = ['deck'];
             if (d.playing) classes.push('playing');
             if (d.on_air) classes.push('on-air');
-            
+
             const slotName = SLOTS[d.slot] || '';
             const bpmText = d.bpm > 0 ? `<span class="deck-bpm">${d.bpm} BPM</span>` : '';
             const slotText = slotName ? ` · ${slotName}` : '';
             const deckLabel = (d.name || 'CDJ') + ' (' + d.n + ')';
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
-            
+
+            // Play time with context
+            let playTimeText = '';
+            if (d.playing && d.play_time > 0) {
+                const m = Math.floor(d.play_time / 60);
+                const s = d.play_time % 60;
+                const timeStr = `${m}:${s < 10 ? '0' : ''}${s}`;
+                playTimeText = `<span class="deck-playtime" title="Continuous play time">${timeStr}</span>`;
+            }
+
+            // Position (from CDJ-3000 position packets)
+            let posText = '';
+            if (d.position_ms > 0) {
+                const pm = Math.floor(d.position_ms / 60000);
+                const ps = Math.floor((d.position_ms % 60000) / 1000);
+                posText = `<span class="deck-position">${pm}:${ps < 10 ? '0' : ''}${ps}</span>`;
+            }
+
+            // Media indicators
+            const mediaIcons = [];
+            if (d.usb) mediaIcons.push('USB');
+            if (d.sd) mediaIcons.push('SD');
+            const mediaText = mediaIcons.length > 0 ? `<span class="deck-media">${mediaIcons.join('+')}</span>` : '';
+
+            // Database source
+            const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
+
             return `
                 <div class="${classes.join(' ')}">
                     <div class="deck-header">
                         <span class="deck-num">${deckLabel}</span>
                         <div class="deck-status">
                             ${d.playing ? '<span class="deck-badge playing">▶ Playing</span>' : '<span class="deck-badge paused">❚❚ Paused</span>'}
-                            ${d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : ''}
+                            ${d.on_air_known ? (d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : '<span class="deck-badge off-air">OFF AIR</span>') : ''}
+                            ${playTimeText}
                         </div>
                     </div>
                     <div class="deck-track">
                         <div class="deck-artist">${escapeHtml(d.artist) || '—'}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}</div>
                     </div>
-                    <div class="deck-meta">${bpmText}${slotText}${isrcText ? ' · ' + isrcText : ''}</div>
+                    <div class="deck-meta">
+                        ${bpmText}${slotText}${posText ? ' · ' + posText : ''}
+                        ${isrcText ? ' · ' + isrcText : ''}
+                        ${mediaText ? ' · ' + mediaText : ''}${dbText ? ' · ' + dbText : ''}
+                    </div>
                 </div>
             `;
         }).join('');
@@ -325,7 +349,6 @@
             try {
                 const data = JSON.parse(e.data);
                 if (data.a || data.t) {
-                    updateNowPlaying(data.a, data.t, data.src, data.conf, data.isrc);
                     addTrack(data.a, data.t, null, data.src, data.conf, data.isrc);
                 }
             } catch (err) {
@@ -337,6 +360,7 @@
             try {
                 const decks = JSON.parse(e.data);
                 updateDecks(decks);
+                updateIdentification(decks);
             } catch (err) {
                 console.error('Decks parse error:', err);
             }
@@ -350,25 +374,33 @@
                     const t = tracks[i];
                     addTrack(t.a, t.t, t.ts, t.src, t.conf, t.isrc);
                 }
-                // Update now playing with most recent track
-                if (tracks.length > 0) {
-                    const latest = tracks[0];
-                    updateNowPlaying(latest.a, latest.t, latest.src, latest.conf, latest.isrc);
-                }
             } catch (err) {
                 console.error('History parse error:', err);
             }
         });
         
-        evtSource.addEventListener('shazam', function(e) {
+        evtSource.addEventListener('log', function(e) {
             try {
-                const data = JSON.parse(e.data);
-                updateShazam(data);
+                const messages = JSON.parse(e.data);
+                const logEl = document.getElementById('activity-log');
+                if (!logEl) return;
+                messages.forEach(function(msg) {
+                    const div = document.createElement('div');
+                    div.className = 'log-line';
+                    div.textContent = msg;
+                    logEl.appendChild(div);
+                });
+                /* Keep only last 50 lines */
+                while (logEl.children.length > 50) {
+                    logEl.removeChild(logEl.firstChild);
+                }
+                /* Auto-scroll to bottom */
+                logEl.scrollTop = logEl.scrollHeight;
             } catch (err) {
-                console.error('Shazam parse error:', err);
+                console.error('Log parse error:', err);
             }
         });
-        
+
         evtSource.onerror = function() {
             statusEl.textContent = 'Disconnected';
             statusEl.className = 'status disconnected';

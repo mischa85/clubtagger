@@ -48,7 +48,9 @@ typedef enum {
     SLOT_CD        = 0x01,
     SLOT_SD        = 0x02,
     SLOT_USB       = 0x03,
-    SLOT_LINK      = 0x04   /* Track loaded via Pro DJ Link from another player */
+    SLOT_LINK      = 0x04,  /* Track loaded via Pro DJ Link from another player */
+    SLOT_STREAMING = 0x06,  /* Streaming Direct Play (Beatport LINK, etc.) */
+    SLOT_BEATPORT  = 0x09   /* Beatport streaming service */
 } cdj_slot_t;
 
 /*
@@ -60,7 +62,8 @@ typedef enum {
 typedef enum {
     TRACK_REKORDBOX   = 0x01,  /* Analyzed rekordbox track */
     TRACK_UNANALYZED  = 0x02,  /* Non-rekordbox track from media */
-    TRACK_CD_AUDIO    = 0x05   /* CD audio track */
+    TRACK_CD_AUDIO    = 0x05,  /* CD audio track */
+    TRACK_STREAMING   = 0x06   /* Streaming service track */
 } cdj_track_type_t;
 
 /*
@@ -108,6 +111,8 @@ typedef struct {
     uint8_t  sd_present;        /* SD mounted locally */
     uint8_t  usb_db_fetched;    /* Have we fetched USB database? */
     uint8_t  sd_db_fetched;     /* Have we fetched SD database? */
+    uint8_t  usb_olib_fetched;  /* Have we fetched USB OneLibrary? */
+    uint8_t  sd_olib_fetched;   /* Have we fetched SD OneLibrary? */
     
     /* On-air and playback tracking (for CDJ-only tagging) */
     uint8_t  on_air;            /* Currently on-air (from DJM) */

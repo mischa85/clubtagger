@@ -8,6 +8,7 @@
 #include "shazam/id_thread.h"
 #include "server/sse_server.h"
 #include "types.h"
+#include "confidence.h"
 #include "writer/writer_thread.h"
 #include "prolink/prolink_thread.h"
 
@@ -85,6 +86,8 @@ static void usage(const char *argv0) {
 #endif
             "CDJ tagging options (for --cdj-tag):\n"
             "  --prolink-interface IF CDJ network interface (e.g., en0) - REQUIRED\n"
+            "  --prolink-passive      SPAN/mirror port mode (no registration, eavesdrop only)\n"
+            "  --olib-key KEY         OneLibrary (exportLibrary.db) decryption passphrase\n"
             "\n"
 #ifdef HAVE_VIBRA
             "Matching options (for combined --audio-tag + --cdj-tag):\n"
@@ -167,6 +170,10 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             cfg->sse_socket = argv[++i];
         else if (!strcmp(a, "--prolink-interface") && i + 1 < argc)
             cfg->prolink_interface = argv[++i];
+        else if (!strcmp(a, "--prolink-passive"))
+            cfg->prolink_passive = 1;
+        else if (!strcmp(a, "--olib-key") && i + 1 < argc)
+            cfg->olib_key = argv[++i];
         else if (!strcmp(a, "--match-threshold") && i + 1 < argc)
             cfg->match_threshold = (unsigned)strtoul(argv[++i], NULL, 10);
         /* Feature enable flags */
@@ -206,36 +213,7 @@ static void on_signal(int sig) {
  * CDJ-only Tagging Callback
  * ───────────────────────────────────────────────────────────────────────────── */
 
-static void cdj_tag_callback(void *user_data, int deck,
-                             const char *artist, const char *title,
-                             int confidence, const char *source) {
-    App *app = (App *)user_data;
-    if (!app) return;
-    
-    /* Generate timestamp */
-    char tsbuf[64];
-    time_t now = time(NULL);
-    struct tm tm;
-    localtime_r(&now, &tm);
-    strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M:%S", &tm);
-    
-    /* Log to database */
-    db_insert_play(app, tsbuf, artist, title, "", confidence, source);
-    
-    /* Update last track (for SSE/UI) */
-    pthread_mutex_lock(&app->db_mu);
-    snprintf(app->last_artist, sizeof(app->last_artist), "%s", artist ? artist : "");
-    snprintf(app->last_title, sizeof(app->last_title), "%s", title ? title : "");
-    snprintf(app->last_source, sizeof(app->last_source), "%s", source ? source : "cdj");
-    app->last_confidence = confidence;
-    app->last_isrc[0] = '\0';
-    pthread_mutex_unlock(&app->db_mu);
-    
-    /* Bump track sequence for UI updates */
-    atomic_fetch_add_explicit(&app->track_seq, 1, memory_order_release);
-    
-    (void)deck;  /* Unused but informational */
-}
+/* Track acceptance is now handled by confidence_tick() in the main loop */
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Main
@@ -256,8 +234,8 @@ int main(int argc, char **argv) {
         .identify_interval_sec = 2,
         .user_agent = NULL,
         .timezone = NULL,
-        .shazam_gap_sec = 10,
-        .same_track_hold_sec = 90,
+        .shazam_gap_sec = 20,
+        .same_track_hold_sec = 120,
         .threshold = 50,
         .sustain_sec = 1.0f,
         .silence_sec = 15.0f,
@@ -471,6 +449,9 @@ int main(int argc, char **argv) {
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
+    /* Initialize confidence model */
+    confidence_init(CONF_DEFAULT_ACCEPT, CONF_DEFAULT_DECAY, cfg.same_track_hold_sec);
+
     /* Log version and mode information */
 #ifdef GIT_COMMIT
     logmsg("main", "clubtagger %s", GIT_COMMIT);
@@ -534,6 +515,14 @@ int main(int argc, char **argv) {
 
     /* Start Pro DJ Link CDJ sniffer thread (if CDJ tagging enabled) */
     if (cfg.enable_cdj_tag && app.cfg.prolink_interface) {
+        /* Set passive mode before init - the thread reads this global */
+        extern int passive_only;
+        passive_only = app.cfg.prolink_passive;
+        /* Set OneLibrary decryption key if provided */
+        if (app.cfg.olib_key) {
+            extern void onelibrary_set_key(const char *key);
+            onelibrary_set_key(app.cfg.olib_key);
+        }
         app.prolink = (ProlinkThread *)malloc(sizeof(ProlinkThread));
         if (app.prolink) {
             if (prolink_init(app.prolink, app.cfg.prolink_interface, g_verbose) != 0) {
@@ -543,20 +532,46 @@ int main(int argc, char **argv) {
             } else {
                 logmsg("main", "CDJ sniffer started on %s", app.cfg.prolink_interface);
                 
-                /* Enable CDJ-only tagging if no audio tagging (pure CDJ mode) */
-                if (!cfg.enable_audio_tag) {
-                    prolink_enable_tagging(app.prolink, cdj_tag_callback, &app);
-                }
+                /* CDJ tagging is now handled by the confidence model */
             }
         }
     }
 
     while (g_running) {
-        /* Check for CDJ tracks to log (if in CDJ-only tagging mode) */
-        if (app.prolink && !cfg.enable_audio_tag) {
-            prolink_check_tagging(app.prolink);
+        /* Tick the confidence model — handles decay, duration ticks, acceptance */
+        uint32_t accepted = confidence_tick(time(NULL));
+        if (accepted) {
+            /* Process newly accepted tracks */
+            for (int i = 0; i < CONF_MAX_DECKS + 1; i++) {
+                if (!(accepted & (1u << i))) continue;
+                deck_confidence_t dc;
+                if (i < CONF_MAX_DECKS) confidence_get_deck(i, &dc);
+                else confidence_get_audio(&dc);
+                if (!dc.title[0]) continue;
+
+                const char *source = confidence_source_string(dc.signals_seen);
+                int conf_pct = dc.score / 10;
+
+                /* Log to database */
+                char tsbuf[64];
+                now_timestamp(tsbuf, sizeof(tsbuf));
+                db_insert_play(&app, tsbuf, dc.artist, dc.title,
+                               dc.isrc, conf_pct, source);
+
+                /* Update UI state */
+                pthread_mutex_lock(&app.db_mu);
+                snprintf(app.last_artist, sizeof(app.last_artist), "%s", dc.artist);
+                snprintf(app.last_title, sizeof(app.last_title), "%s", dc.title);
+                snprintf(app.last_source, sizeof(app.last_source), "%s", source);
+                snprintf(app.last_isrc, sizeof(app.last_isrc), "%s", dc.isrc);
+                app.last_confidence = conf_pct;
+                app.last_deck = dc.deck_num;
+                pthread_mutex_unlock(&app.db_mu);
+
+                atomic_fetch_add_explicit(&app.track_seq, 1, memory_order_release);
+            }
         }
-        
+
         struct timespec snooze = {.tv_sec = 1, .tv_nsec = 0};
         nanosleep(&snooze, NULL);
     }

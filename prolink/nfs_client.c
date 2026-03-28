@@ -8,6 +8,7 @@
 #include "nfs_client.h"
 #include "nfs_protocol.h"
 #include "pdb_parser.h"
+#include "onelibrary.h"
 #include "registration.h"
 #include "../common.h"
 #include <stdio.h>
@@ -348,9 +349,11 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     size_t total_read = 0;
     int eof = 0;
     
+    #define NFS_READ_CHUNK 8192
+
     while (!eof && total_read < buf_len) {
         uint8_t request[256];
-        uint8_t *response = malloc(1536);
+        uint8_t *response = malloc(NFS_READ_CHUNK + 256);
         if (!response) return -1;
         
         /* Use NFS version 2 */
@@ -360,11 +363,11 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         nfs_read_args_t *args = (nfs_read_args_t *)(request + pos);
         memcpy(args->fh, file_fh, NFS_FHSIZE);
         RPC_PUT_U32((uint8_t *)&args->offset, (uint32_t)total_read);
-        RPC_PUT_U32((uint8_t *)&args->count, 1280);
+        RPC_PUT_U32((uint8_t *)&args->count, NFS_READ_CHUNK);
         RPC_PUT_U32((uint8_t *)&args->totalcount, 0);  /* Unused in NFSv2 */
         pos += sizeof(nfs_read_args_t);
         
-        int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, 1536);
+        int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, NFS_READ_CHUNK + 256);
         if (received < (int)sizeof(rpc_reply_header_t)) {
             if (verbose) log_message("[NFS] Read failed: only received %d bytes", received);
             free(response);
@@ -397,7 +400,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         uint32_t data_size = RPC_GET_U32(response + rpos);
         rpos += 4;
         
-        if (data_size > 1280 || rpos + (int)data_size > received) {
+        if (data_size > NFS_READ_CHUNK || rpos + (int)data_size > received) {
             if (verbose) log_message("[NFS] Read failed: data_size=%u rpos=%d received=%d", 
                                     data_size, rpos, received);
             free(response);
@@ -413,7 +416,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
             memcpy(buf + total_read, response + rpos, data_size);
             total_read += data_size;
             
-            if (data_size < 1280) {
+            if (data_size < NFS_READ_CHUNK) {
                 eof = 1;
             }
         }
@@ -562,11 +565,12 @@ static void remove_pending_lookup(uint32_t xid, uint32_t server_ip) {
 typedef struct {
     uint32_t server_ip;           /* CDJ serving the file */
     uint32_t client_ip;           /* Device requesting it */
-    uint8_t  fh[NFS_FHSIZE];      /* File handle for export.pdb */
+    uint8_t  fh[NFS_FHSIZE];      /* File handle for the database file */
     uint32_t file_size;           /* Expected size from fattr */
     uint32_t received;            /* Bytes received so far */
     uint8_t *buffer;              /* Reassembly buffer */
     time_t   last_activity;       /* For timeout */
+    uint8_t  is_onelibrary;       /* 1 = exportLibrary.db, 0 = export.pdb */
 } pdb_reassembly_t;
 
 static pdb_reassembly_t pdb_reassembly[MAX_PDB_REASSEMBLY];
@@ -692,12 +696,18 @@ static void add_pdb_data(pdb_reassembly_t *r, uint32_t offset, const uint8_t *da
 }
 
 static void complete_pdb_reassembly(pdb_reassembly_t *r) {
-    log_message("[NFS-SNIFF] Passive PDB capture complete from %s (%u bytes)",
-               ip_to_str(r->server_ip), r->received);
-    
-    /* Parse the captured database */
-    parse_pdb_buffer(r->buffer, r->received, r->server_ip);
-    
+    if (r->is_onelibrary) {
+        log_message("[NFS-SNIFF] Passive OneLibrary capture complete from %s (%u bytes)",
+                   ip_to_str(r->server_ip), r->received);
+        /* Determine slot from file size heuristic (both USB and SD go through same path) */
+        uint8_t slot = SLOT_USB;  /* Default to USB */
+        onelibrary_process_passive(r->buffer, r->received, r->server_ip, slot);
+    } else {
+        log_message("[NFS-SNIFF] Passive PDB capture complete from %s (%u bytes)",
+                   ip_to_str(r->server_ip), r->received);
+        parse_pdb_buffer(r->buffer, r->received, r->server_ip);
+    }
+
     /* Cleanup */
     free(r->buffer);
     r->buffer = NULL;
@@ -836,19 +846,29 @@ void parse_nfs_response(const uint8_t *data, size_t len,
                            ip_to_str(src_ip), full_path);
             }
             
-            /* If this is export.pdb, start passive capture */
-            if (strstr(pending->name, "export.pdb") || 
-                strstr(pending->name, "EXPORT.PDB")) {
-                log_message("[NFS-SNIFF] Detected PDB access: %s requesting '%s' from %s",
+            /* Detect database files and start passive capture */
+            int is_pdb = (strstr(pending->name, "export.pdb") ||
+                         strstr(pending->name, "EXPORT.PDB"));
+            int is_olib = (strstr(pending->name, "exportLibrary.db") ||
+                          strstr(pending->name, "EXPORTLIBRARY.DB"));
+
+            if (is_pdb || is_olib) {
+                log_message("[NFS-SNIFF] Detected %s access: %s requesting '%s' from %s",
+                           is_olib ? "OneLibrary" : "PDB",
                            ip_to_str(pending->client_ip), full_path, ip_to_str(src_ip));
-                
+
                 /* Get file size from fattr (follows file handle in response) */
                 pos += sizeof(uint32_t) + NFS_FHSIZE;  /* status + fh */
                 if (pos + sizeof(nfs_fattr_t) <= len) {
                     nfs_fattr_t *fattr = (nfs_fattr_t *)(data + pos);
                     uint32_t file_size = RPC_GET_U32((uint8_t *)&fattr->size);
-                    if (file_size > 0 && file_size < 50 * 1024 * 1024) {  /* Sanity: <50MB */
+                    if (file_size > 0 && file_size < 50 * 1024 * 1024) {
                         start_pdb_reassembly(src_ip, pending->client_ip, reply->fh, file_size);
+                        /* Mark the reassembly slot as OneLibrary if applicable */
+                        if (is_olib) {
+                            pdb_reassembly_t *r = find_pdb_reassembly(src_ip, reply->fh);
+                            if (r) r->is_onelibrary = 1;
+                        }
                     }
                 }
             }

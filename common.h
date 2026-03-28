@@ -57,6 +57,24 @@ void vlogmsg(const char *tag, const char *fmt, ...);
 void now_timestamp(char *out, size_t out_sz);
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * Activity log ring buffer (for web UI)
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+#define ACTIVITY_LOG_SIZE 32
+#define ACTIVITY_MSG_LEN 160
+
+typedef struct {
+    char messages[ACTIVITY_LOG_SIZE][ACTIVITY_MSG_LEN];
+    int head;                  /* Next write position */
+    _Atomic uint32_t sequence; /* Bumps on each new message */
+} activity_log_t;
+
+extern activity_log_t g_activity_log;
+
+/* Get messages newer than `since_seq`. Returns count, fills buf with JSON array string. */
+int activity_log_since(uint32_t since_seq, char *buf, size_t buf_len);
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * String utilities
  * ───────────────────────────────────────────────────────────────────────────── */
 
