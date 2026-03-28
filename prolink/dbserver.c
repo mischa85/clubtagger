@@ -32,6 +32,9 @@ static uint32_t db_txid = 1;
 extern uint32_t our_ip;  /* From registration module */
 extern const char *capture_interface;  /* From registration module */
 
+/* Forward declaration — discovers dynamic DBServer port via RemoteDB (port 12523) */
+int dbserver_query_port(uint32_t server_ip);
+
 /*
  * ============================================================================
  * Message Building Helpers
@@ -196,9 +199,10 @@ int dbserver_connect(uint32_t server_ip) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(DBSERVER_PORT);
+    int db_port = dbserver_query_port(server_ip);
+    addr.sin_port = htons((uint16_t)db_port);
     addr.sin_addr.s_addr = server_ip;
-    
+
     /* Non-blocking connect with timeout */
     int flags = fcntl(sock, F_GETFL, 0);
     fcntl(sock, F_SETFL, flags | O_NONBLOCK);
@@ -611,8 +615,84 @@ int dbserver_query_metadata(uint32_t device_ip, uint8_t our_device_param, uint8_
 }
 
 int dbserver_query_port(uint32_t server_ip) {
-    /* Standard port for most CDJs */
-    (void)server_ip;
+    /* Try RemoteDB port discovery first (CDJ-3000X uses dynamic port) */
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) return DBSERVER_PORT;
+
+    /* Bind to our Pro DJ Link IP */
+    struct sockaddr_in bind_addr = {0};
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_addr.s_addr = our_ip;
+    if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
+        close(sock);
+        return DBSERVER_PORT;
+    }
+
+    /* Bind to interface for link-local routing */
+    if (capture_interface) {
+        setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface,
+                   strlen(capture_interface) + 1);
+    }
+
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(12523);
+    addr.sin_addr.s_addr = server_ip;
+
+    /* Non-blocking connect with 2s timeout */
+    fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) | O_NONBLOCK);
+    int ret = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (ret < 0 && errno != EINPROGRESS) {
+        close(sock);
+        log_message("[DBSERVER] RemoteDB 12523 connect failed, using port %d", DBSERVER_PORT);
+        return DBSERVER_PORT;
+    }
+
+    struct pollfd pfd = { .fd = sock, .events = POLLOUT };
+    if (poll(&pfd, 1, 2000) <= 0 || !(pfd.revents & POLLOUT)) {
+        close(sock);
+        return DBSERVER_PORT;
+    }
+
+    /* Check connect result */
+    int err = 0;
+    socklen_t errlen = sizeof(err);
+    getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &errlen);
+    if (err != 0) {
+        close(sock);
+        return DBSERVER_PORT;
+    }
+
+    /* Connected! Switch back to blocking */
+    fcntl(sock, F_SETFL, fcntl(sock, F_GETFL, 0) & ~O_NONBLOCK);
+
+    /* Set timeout */
+    struct timeval tv = {2, 0};
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    /* Send: [4B length] "RemoteDBServer\0" */
+    uint8_t req[19];
+    uint32_t len = htonl(15);
+    memcpy(req, &len, 4);
+    memcpy(req + 4, "RemoteDBServer", 15);  /* includes \0 */
+    if (send(sock, req, 19, 0) != 19) {
+        close(sock);
+        return DBSERVER_PORT;
+    }
+
+    /* Read: [2B port big-endian] */
+    uint8_t resp[2];
+    if (recv(sock, resp, 2, 0) == 2) {
+        int port = (resp[0] << 8) | resp[1];
+        close(sock);
+        if (port > 0 && port < 65536) {
+            logmsg("cdj", "RemoteDB: CDJ at %s → DBServer on port %d", ip_to_str(server_ip), port);
+            return port;
+        }
+    }
+
+    close(sock);
     return DBSERVER_PORT;
 }
 

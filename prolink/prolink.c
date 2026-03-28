@@ -828,6 +828,12 @@ int try_resolve_track_name(cdj_device_t *dev) {
         /* Track failures for backoff */
         if (result != 0) {
             query_fail_count++;
+            if (result == CDJ_ERR_CONNECT) {
+                /* Connection failure is temporary — retry later */
+                logmsg("cdj", "DBServer connection failed for track %u (will retry)",
+                       dev->rekordbox_id);
+                return 1;  /* Temporary — don't mark as permanently failed */
+            }
             if (query_fail_count <= 2) {
                 logmsg("cdj", "DBServer query failed for track %u (attempt %d)",
                        dev->rekordbox_id, query_fail_count);
