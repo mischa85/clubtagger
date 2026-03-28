@@ -242,7 +242,7 @@ uint32_t confidence_tick(time_t now)
         /* Award duration ticks for playing CDJ decks */
         if (i < CONF_MAX_DECKS && d->title[0]) {
             cdj_device_t *dev = &devices[i];
-            if (dev->active && dev->playing && dev->play_started > 0) {
+            if (dev->active && dev->playing && !dev->playhead_stalled && dev->play_started > 0) {
                 int play_secs = (int)(now - dev->play_started);
                 int ticks_expected = play_secs / DURATION_TICK_SEC;
                 if (ticks_expected > DURATION_MAX_TICKS)

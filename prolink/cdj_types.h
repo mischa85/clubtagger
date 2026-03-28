@@ -94,6 +94,9 @@ typedef struct {
     uint32_t beat_number;
     uint32_t position_ms;       /* Current position in ms (from position packets) */
     uint32_t track_length_sec;  /* Track length in seconds (from position packets) */
+    uint32_t last_position_ms;  /* Previous playhead (for detecting stalls) */
+    time_t   last_position_time;/* When we last saw playhead advance */
+    uint8_t  playhead_stalled;  /* 1 = playhead not advancing (scratch/hold) */
     uint32_t rekordbox_id;      /* rekordbox track ID */
     
     /* Track metadata */

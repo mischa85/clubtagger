@@ -718,14 +718,25 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
     uint32_t playhead = BE32_TO_HOST(pkt->playhead_be);
     dev->position_ms = playhead;
     uint32_t track_len = BE32_TO_HOST(pkt->track_length_be);
-    if (track_len > 0 && track_len < 100000)  /* Sanity: under ~28 hours */
+    if (track_len > 0 && track_len < 100000)
         dev->track_length_sec = track_len;
 
-    if (verbose > 1) {
-        log_message("[POS] Dev%d: playhead=%ums track_len=%us bpm_raw=%u",
-                   device_num, playhead, track_len,
-                   BE32_TO_HOST(pkt->bpm_be));
+    /* Detect playhead stalls (scratch, platter hold, pause).
+     * If playhead advanced by at least 500ms, it's playing normally. */
+    time_t now = time(NULL);
+    if (playhead > dev->last_position_ms &&
+        (playhead - dev->last_position_ms) > 500) {
+        dev->last_position_time = now;
+        dev->playhead_stalled = 0;
+    } else if (dev->last_position_time > 0 &&
+               (now - dev->last_position_time) >= 2) {
+        /* No meaningful advance in 2 seconds */
+        if (!dev->playhead_stalled) {
+            dev->playhead_stalled = 1;
+            dev->play_started = 0;  /* Reset continuous play timer */
+        }
     }
+    dev->last_position_ms = playhead;
 
     /* Update BPM if valid (0xffffffff means unknown) */
     uint32_t raw_bpm = BE32_TO_HOST(pkt->bpm_be);
