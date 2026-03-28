@@ -51,7 +51,7 @@ typedef enum {
 #define W_SHAZAM_CONFIRM    200   /* Consistency is the real signal */
 #define W_ISRC_MATCH        300   /* CDJ + Shazam ISRC agree — very strong */
 #define W_FUZZY_MATCH       200   /* CDJ + Shazam title/artist match */
-#define W_SHAZAM_DISAGREE   -50   /* Only applied when Shazam is consistent */
+#define W_SHAZAM_DISAGREE  -150   /* Scaled by confidence — consistent disagreement outpaces duration */
 #define W_SHAZAM_NO_MATCH   -10   /* Very mild — Shazam often misses niche tracks */
 #define W_CDJ_OFF_AIR      -150   /* Fader down — no longer audible */
 

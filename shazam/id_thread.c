@@ -253,9 +253,9 @@ void *id_main(void *arg) {
                                 prolink_matches_fingerprint(audio_state.title, audio_state.artist,
                                                             title, artist);
 
-                            if (shazam_is_consistent && shazam_confidence >= 60) {
-                                /* Shazam keeps saying the same different track with
-                                 * decent confidence — penalize CDJ deck */
+                            if (shazam_is_consistent) {
+                                /* Shazam keeps saying the same different track —
+                                 * weight is scaled by confidence, no gate needed */
                                 int best = confidence_best_deck();
                                 if (best >= 0) {
                                     confidence_signal(best, SIG_SHAZAM_DISAGREE,

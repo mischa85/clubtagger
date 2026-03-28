@@ -278,6 +278,35 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             if (dev2) {
                 dev2->last_seen = time(NULL);
                 dev2->ip_addr = src_ip;
+                /* USB/SD presence — valid at fixed offsets in all variants */
+                uint8_t old_usb2 = dev2->usb_present;
+                uint8_t old_sd2 = dev2->sd_present;
+                dev2->usb_present = (pkt->usb_local != 0);
+                dev2->sd_present = (pkt->sd_local != 0);
+                if (dev2->usb_present && !old_usb2) {
+                    logmsg("cdj", "💾 Device %d: USB inserted", device_num);
+                    dev2->usb_db_fetched = 0;
+                    dev2->usb_olib_fetched = 0;
+                }
+                if (!dev2->usb_present && old_usb2) {
+                    logmsg("cdj", "💾 Device %d: USB removed", device_num);
+                    dev2->usb_db_fetched = 0;
+                    dev2->usb_olib_fetched = 0;
+                    remove_pdb_database(dev2->ip_addr, SLOT_USB);
+                    remove_onelibrary(dev2->ip_addr, SLOT_USB);
+                }
+                if (dev2->sd_present && !old_sd2) {
+                    logmsg("cdj", "💾 Device %d: SD inserted", device_num);
+                    dev2->sd_db_fetched = 0;
+                    dev2->sd_olib_fetched = 0;
+                }
+                if (!dev2->sd_present && old_sd2) {
+                    logmsg("cdj", "💾 Device %d: SD removed", device_num);
+                    dev2->sd_db_fetched = 0;
+                    dev2->sd_olib_fetched = 0;
+                    remove_pdb_database(dev2->ip_addr, SLOT_SD);
+                    remove_onelibrary(dev2->ip_addr, SLOT_SD);
+                }
                 /* P1 + P2 play state — same logic as main path */
                 uint8_t old_playing = dev2->playing;
                 uint8_t p2 = data[0x8b];
