@@ -200,8 +200,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->bpm_raw = bpm;
         }
         
-        dev->playing = 1;
-        
+        /* Don't infer playing from beat packets — DJM sends them as backup
+         * metronome. F bit 6 in status packets is authoritative. */
+
         if (dev->track_slot == 0 && dev->device_type == DEVICE_TYPE_CDJ) {
             dev->track_slot = SLOT_USB;
         }
@@ -741,10 +742,8 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
         dev->bpm_raw = (uint16_t)(raw_bpm * 10);
     }
 
-    /* Mark as playing if we're getting position updates with a moving playhead */
-    if (playhead > 0) {
-        dev->playing = 1;
-    }
+    /* Don't set dev->playing from position packets — F bit 6 in status
+     * packets is authoritative. Position packets arrive even when paused. */
 
     if (verbose > 2) {
         uint32_t track_len = BE32_TO_HOST(pkt->track_length_be);
