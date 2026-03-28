@@ -249,10 +249,21 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         uint8_t subtype2 = pkt->subtype2;
 
         if (verbose) {
-            log_message("[STATUS] Dev%d: subtype2=0x%02x len=%zu rekordbox_id=%u slot=0x%02x play_state=0x%02x",
-                       device_num, subtype2, len,
-                       BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot,
-                       pkt->play_state);
+            if (len > 300) {
+                /* CDJ-3000X 1152-byte packet: dump bytes 0x70-0x9f to find real play state */
+                char hex[256] = {0};
+                int hlen = 0;
+                for (size_t i = 0x70; i < 0xa0 && i < len && hlen < 240; i++)
+                    hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", data[i]);
+                log_message("[STATUS] Dev%d: sub2=0x%02x rbid=%u slot=0x%02x [70-9f]: %s",
+                           device_num, subtype2,
+                           BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot, hex);
+            } else {
+                log_message("[STATUS] Dev%d: subtype2=0x%02x len=%zu rekordbox_id=%u slot=0x%02x play_state=0x%02x",
+                           device_num, subtype2, len,
+                           BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot,
+                           pkt->play_state);
+            }
         }
 
         /* CDJ-3000X sends large packets (1152 bytes) with alternating subtype2 values.
@@ -448,10 +459,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                        device_num, dev->rekordbox_id, dev->track_number, cdj_slot_name(dev->track_slot));
         }
         
-        dev->playing = (pkt->play_state == PLAY_STATE_PLAYING || 
-                       pkt->play_state == PLAY_STATE_LOOPING);
-        dev->cued = (pkt->play_state == PLAY_STATE_PAUSED || 
-                    pkt->play_state == PLAY_STATE_CUED);
+        /* Use status_flags byte F (0x89) bit 6 for play detection — it's
+         * reliable across all packet sizes including CDJ-3000X 1152-byte.
+         * P1 (0x7b) lies during scratch (says PLAYING when actually held).
+         * F bit 6 correctly reflects actual playback state. */
+        dev->playing = (pkt->status_flags & 0x40) != 0;  /* F bit 6 = playing */
+        dev->cued = (pkt->play_state == PLAY_STATE_PAUSED ||
+                    pkt->play_state == PLAY_STATE_CUED ||
+                    pkt->play_state == PLAY_STATE_PLATTER_HELD);
         
         /* Parse on-air status from status flags */
         uint8_t old_on_air = dev->on_air;
@@ -607,12 +622,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
         
+        /* Log track and play state changes */
         if (dev->track_id != old_track || dev->track_slot != old_slot ||
-            dev->playing != old_playing || dev->rekordbox_id != old_rekordbox) {
-            
+            dev->rekordbox_id != old_rekordbox ||
+            dev->playing != old_playing) {
+
             const char *title = dev->track_title[0] ? dev->track_title : "(unknown)";
             const char *artist = dev->track_artist[0] ? dev->track_artist : NULL;
-            
+
             if (dev->playing && !old_playing) {
                 if (artist) {
                     logmsg("cdj", "▶ DECK %d: Playing - %s - %s", device_num, artist, title);
@@ -620,7 +637,6 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     logmsg("cdj", "▶ DECK %d: Playing - %s", device_num, title);
                 }
             } else if (dev->track_id != old_track || dev->rekordbox_id != old_rekordbox) {
-                /* Check if deck is now empty (track ejected) */
                 if (dev->track_id == 0 && dev->rekordbox_id == 0) {
                     logmsg("cdj", "⏏ DECK %d: Ejected", device_num);
                 } else if (artist) {
@@ -710,8 +726,9 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
     if (track_len > 0 && track_len < 100000)
         dev->track_length_sec = track_len;
 
-    /* Detect playhead stalls (scratch, platter hold, pause).
-     * If playhead advanced by at least 500ms, it's playing normally. */
+    /* Track playhead advancement for stall detection (scratch/hold).
+     * Status packet F bit 6 handles play/pause; this detects stalls
+     * within "playing" state (platter hold while P1 says playing). */
     time_t now = time(NULL);
     if (playhead > dev->last_position_ms &&
         (playhead - dev->last_position_ms) > 500) {
@@ -719,11 +736,8 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
         dev->playhead_stalled = 0;
     } else if (dev->last_position_time > 0 &&
                (now - dev->last_position_time) >= 2) {
-        /* No meaningful advance in 2 seconds */
-        if (!dev->playhead_stalled) {
-            dev->playhead_stalled = 1;
-            dev->play_started = 0;  /* Reset continuous play timer */
-        }
+        dev->playhead_stalled = 1;
+        dev->play_started = 0;
     }
     dev->last_position_ms = playhead;
 
