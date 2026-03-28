@@ -132,8 +132,12 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *byt
                 } else {
                     parse_cdj_status(payload, payload_len, src_ip);
                 }
-            } else {
-                parse_beat(payload, payload_len, src_ip);
+            } else if (pkt_type == 0x0b && payload_len >= sizeof(cdj_position_packet_t)) {
+                /* CDJ-3000X sends position packets as type 0x0b (60 bytes) */
+                parse_position(payload, payload_len, src_ip);
+            } else if (verbose) {
+                log_message("[BEAT-PORT] unhandled type=0x%02x len=%zu from %s",
+                           pkt_type, payload_len, ip_to_str(src_ip));
             }
         }
     }

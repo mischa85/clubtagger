@@ -249,9 +249,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         uint8_t subtype2 = pkt->subtype2;
 
         if (verbose) {
-            log_message("[STATUS] Dev%d: subtype2=0x%02x len=%zu rekordbox_id=%u slot=0x%02x",
+            log_message("[STATUS] Dev%d: subtype2=0x%02x len=%zu rekordbox_id=%u slot=0x%02x play_state=0x%02x",
                        device_num, subtype2, len,
-                       BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot);
+                       BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot,
+                       pkt->play_state);
         }
 
         /* CDJ-3000X sends large packets (1152 bytes) with alternating subtype2 values.
@@ -276,8 +277,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 /* Reset play timer on interruptions (backcue, scratch, pause) */
                 if (dev2->playing && !old_playing) {
                     dev2->play_started = time(NULL);
-                } else if (!dev2->playing) {
+                    logmsg("cdj", "▶ DECK %d: Playing - %s - %s",
+                           device_num, dev2->track_artist, dev2->track_title);
+                } else if (!dev2->playing && old_playing) {
                     dev2->play_started = 0;
+                    logmsg("cdj", "⏸ DECK %d: Paused", device_num);
                 }
                 uint8_t old_on_air = dev2->on_air;
                 dev2->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
@@ -685,6 +689,22 @@ void parse_beat(const uint8_t *data, size_t len, uint32_t src_ip) {
 void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
     if (len < sizeof(cdj_position_packet_t)) return;
 
+    /* Debug: dump first position packet from each device to understand structure */
+    static uint8_t dumped[MAX_DEVICES] = {0};
+    if (verbose) {
+        /* Try to identify device from typical offset */
+        uint8_t maybe_dev = data[0x21];
+        if (maybe_dev < MAX_DEVICES && !dumped[maybe_dev]) {
+            dumped[maybe_dev] = 1;
+            char hex[256] = {0};
+            int hlen = 0;
+            for (size_t i = 0; i < len && i < 64 && hlen < 240; i++)
+                hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", data[i]);
+            log_message("[POS] First position pkt (len=%zu) from %s: %s",
+                       len, ip_to_str(src_ip), hex);
+        }
+    }
+
     const cdj_position_packet_t *pkt = (const cdj_position_packet_t *)data;
     uint8_t device_num = pkt->device_num;
 
@@ -700,6 +720,12 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
     uint32_t track_len = BE32_TO_HOST(pkt->track_length_be);
     if (track_len > 0 && track_len < 100000)  /* Sanity: under ~28 hours */
         dev->track_length_sec = track_len;
+
+    if (verbose > 1) {
+        log_message("[POS] Dev%d: playhead=%ums track_len=%us bpm_raw=%u",
+                   device_num, playhead, track_len,
+                   BE32_TO_HOST(pkt->bpm_be));
+    }
 
     /* Update BPM if valid (0xffffffff means unknown) */
     uint32_t raw_bpm = BE32_TO_HOST(pkt->bpm_be);
