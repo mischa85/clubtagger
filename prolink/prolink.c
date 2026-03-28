@@ -284,8 +284,16 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 /* USB/SD presence — valid at fixed offsets in all variants */
                 uint8_t old_usb2 = dev2->usb_present;
                 uint8_t old_sd2 = dev2->sd_present;
-                dev2->usb_present = (pkt->usb_local != 0);
-                dev2->sd_present = (pkt->sd_local != 0);
+                dev2->usb_present = (pkt->usb_local == SLOT_USB);
+                dev2->sd_present = (pkt->sd_local == SLOT_SD);
+                if (dev2->usb_present != old_usb2 || dev2->sd_present != old_sd2) {
+                    logmsg("cdj", "Dev%d media bytes: [34-3a]=%02x %02x %02x %02x %02x %02x %02x "
+                           "Dr=%d Sr=0x%02x",
+                           device_num,
+                           data[0x34], data[0x35], data[0x36],
+                           data[0x37], data[0x38], data[0x39], data[0x3a],
+                           pkt->source_player, pkt->track_slot);
+                }
                 if (dev2->usb_present && !old_usb2) {
                     logmsg("cdj", "💾 Device %d: USB inserted", device_num);
                     dev2->usb_db_fetched = 0;
@@ -370,8 +378,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         /* Detect media insertion and proactively fetch databases */
         uint8_t old_usb = dev->usb_present;
         uint8_t old_sd = dev->sd_present;
-        dev->usb_present = (pkt->usb_local != 0);
-        dev->sd_present = (pkt->sd_local != 0);
+        dev->usb_present = (pkt->usb_local == SLOT_USB);
+        dev->sd_present = (pkt->sd_local == SLOT_SD);
 
         /* Log raw media bytes on change for protocol analysis */
         if (dev->usb_present != old_usb || dev->sd_present != old_sd) {
