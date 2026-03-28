@@ -540,8 +540,8 @@ int main(int argc, char **argv) {
     while (g_running) {
         /* Tick the confidence model — handles decay, duration ticks, acceptance */
         uint32_t accepted = confidence_tick(time(NULL));
-        if (accepted) {
-            /* Process newly accepted tracks */
+        if (accepted && need_audio) {
+            /* Only tag tracks when audio is being captured/recorded */
             for (int i = 0; i < CONF_MAX_DECKS + 1; i++) {
                 if (!(accepted & (1u << i))) continue;
                 deck_confidence_t dc;

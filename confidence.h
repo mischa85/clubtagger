@@ -41,24 +41,24 @@ typedef enum {
  * ============================================================================
  */
 
-#define W_CDJ_LOADED        200
+#define W_CDJ_LOADED        150
 #define W_CDJ_PLAYING        50
-#define W_CDJ_DURATION       15   /* Per 10s tick, cap at 10 ticks = +150 */
+#define W_CDJ_DURATION       50   /* Per 10s tick — the clock that proves commitment */
 #define W_CDJ_ON_AIR        100
-#define W_CDJ_ON_AIR_EDGE   200
-#define W_SHAZAM_MATCH      250
-#define W_SHAZAM_CONFIRM    150
-#define W_ISRC_MATCH        400
-#define W_FUZZY_MATCH       200
-#define W_SHAZAM_DISAGREE  -100
-#define W_SHAZAM_NO_MATCH   -20
+#define W_CDJ_ON_AIR_EDGE   150   /* Fader up — strong boost but needs duration too */
+#define W_SHAZAM_MATCH      100   /* Single hit is just a hint (may be false positive) */
+#define W_SHAZAM_CONFIRM    200   /* Consistency is the real signal */
+#define W_ISRC_MATCH        300   /* CDJ + Shazam ISRC agree — very strong */
+#define W_FUZZY_MATCH       200   /* CDJ + Shazam title/artist match */
+#define W_SHAZAM_DISAGREE   -50   /* Only applied when Shazam is consistent */
+#define W_SHAZAM_NO_MATCH   -10   /* Very mild — Shazam often misses niche tracks */
 
 #define DURATION_TICK_SEC    10   /* Award CDJ_DURATION every N seconds */
-#define DURATION_MAX_TICKS   10   /* Cap total duration ticks */
+#define DURATION_MAX_TICKS   15   /* Cap total duration ticks */
 
 #define CONF_MAX_SCORE     1000
-#define CONF_DEFAULT_ACCEPT 600
-#define CONF_DEFAULT_DECAY    3   /* Score units lost per second of no signals */
+#define CONF_DEFAULT_ACCEPT 550
+#define CONF_DEFAULT_DECAY    1   /* Score units lost per second of no signals */
 #define CONF_DEFAULT_COOLDOWN 120 /* Seconds after accept before re-accept */
 
 /*
@@ -94,6 +94,7 @@ typedef struct {
     /* Shazam state */
     int      shazam_confirms;
     int      shazam_confidence; /* Skew-based (40-100) */
+    int      shazam_flips;     /* Times Shazam changed its answer (reduces trust) */
 
     /* Acceptance */
     int      accepted;         /* 1 = logged to DB */

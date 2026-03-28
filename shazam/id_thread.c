@@ -223,18 +223,30 @@ void *id_main(void *arg) {
                                                   artist, title, isrc, 0);
                             }
                         } else {
-                            /* Shazam disagrees with all CDJ decks */
-                            int best = confidence_best_deck();
-                            if (best >= 0) {
-                                confidence_signal(best, SIG_SHAZAM_DISAGREE, 0,
-                                                  NULL, NULL, NULL, 0);
-                            }
-                            /* Also feed Shazam result to audio-only slot as candidate */
+                            /* Shazam disagrees with all CDJ decks.
+                             * Only penalize CDJ if Shazam is being consistent
+                             * (same track returned twice = audio-only has confirms).
+                             * Random different tracks each time = Shazam doesn't
+                             * know the track, don't punish CDJ for that. */
                             deck_confidence_t audio_state;
                             confidence_get_audio(&audio_state);
-                            if (audio_state.title[0] &&
+                            int shazam_is_consistent = audio_state.title[0] &&
                                 prolink_matches_fingerprint(audio_state.title, audio_state.artist,
-                                                            title, artist)) {
+                                                            title, artist);
+
+                            if (shazam_is_consistent && shazam_confidence >= 60) {
+                                /* Shazam keeps saying the same different track with
+                                 * decent confidence — penalize CDJ deck */
+                                int best = confidence_best_deck();
+                                if (best >= 0) {
+                                    confidence_signal(best, SIG_SHAZAM_DISAGREE,
+                                                      shazam_confidence,
+                                                      NULL, NULL, NULL, 0);
+                                }
+                            }
+
+                            /* Feed Shazam result to audio-only slot */
+                            if (shazam_is_consistent) {
                                 confidence_signal(-1, SIG_SHAZAM_CONFIRM, shazam_confidence,
                                                   artist, title, isrc, 0);
                             } else {
@@ -243,15 +255,11 @@ void *id_main(void *arg) {
                             }
                         }
                     } else {
-                        /* Shazam returned no track */
+                        /* Shazam returned no track — don't penalize CDJ decks
+                         * for this; Shazam often doesn't know niche/underground
+                         * tracks. Only penalize the audio-only slot. */
                         if (shazam_backoff < 10) shazam_backoff += 5;
                         logmsg("id", "Shazam: no match (%dms)", query_ms);
-                        /* Penalize all playing decks mildly */
-                        for (int di = 0; di < MAX_DEVICES; di++) {
-                            if (devices[di].active && devices[di].playing)
-                                confidence_signal(di, SIG_SHAZAM_NO_MATCH, 0,
-                                                  NULL, NULL, NULL, 0);
-                        }
                         confidence_signal(-1, SIG_SHAZAM_NO_MATCH, 0, NULL, NULL, NULL, 0);
                     }
                 } else {

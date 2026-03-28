@@ -63,6 +63,8 @@ static void apply_decay(deck_confidence_t *d, time_t now)
         int decay = elapsed * g_confidence.decay_rate;
         d->score -= decay;
         if (d->score < 0) d->score = 0;
+        /* Advance last_signal so decay isn't re-applied on next call */
+        d->last_signal = now;
     }
 }
 
@@ -87,10 +89,12 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
     /* If this signal brings a track identity, check for track change */
     if (title && title[0]) {
         if (d->title[0] && is_different_track(d, artist, title, rekordbox_id)) {
-            /* Different track — reset the slot */
+            /* Different track — reset the slot but carry flip count */
             uint8_t deck_num = d->deck_num;
+            int flips = d->shazam_flips + 1;
             memset(d, 0, sizeof(*d));
             d->deck_num = deck_num;
+            d->shazam_flips = flips;
             d->first_seen = now;
         }
         /* Update identity */
@@ -137,14 +141,22 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
         break;
     case SIG_SHAZAM_MATCH:
         if (!(d->signals_seen & SIG_SHAZAM_MATCH)) {
-            weight = W_SHAZAM_MATCH;
-            d->shazam_confidence = value;
+            /* Scale by Shazam confidence: 100%→full, 40%→40% of weight.
+             * Also dampen by flip count — flaky Shazam results trusted less. */
+            int conf = (value > 0 && value <= 100) ? value : 70;
+            int flip_penalty = d->shazam_flips * 20;  /* Lose 20% per flip */
+            if (flip_penalty > 80) flip_penalty = 80;  /* Never fully zero */
+            weight = W_SHAZAM_MATCH * conf / 100 * (100 - flip_penalty) / 100;
+            d->shazam_confidence = conf;
         }
         break;
     case SIG_SHAZAM_CONFIRM:
-        weight = W_SHAZAM_CONFIRM;
-        d->shazam_confirms++;
-        d->shazam_confidence = value;
+        {
+            int conf = (value > 0 && value <= 100) ? value : 70;
+            weight = W_SHAZAM_CONFIRM * conf / 100;
+            d->shazam_confirms++;
+            d->shazam_confidence = conf;
+        }
         break;
     case SIG_ISRC_MATCH:
         if (!(d->signals_seen & SIG_ISRC_MATCH))
@@ -155,7 +167,11 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
             weight = W_FUZZY_MATCH;
         break;
     case SIG_SHAZAM_DISAGREE:
-        weight = W_SHAZAM_DISAGREE;
+        {
+            /* Scale by Shazam confidence — low confidence disagree barely matters */
+            int conf = (value > 0 && value <= 100) ? value : 70;
+            weight = W_SHAZAM_DISAGREE * conf / 100;
+        }
         break;
     case SIG_SHAZAM_NO_MATCH:
         weight = W_SHAZAM_NO_MATCH;
@@ -247,9 +263,8 @@ uint32_t confidence_tick(time_t now)
             }
         }
 
-        /* Check acceptance threshold */
+        /* Check acceptance threshold — score alone decides */
         if (!d->accepted && d->score >= g_confidence.accept_threshold && d->title[0]) {
-            /* Cooldown: don't re-accept recently accepted track */
             d->accepted = 1;
             d->accepted_at = now;
             accepted_mask |= (1u << i);
