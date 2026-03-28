@@ -161,6 +161,9 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
  * ============================================================================
  */
 
+/* Forward declaration — defined in Track Name Resolution section below */
+void dbserver_reset_retry(void);
+
 void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
     if (len < sizeof(prolink_header_t)) return;
     
@@ -287,11 +290,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     logmsg("cdj", "💾 Device %d: USB inserted", device_num);
                     dev2->usb_db_fetched = 0;
                     dev2->usb_olib_fetched = 0;
+                    dev2->usb_fetch_attempt = 0;
+                    dbserver_reset_retry();
                 }
                 if (!dev2->usb_present && old_usb2) {
                     logmsg("cdj", "💾 Device %d: USB removed", device_num);
                     dev2->usb_db_fetched = 0;
                     dev2->usb_olib_fetched = 0;
+                    dev2->usb_fetch_attempt = 0;
                     remove_pdb_database(dev2->ip_addr, SLOT_USB);
                     remove_onelibrary(dev2->ip_addr, SLOT_USB);
                 }
@@ -299,11 +305,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     logmsg("cdj", "💾 Device %d: SD inserted", device_num);
                     dev2->sd_db_fetched = 0;
                     dev2->sd_olib_fetched = 0;
+                    dev2->sd_fetch_attempt = 0;
+                    dbserver_reset_retry();
                 }
                 if (!dev2->sd_present && old_sd2) {
                     logmsg("cdj", "💾 Device %d: SD removed", device_num);
                     dev2->sd_db_fetched = 0;
                     dev2->sd_olib_fetched = 0;
+                    dev2->sd_fetch_attempt = 0;
                     remove_pdb_database(dev2->ip_addr, SLOT_SD);
                     remove_onelibrary(dev2->ip_addr, SLOT_SD);
                 }
@@ -369,12 +378,15 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             logmsg("cdj", "💾 Device %d: USB inserted", device_num);
             dev->usb_db_fetched = 0;
             dev->usb_olib_fetched = 0;
+            dev->usb_fetch_attempt = 0;
+            dbserver_reset_retry();
         }
         /* USB removed */
         if (!dev->usb_present && old_usb) {
             logmsg("cdj", "💾 Device %d: USB removed", device_num);
             dev->usb_db_fetched = 0;
             dev->usb_olib_fetched = 0;
+            dev->usb_fetch_attempt = 0;
             remove_pdb_database(dev->ip_addr, SLOT_USB);
             remove_onelibrary(dev->ip_addr, SLOT_USB);
         }
@@ -383,78 +395,83 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             logmsg("cdj", "💾 Device %d: SD inserted", device_num);
             dev->sd_db_fetched = 0;
             dev->sd_olib_fetched = 0;
+            dev->sd_fetch_attempt = 0;
+            dbserver_reset_retry();
         }
         /* SD removed */
         if (!dev->sd_present && old_sd) {
             logmsg("cdj", "💾 Device %d: SD removed", device_num);
             dev->sd_db_fetched = 0;
             dev->sd_olib_fetched = 0;
+            dev->sd_fetch_attempt = 0;
             remove_pdb_database(dev->ip_addr, SLOT_SD);
             remove_onelibrary(dev->ip_addr, SLOT_SD);
         }
         
         /* Proactively fetch databases when media is detected.
-         * Must wait for registration to be ready (5 keepalives sent) or CDJ will refuse NFS. */
+         * Must wait for registration to be ready (5 keepalives sent) or CDJ will refuse NFS.
+         * On failure, retry after 10s (CDJ may still be indexing after media swap). */
         if (capture_interface && our_ip != 0 && dev->ip_addr != 0 &&
             keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
-            /* Fetch USB databases if USB is present and not yet fetched.
-             * Try OneLibrary first (CDJ-3000X), fall back to PDB. */
-            if (dev->usb_present && !dev->usb_olib_fetched && onelibrary_key_available()) {
-                logmsg("cdj", "📥 Device %d: Fetching USB OneLibrary...", device_num);
-                if (fetch_onelibrary_database(dev->ip_addr, SLOT_USB) == 0) {
-                    dev->usb_olib_fetched = 1;
-                    dev->usb_db_fetched = 1;  /* Skip PDB if OneLibrary loaded */
-                    if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0') {
-                        dev->lookup_failed_id = 0;
-                    }
-                } else {
-                    dev->usb_olib_fetched = 1;  /* Don't retry OneLibrary */
-                }
-            }
-            if (dev->usb_present && !dev->usb_db_fetched) {
-                logmsg("cdj", "📥 Device %d: Fetching USB PDB...", device_num);
-                pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_USB);
-                if (db) {
-                    if (fetch_rekordbox_database(dev->ip_addr, SLOT_USB, db) == 0) {
-                        logmsg("cdj", "✅ Device %d: USB PDB loaded (%d tracks)",
-                               device_num, db->track_count);
-                        dev->usb_db_fetched = 1;
-                        if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0') {
+            time_t fetch_now = time(NULL);
+
+            /* Fetch USB databases if USB is present and not yet fetched */
+            if (dev->usb_present && (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
+                fetch_now - dev->usb_fetch_attempt >= 10) {
+
+                if (!dev->usb_olib_fetched && onelibrary_key_available()) {
+                    dev->usb_fetch_attempt = fetch_now;
+                    logmsg("cdj", "📥 Device %d: Fetching USB OneLibrary...", device_num);
+                    if (fetch_onelibrary_database(dev->ip_addr, SLOT_USB) == 0) {
+                        dev->usb_olib_fetched = 1;
+                        dev->usb_db_fetched = 1;  /* Skip PDB if OneLibrary loaded */
+                        if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0')
                             dev->lookup_failed_id = 0;
+                    }
+                    /* On failure: flags stay 0, retry after 10s */
+                }
+                if (!dev->usb_db_fetched) {
+                    dev->usb_fetch_attempt = fetch_now;
+                    logmsg("cdj", "📥 Device %d: Fetching USB PDB...", device_num);
+                    pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_USB);
+                    if (db) {
+                        if (fetch_rekordbox_database(dev->ip_addr, SLOT_USB, db) == 0) {
+                            logmsg("cdj", "✅ Device %d: USB PDB loaded (%d tracks)",
+                                   device_num, db->track_count);
+                            dev->usb_db_fetched = 1;
+                            if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0')
+                                dev->lookup_failed_id = 0;
                         }
-                    } else {
-                        log_message("[FETCH] USB PDB fetch failed");
-                        dev->usb_db_fetched = 1;
                     }
                 }
             }
-            /* Fetch SD databases - same OneLibrary-first strategy */
-            if (dev->sd_present && !dev->sd_olib_fetched && onelibrary_key_available()) {
-                logmsg("cdj", "📥 Device %d: Fetching SD OneLibrary...", device_num);
-                if (fetch_onelibrary_database(dev->ip_addr, SLOT_SD) == 0) {
-                    dev->sd_olib_fetched = 1;
-                    dev->sd_db_fetched = 1;
-                    if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0') {
-                        dev->lookup_failed_id = 0;
-                    }
-                } else {
-                    dev->sd_olib_fetched = 1;
-                }
-            }
-            if (dev->sd_present && !dev->sd_db_fetched) {
-                logmsg("cdj", "📥 Device %d: Fetching SD PDB...", device_num);
-                pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_SD);
-                if (db) {
-                    if (fetch_rekordbox_database(dev->ip_addr, SLOT_SD, db) == 0) {
-                        logmsg("cdj", "✅ Device %d: SD PDB loaded (%d tracks)",
-                               device_num, db->track_count);
+
+            /* Fetch SD databases - same strategy */
+            if (dev->sd_present && (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
+                fetch_now - dev->sd_fetch_attempt >= 10) {
+
+                if (!dev->sd_olib_fetched && onelibrary_key_available()) {
+                    dev->sd_fetch_attempt = fetch_now;
+                    logmsg("cdj", "📥 Device %d: Fetching SD OneLibrary...", device_num);
+                    if (fetch_onelibrary_database(dev->ip_addr, SLOT_SD) == 0) {
+                        dev->sd_olib_fetched = 1;
                         dev->sd_db_fetched = 1;
-                        if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0') {
+                        if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0')
                             dev->lookup_failed_id = 0;
+                    }
+                }
+                if (!dev->sd_db_fetched) {
+                    dev->sd_fetch_attempt = fetch_now;
+                    logmsg("cdj", "📥 Device %d: Fetching SD PDB...", device_num);
+                    pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_SD);
+                    if (db) {
+                        if (fetch_rekordbox_database(dev->ip_addr, SLOT_SD, db) == 0) {
+                            logmsg("cdj", "✅ Device %d: SD PDB loaded (%d tracks)",
+                                   device_num, db->track_count);
+                            dev->sd_db_fetched = 1;
+                            if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0')
+                                dev->lookup_failed_id = 0;
                         }
-                    } else {
-                        log_message("[FETCH] SD PDB fetch failed");
-                        dev->sd_db_fetched = 1;
                     }
                 }
             }
@@ -805,6 +822,14 @@ static time_t last_query_time = 0;
 static uint32_t last_query_id = 0;
 static int query_fail_count = 0;
 
+/* Reset DBServer retry state (call on media change).
+ * Forward-declared before parse_cdj_status which calls it. */
+void dbserver_reset_retry(void) {
+    query_fail_count = 0;
+    last_query_time = 0;
+    last_query_id = 0;
+}
+
 /* Returns: 0 = done (success or permanent failure), 1 = temporary skip (retry later) */
 int try_resolve_track_name(cdj_device_t *dev) {
     if (!dev || !dev->active) return 0;
@@ -815,9 +840,16 @@ int try_resolve_track_name(cdj_device_t *dev) {
         return 1;  /* Rate limited - will retry later, don't mark as failed */
     }
     
-    /* Back off after failures */
-    if (query_fail_count > 3 && now - last_query_time < 10) {
-        return 1;  /* Too many failures - will retry later */
+    /* Exponential backoff after failures: 5s, 10s, 20s, 40s, capped at 60s */
+    {
+        int backoff = 5;
+        if (query_fail_count > 2) backoff = 10;
+        if (query_fail_count > 5) backoff = 20;
+        if (query_fail_count > 8) backoff = 40;
+        if (query_fail_count > 12) backoff = 60;
+        if (now - last_query_time < backoff) {
+            return 1;  /* Backing off - will retry later */
+        }
     }
     
     uint8_t target_device = dev->device_num;
@@ -914,12 +946,17 @@ int try_resolve_track_name(cdj_device_t *dev) {
         if (result != 0) {
             query_fail_count++;
             if (result == CDJ_ERR_CONNECT) {
-                /* Connection failure is temporary — retry later */
-                logmsg("cdj", "DBServer connection failed for track %u (will retry)",
-                       dev->rekordbox_id);
+                /* Connection failure is temporary — retry later.
+                 * Only log first 3 failures to avoid spamming. */
+                if (query_fail_count <= 3) {
+                    logmsg("cdj", "DBServer connection failed for track %u (will retry)",
+                           dev->rekordbox_id);
+                } else if (query_fail_count == 4) {
+                    logmsg("cdj", "DBServer still failing — suppressing until success");
+                }
                 return 1;  /* Temporary — don't mark as permanently failed */
             }
-            if (query_fail_count <= 2) {
+            if (query_fail_count <= 3) {
                 logmsg("cdj", "DBServer query failed for track %u (attempt %d)",
                        dev->rekordbox_id, query_fail_count);
             }
