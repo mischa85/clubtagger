@@ -151,42 +151,45 @@
         return badge + confText;
     }
     
-    // Update the track identification panel (best candidate across all sources)
+    // Update the track identification panel (all active candidates)
     function updateIdentification(decks) {
         const idEl = document.getElementById('identification');
         if (!idEl) return;
 
-        // Find best candidate: highest confidence with a title
-        let best = null;
+        // Collect all candidates with a title and any confidence
+        let candidates = [];
         if (decks) {
             for (const d of decks) {
                 if (!d.title) continue;
                 if (!d.conf && !d.conf_ok) continue;
-                if (!best || d.conf > best.conf) best = d;
+                candidates.push(d);
             }
         }
 
-        if (!best) {
+        if (candidates.length === 0) {
             idEl.innerHTML = '<div class="id-waiting">Waiting for track...</div>';
             return;
         }
 
-        const pct = best.conf || 0;
-        const color = best.conf_ok ? '#4caf50' : pct >= 30 ? '#ff9800' : '#666';
-        const src = best.conf_src && best.conf_src !== 'unknown' ? best.conf_src : '';
-        const deckLabel = best.n > 0 ? `Deck ${best.n}` : 'Audio';
+        // Sort by confidence descending
+        candidates.sort((a, b) => (b.conf || 0) - (a.conf || 0));
 
-        idEl.innerHTML = `
-            <div class="id-track${best.conf_ok ? ' accepted' : ''}">
-                <div class="id-artist">${escapeHtml(best.artist) || '—'}</div>
-                <div class="id-title">${escapeHtml(best.title)}</div>
-            </div>
-            <div class="conf-bar-container">
-                <div class="conf-bar" style="width:${pct}%;background:${color}"></div>
-                <div class="conf-threshold"></div>
-                <span class="conf-label">${pct}%${best.conf_ok ? ' ✓' : ''}${src ? ' · ' + src : ''} · ${deckLabel}</span>
-            </div>
-        `;
+        idEl.innerHTML = candidates.map(c => {
+            const pct = c.conf || 0;
+            const color = c.conf_ok ? '#4caf50' : pct >= 30 ? '#ff9800' : '#666';
+            const src = c.conf_src && c.conf_src !== 'unknown' ? c.conf_src : '';
+            const deckLabel = c.n > 0 ? `Deck ${c.n}` : 'Audio';
+            return `
+                <div class="id-track${c.conf_ok ? ' accepted' : ''}">
+                    <div class="id-artist">${escapeHtml(c.artist) || '—'}</div>
+                    <div class="id-title">${escapeHtml(c.title)}</div>
+                </div>
+                <div class="conf-bar-container">
+                    <div class="conf-bar" style="width:${pct}%;background:${color}"></div>
+                    <div class="conf-threshold"></div>
+                    <span class="conf-label">${pct}%${c.conf_ok ? ' ✓' : ''}${src ? ' · ' + src : ''} · ${deckLabel}</span>
+                </div>`;
+        }).join('');
     }
 
     // Update CDJ deck status
@@ -214,21 +217,23 @@
             const deckLabel = (d.name || 'CDJ') + ' (' + d.n + ')';
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
 
-            // Play time with context
+            // Track position (from CDJ-3000X position packets) or continuous play time
             let playTimeText = '';
-            if (d.playing && d.play_time > 0) {
-                const m = Math.floor(d.play_time / 60);
-                const s = d.play_time % 60;
-                const timeStr = `${m}:${s < 10 ? '0' : ''}${s}`;
-                playTimeText = `<span class="deck-playtime" title="Continuous play time">${timeStr}</span>`;
-            }
-
-            // Position (from CDJ-3000 position packets)
-            let posText = '';
             if (d.position_ms > 0) {
                 const pm = Math.floor(d.position_ms / 60000);
                 const ps = Math.floor((d.position_ms % 60000) / 1000);
-                posText = `<span class="deck-position">${pm}:${ps < 10 ? '0' : ''}${ps}</span>`;
+                const posStr = `${pm}:${ps < 10 ? '0' : ''}${ps}`;
+                if (d.track_length > 0) {
+                    const tm = Math.floor(d.track_length / 60);
+                    const ts = d.track_length % 60;
+                    playTimeText = `<span class="deck-playtime">${posStr} / ${tm}:${ts < 10 ? '0' : ''}${ts}</span>`;
+                } else {
+                    playTimeText = `<span class="deck-playtime">${posStr}</span>`;
+                }
+            } else if (d.playing && d.play_time > 0) {
+                const m = Math.floor(d.play_time / 60);
+                const s = d.play_time % 60;
+                playTimeText = `<span class="deck-playtime" title="Continuous play time">${m}:${s < 10 ? '0' : ''}${s}</span>`;
             }
 
             // Media indicators
@@ -255,7 +260,7 @@
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}</div>
                     </div>
                     <div class="deck-meta">
-                        ${bpmText}${slotText}${posText ? ' · ' + posText : ''}
+                        ${bpmText}${slotText}
                         ${isrcText ? ' · ' + isrcText : ''}
                         ${mediaText ? ' · ' + mediaText : ''}${dbText ? ' · ' + dbText : ''}
                     </div>

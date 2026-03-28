@@ -268,10 +268,17 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                  * Still update liveness and non-track fields (on-air, play state, etc.) */
                 dev2->last_seen = time(NULL);
                 dev2->ip_addr = src_ip;
+                uint8_t old_playing = dev2->playing;
                 dev2->playing = (pkt->play_state == PLAY_STATE_PLAYING ||
                                 pkt->play_state == PLAY_STATE_LOOPING);
                 dev2->cued = (pkt->play_state == PLAY_STATE_PAUSED ||
                              pkt->play_state == PLAY_STATE_CUED);
+                /* Reset play timer on interruptions (backcue, scratch, pause) */
+                if (dev2->playing && !old_playing) {
+                    dev2->play_started = time(NULL);
+                } else if (!dev2->playing) {
+                    dev2->play_started = 0;
+                }
                 uint8_t old_on_air = dev2->on_air;
                 dev2->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
                 if (dev2->on_air != old_on_air) {
@@ -685,9 +692,12 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
     dev->last_seen = time(NULL);
     dev->ip_addr = src_ip;
 
-    /* Update position from playhead (milliseconds) */
+    /* Update position and track length */
     uint32_t playhead = BE32_TO_HOST(pkt->playhead_be);
     dev->position_ms = playhead;
+    uint32_t track_len = BE32_TO_HOST(pkt->track_length_be);
+    if (track_len > 0 && track_len < 100000)  /* Sanity: under ~28 hours */
+        dev->track_length_sec = track_len;
 
     /* Update BPM if valid (0xffffffff means unknown) */
     uint32_t raw_bpm = BE32_TO_HOST(pkt->bpm_be);

@@ -92,7 +92,8 @@ typedef struct {
     uint16_t bpm_raw;           /* BPM * 100 */
     uint8_t  pitch_percent;
     uint32_t beat_number;
-    uint32_t position_ms;       /* Current position in ms */
+    uint32_t position_ms;       /* Current position in ms (from position packets) */
+    uint32_t track_length_sec;  /* Track length in seconds (from position packets) */
     uint32_t rekordbox_id;      /* rekordbox track ID */
     
     /* Track metadata */

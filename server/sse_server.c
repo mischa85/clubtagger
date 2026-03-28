@@ -317,14 +317,14 @@ void *sse_main(void *arg) {
                     "{\"n\":%d,\"name\":\"%s\",\"playing\":%d,\"on_air\":%d,"
                     "\"on_air_known\":%d,"
                     "\"title\":\"%s\",\"artist\":\"%s\",\"bpm\":%d,\"slot\":%d,"
-                    "\"isrc\":\"%s\",\"play_time\":%d,\"position_ms\":%u,"
+                    "\"isrc\":\"%s\",\"play_time\":%d,\"position_ms\":%u,\"track_length\":%u,"
                     "\"rekordbox_id\":%u,\"db_src\":\"%s\","
                     "\"usb\":%d,\"sd\":%d,"
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
                     dev->device_num, escaped_name, dev->playing ? 1 : 0, dev->on_air ? 1 : 0,
                     dev->on_air_available ? 1 : 0,
                     escaped_title, escaped_artist, dev->bpm_raw / 100, dev->track_slot,
-                    escaped_isrc, play_secs, dev->position_ms,
+                    escaped_isrc, play_secs, dev->position_ms, dev->track_length_sec,
                     dev->rekordbox_id, db_src,
                     dev->usb_present ? 1 : 0, dev->sd_present ? 1 : 0,
                     conf_pct, conf_accepted, conf_src);
