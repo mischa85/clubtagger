@@ -284,8 +284,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 /* USB/SD presence — valid at fixed offsets in all variants */
                 uint8_t old_usb2 = dev2->usb_present;
                 uint8_t old_sd2 = dev2->sd_present;
-                dev2->usb_present = (pkt->usb_local == SLOT_USB);
-                dev2->sd_present = (pkt->sd_local == SLOT_SD);
+                dev2->usb_present = (pkt->usb_local != 0);
+                dev2->sd_present = (pkt->sd_local != 0);
+                dev2->usb_local_raw = pkt->usb_local;
+                dev2->sd_local_raw = pkt->sd_local;
                 if (dev2->usb_present != old_usb2 || dev2->sd_present != old_sd2) {
                     logmsg("cdj", "Dev%d media bytes: [34-3a]=%02x %02x %02x %02x %02x %02x %02x "
                            "Dr=%d Sr=0x%02x",
@@ -378,8 +380,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         /* Detect media insertion and proactively fetch databases */
         uint8_t old_usb = dev->usb_present;
         uint8_t old_sd = dev->sd_present;
-        dev->usb_present = (pkt->usb_local == SLOT_USB);
-        dev->sd_present = (pkt->sd_local == SLOT_SD);
+        dev->usb_present = (pkt->usb_local != 0);
+        dev->sd_present = (pkt->sd_local != 0);
+        dev->usb_local_raw = pkt->usb_local;
+        dev->sd_local_raw = pkt->sd_local;
 
         /* Log raw media bytes on change for protocol analysis */
         if (dev->usb_present != old_usb || dev->sd_present != old_sd) {
@@ -433,14 +437,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
             time_t fetch_now = time(NULL);
 
-            /* Fetch USB databases if USB is present locally and not yet fetched.
-             * Skip if media is via Link (source_player differs from self) —
-             * NFS fetch will fail since there's no local file to read. */
-            int usb_is_local = dev->usb_present &&
-                               (dev->track_source_player == 0 ||
-                                dev->track_source_player == dev->device_num ||
-                                dev->track_slot != SLOT_USB);
-            if (usb_is_local && (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
+            /* Fetch USB databases if USB is physically present and not yet fetched.
+             * usb_local_raw == SLOT_USB (0x03) means physical USB.
+             * Other non-zero values (e.g. 0x02) indicate Link-browsed media. */
+            if (dev->usb_local_raw == SLOT_USB &&
+                (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
                 fetch_now - dev->usb_fetch_attempt >= 10) {
 
                 if (!dev->usb_olib_fetched && onelibrary_key_available()) {
@@ -470,12 +471,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 }
             }
 
-            /* Fetch SD databases - same strategy, skip if media is via Link */
-            int sd_is_local = dev->sd_present &&
-                              (dev->track_source_player == 0 ||
-                               dev->track_source_player == dev->device_num ||
-                               dev->track_slot != SLOT_SD);
-            if (sd_is_local && (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
+            /* Fetch SD databases - same strategy */
+            if (dev->sd_local_raw == SLOT_SD &&
+                (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
                 fetch_now - dev->sd_fetch_attempt >= 10) {
 
                 if (!dev->sd_olib_fetched && onelibrary_key_available()) {
@@ -602,6 +600,13 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             (dev->track_slot != old_slot);  /* Also trigger on slot change! */
         
         if (track_changed) {
+            logmsg("cdj", "Dev%d track change: rbid=%u slot=%s Dr=%d Sr=0x%02x "
+                   "[34-3a]=%02x %02x %02x %02x %02x %02x %02x",
+                   device_num, dev->rekordbox_id,
+                   cdj_slot_name(dev->track_slot),
+                   dev->track_source_player, pkt->track_slot,
+                   data[0x34], data[0x35], data[0x36],
+                   data[0x37], data[0x38], data[0x39], data[0x3a]);
             dev->track_title[0] = '\0';
             dev->track_artist[0] = '\0';
             dev->track_isrc[0] = '\0';

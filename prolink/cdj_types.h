@@ -112,8 +112,10 @@ typedef struct {
     time_t   db_fetch_time;     /* When we fetched the DB */
     
     /* Media presence (from status packets) */
-    uint8_t  usb_present;       /* USB mounted locally */
-    uint8_t  sd_present;        /* SD mounted locally */
+    uint8_t  usb_present;       /* USB available (usb_local != 0) */
+    uint8_t  sd_present;        /* SD available (sd_local != 0) */
+    uint8_t  usb_local_raw;     /* Raw usb_local byte (0x37) for local vs Link detection */
+    uint8_t  sd_local_raw;      /* Raw sd_local byte (0x38) */
     uint8_t  usb_db_fetched;    /* Have we fetched USB database? */
     uint8_t  sd_db_fetched;     /* Have we fetched SD database? */
     uint8_t  usb_olib_fetched;  /* Have we fetched USB OneLibrary? */
