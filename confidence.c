@@ -9,6 +9,7 @@
 #include "confidence.h"
 #include "common.h"
 #include "prolink/cdj_types.h"
+#include "prolink/prolink_thread.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -48,11 +49,10 @@ static int is_different_track(const deck_confidence_t *d,
                               const char *artist, const char *title,
                               uint32_t rekordbox_id)
 {
-    (void)artist; /* Used for identity update, not comparison */
     if (rekordbox_id > 0 && d->rekordbox_id > 0)
         return rekordbox_id != d->rekordbox_id;
     if (title && title[0] && d->title[0])
-        return strcmp(title, d->title) != 0;
+        return !prolink_matches_fingerprint(d->title, d->artist, title, artist);
     return 0; /* Can't tell — treat as same */
 }
 
