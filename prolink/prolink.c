@@ -437,10 +437,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
             time_t fetch_now = time(NULL);
 
-            /* Fetch USB databases if USB is physically present and not yet fetched.
-             * usb_local_raw == SLOT_USB (0x03) means physical USB.
-             * Other non-zero values (e.g. 0x02) indicate Link-browsed media. */
-            if (dev->usb_local_raw == SLOT_USB &&
+            /* Fetch USB databases if USB is present locally (not via Link).
+             * Byte 0x3a (sd_remote) == 0x01 indicates Link client — no local
+             * media to fetch via NFS. */
+            if (dev->usb_present && pkt->sd_remote == 0 &&
                 (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
                 fetch_now - dev->usb_fetch_attempt >= 10) {
 
@@ -472,7 +472,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
 
             /* Fetch SD databases - same strategy */
-            if (dev->sd_local_raw == SLOT_SD &&
+            if (dev->sd_present && pkt->sd_remote == 0 &&
                 (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
                 fetch_now - dev->sd_fetch_attempt >= 10) {
 
