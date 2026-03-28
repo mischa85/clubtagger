@@ -176,6 +176,10 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
     case SIG_SHAZAM_NO_MATCH:
         weight = W_SHAZAM_NO_MATCH;
         break;
+    case SIG_CDJ_OFF_AIR:
+        weight = W_CDJ_OFF_AIR;
+        d->signals_active &= ~(SIG_CDJ_ON_AIR | SIG_CDJ_ON_AIR_EDGE);
+        break;
     default:
         break;
     }
@@ -201,6 +205,7 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
         case SIG_ISRC_MATCH:      sig_name = "ISRC match"; break;
         case SIG_FUZZY_MATCH:     sig_name = "CDJ+Shazam match"; break;
         case SIG_SHAZAM_DISAGREE: sig_name = "Shazam disagrees"; break;
+        case SIG_CDJ_OFF_AIR:     sig_name = "off air"; break;
         default: break;
         }
         if (sig_name[0]) {
@@ -260,6 +265,11 @@ uint32_t confidence_tick(time_t now)
             /* Clear active on-air if deck went off-air */
             if (!dev->on_air && (d->signals_active & SIG_CDJ_ON_AIR)) {
                 d->signals_active &= ~SIG_CDJ_ON_AIR;
+            }
+            /* Accelerated decay when deck is idle (not playing or off-air) */
+            if (!dev->playing && !dev->on_air && d->score > 0) {
+                d->score -= 10;  /* Extra -10/s on top of normal decay */
+                if (d->score < 0) d->score = 0;
             }
         }
 

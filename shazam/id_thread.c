@@ -95,16 +95,27 @@ void *id_main(void *arg) {
         if (got > 0 && r >= cfg->threshold && got >= (size_t)(cfg->rate * cfg->fingerprint_sec * 3 / 4)) {
             time_t nowt = time(NULL);
 
-            /* If the best deck (or audio-only) is already accepted, skip Shazam */
+            /* Skip Shazam only if ALL playing decks are already accepted.
+             * If any deck is still building confidence, keep querying. */
             {
-                int best = confidence_best_deck();
-                deck_confidence_t best_state;
-                if (best >= 0) confidence_get_deck(best, &best_state);
-                else confidence_get_audio(&best_state);
-                if (best_state.accepted &&
-                    (unsigned)(nowt - best_state.accepted_at) < cfg->same_track_hold_sec) {
-                    vlogmsg("id", "hold: track accepted, skipping Shazam (%us)",
-                            cfg->same_track_hold_sec);
+                int any_unaccepted = 0;
+                for (int di = 0; di < MAX_DEVICES; di++) {
+                    cdj_device_t *dd = &devices[di];
+                    if (!dd->active || !dd->playing) continue;
+                    if (dd->track_title[0] == '\0') continue;
+                    deck_confidence_t ds;
+                    confidence_get_deck(di, &ds);
+                    if (!ds.accepted) { any_unaccepted = 1; break; }
+                }
+                /* Also check audio-only slot */
+                if (!any_unaccepted) {
+                    deck_confidence_t audio_s;
+                    confidence_get_audio(&audio_s);
+                    if (audio_s.title[0] && !audio_s.accepted)
+                        any_unaccepted = 1;
+                }
+                if (!any_unaccepted) {
+                    vlogmsg("id", "hold: all playing decks accepted, skipping Shazam");
                     goto sleep_loop;
                 }
             }

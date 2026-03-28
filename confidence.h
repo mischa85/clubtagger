@@ -33,6 +33,7 @@ typedef enum {
     SIG_FUZZY_MATCH     = (1 << 8),   /* Fuzzy title+artist match */
     SIG_SHAZAM_DISAGREE = (1 << 9),   /* Shazam returned different track */
     SIG_SHAZAM_NO_MATCH = (1 << 10),  /* Shazam found nothing */
+    SIG_CDJ_OFF_AIR     = (1 << 11),  /* Deck went off-air (fader down) */
 } signal_flag_t;
 
 /*
@@ -52,6 +53,7 @@ typedef enum {
 #define W_FUZZY_MATCH       200   /* CDJ + Shazam title/artist match */
 #define W_SHAZAM_DISAGREE   -50   /* Only applied when Shazam is consistent */
 #define W_SHAZAM_NO_MATCH   -10   /* Very mild — Shazam often misses niche tracks */
+#define W_CDJ_OFF_AIR      -150   /* Fader down — no longer audible */
 
 #define DURATION_TICK_SEC    10   /* Award CDJ_DURATION every N seconds */
 #define DURATION_MAX_TICKS   15   /* Cap total duration ticks */

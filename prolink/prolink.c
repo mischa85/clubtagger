@@ -478,6 +478,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 confidence_signal(didx, SIG_CDJ_ON_AIR, 0, NULL, NULL, NULL, 0);
             } else {
                 logmsg("cdj", "⚪ DECK %d off air", device_num);
+                int didx = (int)(dev - devices);
+                confidence_signal(didx, SIG_CDJ_OFF_AIR, 0, NULL, NULL, NULL, 0);
             }
         }
         
