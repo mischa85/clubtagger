@@ -477,20 +477,25 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
         return -1;
     }
     
-    /* Parse response for item count */
+    /* Parse response for item count.
+     * Response format: [magic 4B][txid 4B][type 2B][nargs 1B][tags 12B][fields...]
+     * The last INT32 field contains the number of menu items available.
+     * CDJ-3000X sends compact responses (~32 bytes). */
     int num_items = 0;
-    if (received >= 42) {
+    if (received >= 20) {
         uint16_t rtype = get_msg_type(resp, 0);
         if (rtype == DBMSG_SUCCESS) {
-            for (int i = received - 5; i >= 32; i--) {
+            /* Scan backwards for the last INT32 field */
+            for (int i = received - 5; i >= 11; i--) {
                 if (resp[i] == DBFIELD_INT32) {
-                    num_items = (resp[i+1] << 24) | (resp[i+2] << 16) | 
+                    num_items = (resp[i+1] << 24) | (resp[i+2] << 16) |
                                 (resp[i+3] << 8) | resp[i+4];
                     break;
                 }
             }
         }
     }
+    log_message("[DBSERVER] Unanalyzed: %d items available", num_items);
     
     if (num_items == 0 || num_items == (int)0xffffffff || num_items == DBMSG_UNANALYZED_REQ) {
         return -1;

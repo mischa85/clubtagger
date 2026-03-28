@@ -100,6 +100,7 @@ typedef struct {
     char     track_artist[128];
     char     track_isrc[64];    /* ISRC from PDB (if available) */
     uint32_t lookup_failed_id;  /* rekordbox_id of last failed lookup (prevent retry spam) */
+    time_t   last_lookup_time;  /* Rate-limit lookups (don't retry more than once per 5s) */
     
     /* Database fetch tracking */
     uint8_t  db_fetched;        /* Have we fetched DB for this slot? */

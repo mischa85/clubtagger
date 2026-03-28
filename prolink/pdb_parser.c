@@ -106,7 +106,7 @@ TrackID *lookup_pdb_track(uint32_t rekordbox_id) {
             }
         }
     }
-    if (verbose) {
+    if (verbose && pdb_database_count > 0) {
         log_message("[PDB] Track %u not found in %d databases", rekordbox_id, pdb_database_count);
     }
     return NULL;

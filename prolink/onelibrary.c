@@ -342,7 +342,7 @@ int onelibrary_lookup(uint32_t content_id,
         sqlite3_finalize(stmt);
     }
 
-    if (verbose) {
+    if (verbose && olib_count > 0) {
         log_message("[OLIB] Track %u not found in %d databases",
                    content_id, olib_count);
     }

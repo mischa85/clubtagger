@@ -502,6 +502,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_artist[0] = '\0';
             dev->track_isrc[0] = '\0';
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
+            dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
             dev->logged_rekordbox_id = 0;  /* Allow new track to be logged */
             dev->play_started = dev->playing ? time(NULL) : 0;  /* Reset play timer on track change */
             /* Reset confidence for this deck — new track starts at 0 */
@@ -509,11 +510,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         }
         
         /* Skip lookup if no track loaded, already failed for this ID, or already have title */
+        time_t now_lookup = time(NULL);
         int need_lookup = (dev->rekordbox_id > 0) &&
-                          (dev->track_title[0] == '\0') && 
-                          (dev->lookup_failed_id != dev->rekordbox_id);
-        
+                          (dev->track_title[0] == '\0') &&
+                          (dev->lookup_failed_id != dev->rekordbox_id) &&
+                          (now_lookup - dev->last_lookup_time >= 5);  /* Rate-limit: once per 5s */
+
         if ((track_changed && dev->rekordbox_id > 0) || need_lookup) {
+            dev->last_lookup_time = now_lookup;
             /* Only log on track change to avoid spam during retry attempts */
             if (verbose && track_changed) {
                 log_message("[LOOKUP] CDJ %d: Looking up rekordbox_id=%u (track_id=%d, slot=%s)",
