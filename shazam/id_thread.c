@@ -216,9 +216,17 @@ void *id_main(void *arg) {
                         }
 
                         if (matched_deck >= 0) {
-                            /* Shazam confirmed a CDJ deck — boost that deck */
-                            confidence_signal(matched_deck, SIG_SHAZAM_MATCH, shazam_confidence,
-                                              artist, title, isrc, 0);
+                            /* Shazam confirmed a CDJ deck — first time is MATCH,
+                             * subsequent times are CONFIRM (adds more score) */
+                            deck_confidence_t ds;
+                            confidence_get_deck(matched_deck, &ds);
+                            if (ds.signals_seen & SIG_SHAZAM_MATCH) {
+                                confidence_signal(matched_deck, SIG_SHAZAM_CONFIRM, shazam_confidence,
+                                                  artist, title, isrc, 0);
+                            } else {
+                                confidence_signal(matched_deck, SIG_SHAZAM_MATCH, shazam_confidence,
+                                                  artist, title, isrc, 0);
+                            }
                         } else if (!have_cdj) {
                             /* Audio-only mode — Shazam is our only source */
                             /* Check if this is a repeat (confirm) or new candidate */
