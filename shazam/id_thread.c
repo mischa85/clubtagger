@@ -96,13 +96,14 @@ void *id_main(void *arg) {
             time_t nowt = time(NULL);
 
             /* Skip Shazam only if ALL playing decks are already accepted.
-             * If any deck is still building confidence, keep querying. */
+             * Unnamed decks count as unaccepted — Shazam is the only
+             * identification path when CDJ metadata is unavailable. */
             {
                 int any_unaccepted = 0;
                 for (int di = 0; di < MAX_DEVICES; di++) {
                     cdj_device_t *dd = &devices[di];
                     if (!dd->active || !dd->playing) continue;
-                    if (dd->track_title[0] == '\0') continue;
+                    if (dd->track_title[0] == '\0') { any_unaccepted = 1; break; }
                     deck_confidence_t ds;
                     confidence_get_deck(di, &ds);
                     if (!ds.accepted) { any_unaccepted = 1; break; }

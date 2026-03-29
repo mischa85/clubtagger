@@ -116,12 +116,17 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
     case SIG_CDJ_LOADED:
         if (!(d->signals_seen & SIG_CDJ_LOADED)) {
             weight = W_CDJ_LOADED;
-            if (deck_idx >= 0)
+            if (deck_idx >= 0) {
                 d->deck_num = devices[deck_idx].device_num;
+                /* Reset duration clock — start counting from when we know
+                 * the track identity, not from earlier unnamed playback */
+                d->duration_ticks = 0;
+                devices[deck_idx].play_started = devices[deck_idx].playing ? now : 0;
+            }
         }
         break;
     case SIG_CDJ_PLAYING:
-        if (!(d->signals_active & SIG_CDJ_PLAYING))
+        if (!(d->signals_seen & SIG_CDJ_PLAYING))
             weight = W_CDJ_PLAYING;
         break;
     case SIG_CDJ_DURATION:
