@@ -344,7 +344,8 @@ typedef enum {
     PLAY_STATE_PLATTER_HELD = 0x08,
     PLAY_STATE_SEARCHING    = 0x09,
     PLAY_STATE_SPUN_DOWN    = 0x0e,
-    PLAY_STATE_ENDED        = 0x11
+    PLAY_STATE_ENDED        = 0x11,
+    PLAY_STATE_EMERGENCY_LOOP = 0x12
 } cdj_play_state_t;
 
 /* Helper macros for big-endian to host conversion */
@@ -429,15 +430,11 @@ _Static_assert(sizeof(cdj_beat_packet_t) == 96, "cdj_beat_packet_t must be 96 by
 
 /* CDJ-3000 Absolute Position packet (subtype 0x0a, subtype2 0x00, on port 50001)
  * Sent every ~30ms while a track is loaded. Only CDJ-3000 and newer.
- * Reference: alphatheta-connect position packet documentation.
+ * Reference: alphatheta-connect analysis + live CDJ-3000X testing.
  *
- * Verified offsets:
- *   [0x20]     Subtype2 = 0x00 (identifies position packet)
- *   [0x21]     Device number
- *   [0x24-0x27] Track length in seconds (big-endian uint32)
- *   [0x28-0x2b] Playhead in milliseconds (big-endian uint32)
- *   [0x2c-0x2f] Pitch * 6400 (big-endian int32)
- *   [0x30-0x33] BPM * 10 (big-endian uint32, 0xffffffff = unknown) */
+ * Note: deepsymmetry docs show a longer variant with BPM at 0x40-0x43.
+ * Our CDJ-3000X testing confirms BPM at 0x30-0x33 in the short variant.
+ * Both variants may exist; we parse the minimum confirmed layout. */
 typedef struct __attribute__((packed)) {
     prolink_header_t header;    /* 0x00-0x0a (0-10): Common header (subtype=0x0a) */
     char     device_name[20];   /* 0x0b-0x1e (11-30): Device name */
@@ -451,7 +448,51 @@ typedef struct __attribute__((packed)) {
     uint8_t  bpm_be[4];         /* 0x30-0x33 (48-51): BPM * 10 (BE, 0xffffffff=unknown) */
 } cdj_position_packet_t;
 
-/* Compile-time verification of struct size */
 _Static_assert(sizeof(cdj_position_packet_t) == 52, "cdj_position_packet_t must be 52 bytes");
+
+/*
+ * ============================================================================
+ * CDJ-3000 Extended Status Fields (beyond 232-byte base struct)
+ * ============================================================================
+ * CDJ-3000 sends 512-byte (0x200) status packets. Fields beyond the base
+ * struct are accessed via raw data[] offsets. All multi-byte values big-endian.
+ *
+ * Settings Block 1 (0xd0-0xef):
+ *   0xd0-0xd3   Magic: 0x12345678
+ *   0xd8        Setting 1 (always 0x01)
+ *   0xd9        Setting 2 (always 0x01)
+ *   0xda        Waveform color: 0x01=blue, 0x03=RGB, 0x04=3-band
+ *   0xdb        Setting 4 (always 0x01)
+ *   0xdc        Setting 5 (always 0x01)
+ *   0xdd        Waveform position: 0x01=center, 0x02=left
+ *
+ * Settings Block 2 (0xff-0x11e, CDJ-3000 only):
+ *   0xff-0x102  Magic: 0x12345678
+ *   0x108-0x10d Six bytes (typically 01 01 01 00 01 01)
+ *
+ * Playback & Grid:
+ *   0x113       P4 - Play state bitmask (details not yet identified)
+ *   0x116-0x117 Tb - Time steps in current bar
+ *   0x11a-0x11b Tpos - Position within current bar
+ *   0x11c       Next memory point index (0x00 if none upcoming)
+ *
+ * Buffer Status:
+ *   0x11d       Buff - Forward buffer length from playhead
+ *   0x11e       Bufb - Backward buffer length from playhead
+ *   0x11f       Bufs - Buffer status: 0x01 when entire track buffered
+ *   0x120-0x124 Needle drag position (touch screen timestamp)
+ *
+ * Key & Master Tempo (CDJ-3000):
+ *   0x158       Mt - Master Tempo: 0x00=off, 0x01=on
+ *   0x15c       Key note (0x00-0x0b, C through B)
+ *   0x15d       Key scale: 0x00=minor, 0x01=major
+ *   0x15e       Key accidental: 0x00=natural, 0x01=sharp, 0xff=flat
+ *   0x164-0x16b Key shift: 64-bit signed, semitones * 100 cents
+ *
+ * Loop Status (CDJ-3000):
+ *   0x1b6-0x1b9 Loop start position in ms
+ *   0x1be-0x1c1 Loop end position in ms
+ *   0x1c8-0x1c9 Loop length in beats
+ */
 
 #endif /* PROLINK_PROTOCOL_H */
