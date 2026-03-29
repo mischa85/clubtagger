@@ -202,10 +202,19 @@ void *sse_main(void *arg) {
         size_t len = sizeof(mem_total);
         sysctl(mib, 2, &mem_total, &len, NULL, 0);
 #else
+        /* Process RSS from /proc/self/status (not system-wide) */
+        FILE *sf = fopen("/proc/self/status", "r");
+        if (sf) {
+            char line[128];
+            while (fgets(line, sizeof(line), sf)) {
+                if (strncmp(line, "VmRSS:", 6) == 0)
+                    mem_used = (uint64_t)atoll(line + 6) * 1024;
+            }
+            fclose(sf);
+        }
         struct sysinfo si;
         if (sysinfo(&si) == 0) {
             mem_total = si.totalram * si.mem_unit;
-            mem_used = (si.totalram - si.freeram) * si.mem_unit;
         }
 #endif
         
