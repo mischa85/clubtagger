@@ -47,6 +47,7 @@ int show_nfs = 1;
 const char *capture_interface = NULL;
 uint32_t status_packets_seen = 0;
 int auto_passive = 0;
+time_t last_cdj_packet_time = 0;
 
 /* Sockets */
 static int announce_socket = -1;

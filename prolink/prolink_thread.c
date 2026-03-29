@@ -294,6 +294,18 @@ keepalive_check:
         if (now - last_ka >= 1) {
             do_full_registration(pt->interface);
             last_ka = now;
+
+            /* Watchdog: warn if no CDJ packets received recently */
+            if (last_cdj_packet_time > 0 && registration_state == REG_ACTIVE) {
+                int silent = (int)(now - last_cdj_packet_time);
+                if (silent == 30) {
+                    logmsg("cdj", "⚠ No CDJ packets for 30s — possible network loss");
+                } else if (silent == 60) {
+                    logmsg("cdj", "⚠ No CDJ packets for 60s — re-registering");
+                    registration_state = REG_IDLE;
+                    keepalives_sent_active = 0;
+                }
+            }
         }
 
         /* Poll for NFS traffic (passive observation) */

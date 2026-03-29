@@ -348,10 +348,16 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     
     size_t total_read = 0;
     int eof = 0;
-    
+    time_t deadline = time(NULL) + 10;  /* Hard 10-second limit for entire read */
+
     #define NFS_READ_CHUNK 8192
 
     while (!eof && total_read < buf_len) {
+        if (time(NULL) > deadline) {
+            log_message("[NFS] READ timeout after %zu bytes (10s limit)", total_read);
+            *bytes_read = total_read;
+            return -1;
+        }
         uint8_t request[256];
         uint8_t *response = malloc(NFS_READ_CHUNK + 256);
         if (!response) return -1;

@@ -33,6 +33,7 @@ extern int registration_stage_count;
 extern int databases_pending;
 extern int keepalives_sent_active;
 extern uint32_t our_ip;
+extern time_t last_cdj_packet_time;  /* Watchdog: last time a CDJ packet arrived */
 
 /*
  * ============================================================================

@@ -11,6 +11,7 @@
 #include "nfs_client.h"
 #include "dbserver.h"
 #include "cdj_types.h"
+#include "registration.h"
 #include "../common.h"
 #include <string.h>
 
@@ -101,6 +102,7 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *byt
     
     /* Check for Pro DJ Link packets */
     if (payload_len >= PROLINK_SIG_LEN && is_prolink_packet(payload, payload_len)) {
+        last_cdj_packet_time = time(NULL);
         uint8_t pkt_type = get_prolink_packet_type(payload);
         
         if (verbose > 1) {
