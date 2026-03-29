@@ -199,48 +199,138 @@ typedef struct __attribute__((packed)) {
     uint8_t  subtype;           /* 0x0a (10): Packet subtype */
 } prolink_header_t;
 
-/* CDJ Status packet (minimum 212 bytes, subtype 0x0a on port 50002) */
+/* CDJ Status packet (subtype 0x0a on port 50002)
+ * Packet sizes: older=0xd0, nexus=0xd4, nexus2=0x11c/0x124, CDJ-3000=0x200
+ * Reference: https://djl-analysis.deepsymmetry.org/djl-analysis/vcdj.html
+ *
+ * This struct covers the common 232-byte layout. Fields beyond 0xe7 exist
+ * in nexus2/CDJ-3000 packets and are accessed via raw data[] offsets. */
 typedef struct __attribute__((packed)) {
     prolink_header_t header;    /* 0x00-0x0a (0-10): Common header */
     char     device_name[20];   /* 0x0b-0x1e (11-30): Device name (space-padded) */
-    uint8_t  _reserved1;        /* 0x1f (31): Always 0x01 */
-    uint8_t  subtype2;          /* 0x20 (32): Subtype variant (0x03-0x06) */
-    uint8_t  device_num;        /* 0x21 (33): Device number 1-6 */
-    uint8_t  len_remaining[2];  /* 0x22-0x23 (34-35): Bytes remaining */
-    uint8_t  device_num2;       /* 0x24 (36): Device number (redundant) */
-    uint8_t  _reserved2[2];     /* 0x25-0x26 (37-38) */
-    uint8_t  activity;          /* 0x27 (39): 0=idle, 1=active */
-    uint8_t  source_player;     /* 0x28 (40): Dr - Source player (or self) */
-    uint8_t  track_slot;        /* 0x29 (41): Sr - 1=CD, 2=SD, 3=USB, 4=Link */
-    uint8_t  track_type;        /* 0x2a (42): Tr - 0=none, 1=rb, 2=unanalyzed, 5=CD */
-    uint8_t  _reserved3;        /* 0x2b (43) */
+    uint8_t  _pad1f;            /* 0x1f (31): Always 0x01 */
+    uint8_t  subtype2;          /* 0x20 (32): Subtype variant (0x03=status w/track) */
+    uint8_t  device_num;        /* 0x21 (33): D - Device number 1-6 */
+    uint8_t  len_remaining[2];  /* 0x22-0x23 (34-35): Bytes remaining after this */
+    uint8_t  device_num2;       /* 0x24 (36): D - Device number (redundant) */
+    uint8_t  _pad25[2];         /* 0x25-0x26 (37-38) */
+    uint8_t  activity;          /* 0x27 (39): A - 0x00=idle, 0x01=active */
+    uint8_t  source_player;     /* 0x28 (40): Dr - Device track loaded from (0=none) */
+    uint8_t  track_slot;        /* 0x29 (41): Sr - Slot (see slot_type_t) */
+    uint8_t  track_type;        /* 0x2a (42): Tr - Track type (see track_type_t) */
+    uint8_t  _pad2b;            /* 0x2b (43) */
     uint8_t  rekordbox_id_be[4];/* 0x2c-0x2f (44-47): Rekordbox ID (big-endian) */
-    uint8_t  _reserved4[2];     /* 0x30-0x31 (48-49) */
-    uint8_t  track_num_be[2];   /* 0x32-0x33 (50-51): Track number (big-endian) */
-    uint8_t  _reserved5a[3];    /* 0x34-0x36 (52-54) */
-    uint8_t  usb_local;         /* 0x37 (55): USB mounted locally (0=no, slot=yes) */
-    uint8_t  sd_local;          /* 0x38 (56): SD mounted locally (0=no, slot=yes) */
-    uint8_t  usb_remote;        /* 0x39 (57): USB available via Link */
-    uint8_t  sd_remote;         /* 0x3a (58): SD available via Link */
-    uint8_t  _reserved5b[64];   /* 0x3b-0x7a (59-122) */
-    uint8_t  play_state;        /* 0x7b (123): P1 - Play state */
+    uint8_t  _pad30[2];         /* 0x30-0x31 (48-49) */
+    uint8_t  track_num_be[2];   /* 0x32-0x33 (50-51): Track position in list (BE) */
+    uint8_t  _pad34;            /* 0x34 (52) */
+    uint8_t  track_sort;        /* 0x35 (53): tsrt - Sort mode when loaded */
+    uint8_t  _pad36;            /* 0x36 (54) */
+    uint8_t  track_menu;        /* 0x37 (55): tsrc - Menu track was loaded from */
+    uint8_t  menu_cat1[3];      /* 0x38-0x3a (56-58): tcat1 - Menu category 1 */
+    uint8_t  menu_cat2[5];      /* 0x3b-0x3f (59-63): tcat2 - Menu category 2 */
+    uint8_t  _pad40[6];         /* 0x40-0x45 (64-69) */
+    uint8_t  disc_track_count[2]; /* 0x46-0x47 (70-71): dn - Track count on disc/menu */
+    uint8_t  _pad48[16];        /* 0x48-0x57 (72-87) */
+    uint8_t  load_indicator1;   /* 0x58 (88): ld1 - 0x80 briefly on new song (nxs2) */
+    uint8_t  _pad59;            /* 0x59 (89) */
+    uint8_t  cue_update[2];     /* 0x5a-0x5b (90-91): uc1 - 0xffff on cue add/delete */
+    uint8_t  _pad5c[2];         /* 0x5c-0x5d (92-93) */
+    uint8_t  tag_update[2];     /* 0x5e-0x5f (94-95): ut - Changes when song tagged */
+    uint8_t  _pad60[6];         /* 0x60-0x65 (96-101) */
+    uint8_t  load_indicator2[2]; /* 0x66-0x67 (102-103): ld2 - 0xffff on load done (nxs2) */
+    uint8_t  _pad68[2];         /* 0x68-0x69 (104-105) */
+    uint8_t  usb_activity;      /* 0x6a (106): Ua - Alternates 0x04/0x06 during USB activity */
+    uint8_t  sd_activity;       /* 0x6b (107): Sa - SD activity indicator */
+    uint8_t  _pad6c[3];         /* 0x6c-0x6e (108-110) */
+    uint8_t  usb_state;         /* 0x6f (111): Ul - USB local: 0x04=none, 0x00=loaded, 0x02-03=ejecting */
+    uint8_t  _pad70[3];         /* 0x70-0x72 (112-114) */
+    uint8_t  sd_state;          /* 0x73 (115): Sl - SD local: 0x04=none, 0x00=loaded, 0x02-03=ejecting */
+    uint8_t  _pad74;            /* 0x74 (116) */
+    uint8_t  link_available;    /* 0x75 (117): L - 0x01 if any USB/SD/CD present on network */
+    uint8_t  _pad76[5];         /* 0x76-0x7a (118-122) */
+    uint8_t  play_state;        /* 0x7b (123): P1 - Play mode (see cdj_play_state_t) */
     uint8_t  firmware[4];       /* 0x7c-0x7f (124-127): Firmware version ASCII */
-    uint8_t  _reserved6[9];     /* 0x80-0x88 (128-136) */
+    uint8_t  _pad80[4];         /* 0x80-0x83 (128-131) */
+    uint8_t  sync_counter_be[4]; /* 0x84-0x87 (132-135): Syncn - Increments on master handoff */
+    uint8_t  _pad88;            /* 0x88 (136) */
     uint8_t  status_flags;      /* 0x89 (137): F - Status flag bits */
-    uint8_t  _reserved7;        /* 0x8a (138): P2 */
-    uint8_t  _reserved8;        /* 0x8b (139) */
-    uint8_t  pitch1_be[4];      /* 0x8c-0x8f (140-143): Pitch adjustment 1 */
-    uint8_t  _reserved9[2];     /* 0x90-0x91 (144-145): Mv */
+    uint8_t  _pad8a;            /* 0x8a (138) */
+    uint8_t  play_state2;       /* 0x8b (139): P2 - 0x7a=playing, 0x7e=stopped, 0x6e=jog */
+    uint8_t  pitch1_be[4];      /* 0x8c-0x8f (140-143): Pitch1 - Current effective pitch */
+    uint8_t  master_valid[2];   /* 0x90-0x91 (144-145): Mv - 0x7fff=no track, 0x8000=rb */
     uint8_t  bpm_be[2];         /* 0x92-0x93 (146-147): BPM * 100 (big-endian) */
-    uint8_t  _reserved10[12];   /* 0x94-0x9f (148-159) */
+    uint8_t  master_slip[2];    /* 0x94-0x95 (148-149): Mslip - 0x7fff when not slipping */
+    uint8_t  bpm_slip[2];       /* 0x96-0x97 (150-151): BPMslip - Slip mode BPM */
+    uint8_t  pitch2_be[4];      /* 0x98-0x9b (152-155): Pitch2 - Fader position w/ brake */
+    uint8_t  _pad9c;            /* 0x9c (156) */
+    uint8_t  play_state3;       /* 0x9d (157): P3 - 0x09=vinyl fwd, 0x0d=CDJ fwd, 0x0b=slip */
+    uint8_t  master_meaningful; /* 0x9e (158): Mm - 0x00=not master, 0x01=rb master */
+    uint8_t  master_handoff;    /* 0x9f (159): Mh - 0xff normal, else device# taking over */
     uint8_t  beat_num_be[4];    /* 0xa0-0xa3 (160-163): Beat counter (big-endian) */
-    uint8_t  cue_countdown[2];  /* 0xa4-0xa5 (164-165): Cue countdown */
-    uint8_t  beat_in_bar;       /* 0xa6 (166): Bb - Beat within bar (1-4) */
-    uint8_t  _reserved11[65];   /* 0xa7-0xe7 (167-231): Remaining to 232 */
+    uint8_t  cue_countdown[2];  /* 0xa4-0xa5 (164-165): Cue - Bars to next cue (0x01ff=none) */
+    uint8_t  beat_in_bar;       /* 0xa6 (166): Bb - Beat within bar (1-4, 0=no rb track) */
+    uint8_t  _pada7[12];        /* 0xa7-0xb2 (167-178) */
+    uint8_t  grid_update;       /* 0xb3 (179): ug - 0xff when beat grid modified */
+    uint8_t  _padb4[3];         /* 0xb4-0xb6 (180-182) */
+    uint8_t  media_presence;    /* 0xb7 (183): Mp - CDJ-3000 media presence bitmask */
+    uint8_t  usb_unsafe_eject;  /* 0xb8 (184): Ue - 0x01 if USB ejected unsafely */
+    uint8_t  sd_unsafe_eject;   /* 0xb9 (185): Se - 0x01 if SD ejected unsafely */
+    uint8_t  emergency_loop;    /* 0xba (186): el - 0x01 when emergency loop active */
+    uint8_t  _padbb[5];         /* 0xbb-0xbf (187-191) */
+    uint8_t  pitch3_be[4];      /* 0xc0-0xc3 (192-195): Pitch3 - Effective pitch (dup) */
+    uint8_t  pitch4_be[4];      /* 0xc4-0xc7 (196-199): Pitch4 - Fader position (instant) */
+    uint8_t  packet_counter_be[4]; /* 0xc8-0xcb (200-203): Packet counter */
+    uint8_t  hardware_type;     /* 0xcc (204): nx - 0x05=older, 0x0f=nexus, 0x1f=CDJ-3000 */
+    uint8_t  touch_audio;       /* 0xcd (205): t - Touch Audio support (bit 5) */
+    uint8_t  _padce[26];        /* 0xce-0xe7 (206-231): Remaining to 232 */
 } cdj_status_packet_t;
 
 /* Compile-time verification of struct size (minimum nexus size) */
 _Static_assert(sizeof(cdj_status_packet_t) == 232, "cdj_status_packet_t must be 232 bytes");
+
+/* Track sort mode values (byte 0x35, tsrt) */
+typedef enum {
+    TRACK_SORT_DEFAULT  = 0x00,
+    TRACK_SORT_TITLE    = 0x01,
+    TRACK_SORT_ARTIST   = 0x02,
+    TRACK_SORT_ALBUM    = 0x03,
+    TRACK_SORT_BPM      = 0x04,
+    TRACK_SORT_RATING   = 0x05,
+    TRACK_SORT_KEY      = 0x0c,
+} track_sort_t;
+
+/* Track source menu values (byte 0x37, tsrc) */
+typedef enum {
+    TRACK_MENU_NONE     = 0x00,
+    TRACK_MENU_ARTIST   = 0x02,
+    TRACK_MENU_ALBUM    = 0x03,
+    TRACK_MENU_TRACK    = 0x04,
+    TRACK_MENU_PLAYLIST = 0x05,
+    TRACK_MENU_BPM      = 0x06,
+    TRACK_MENU_KEY      = 0x0c,
+    TRACK_MENU_FOLDER   = 0x11, /* Also CD */
+    TRACK_MENU_SEARCH   = 0x12,
+    TRACK_MENU_HISTORY  = 0x16,
+    TRACK_MENU_SEARCH_ARTIST = 0x1f,
+    TRACK_MENU_SEARCH_ALBUM  = 0x20,
+    TRACK_MENU_TAG_LIST = 0x28,
+    TRACK_MENU_INSTANT_DOUBLE = 0x32,
+} track_menu_t;
+
+/* USB/SD local state values (bytes 0x6f Ul, 0x73 Sl) */
+typedef enum {
+    MEDIA_STATE_LOADED   = 0x00, /* Media present and ready */
+    MEDIA_STATE_EJECTING = 0x02, /* Media being ejected */
+    MEDIA_STATE_CLOSING  = 0x03, /* Media slot closing */
+    MEDIA_STATE_NONE     = 0x04, /* No media present */
+} media_state_t;
+
+/* Hardware type values (byte 0xcc, nx) */
+typedef enum {
+    HW_TYPE_OLDER   = 0x05,
+    HW_TYPE_NEXUS   = 0x0f,
+    HW_TYPE_CDJ3000 = 0x1f, /* Also XDJ-XZ */
+} hardware_type_t;
 
 /* Play state values */
 typedef enum {

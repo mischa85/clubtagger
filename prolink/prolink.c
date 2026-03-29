@@ -284,18 +284,18 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 /* USB/SD presence — valid at fixed offsets in all variants */
                 uint8_t old_usb2 = dev2->usb_present;
                 uint8_t old_sd2 = dev2->sd_present;
-                dev2->usb_present = (pkt->usb_local != 0);
-                dev2->sd_present = (pkt->sd_local != 0);
-                dev2->usb_local_raw = pkt->usb_local;
-                dev2->sd_local_raw = pkt->sd_local;
+                dev2->usb_present = (pkt->usb_state != MEDIA_STATE_NONE);
+                dev2->sd_present = (pkt->sd_state != MEDIA_STATE_NONE);
+                dev2->usb_local_raw = pkt->usb_state;
+                dev2->sd_local_raw = pkt->sd_state;
                 /* Media byte logging (verbose only) */
                 if ((dev2->usb_present != old_usb2 || dev2->sd_present != old_sd2) && verbose) {
-                    logmsg("cdj", "Dev%d media bytes: [34-3a]=%02x %02x %02x %02x %02x %02x %02x "
-                           "Dr=%d Sr=0x%02x",
+                    logmsg("cdj", "Dev%d media: Ul=0x%02x Sl=0x%02x L=0x%02x Mp=0x%02x "
+                           "Dr=%d Sr=0x%02x tsrc=0x%02x",
                            device_num,
-                           data[0x34], data[0x35], data[0x36],
-                           data[0x37], data[0x38], data[0x39], data[0x3a],
-                           pkt->source_player, pkt->track_slot);
+                           pkt->usb_state, pkt->sd_state, pkt->link_available,
+                           pkt->media_presence,
+                           pkt->source_player, pkt->track_slot, pkt->track_menu);
                 }
                 if (dev2->usb_present && !old_usb2) {
                     logmsg("cdj", "💾 Device %d: USB inserted", device_num);
@@ -385,19 +385,19 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         /* Detect media insertion and proactively fetch databases */
         uint8_t old_usb = dev->usb_present;
         uint8_t old_sd = dev->sd_present;
-        dev->usb_present = (pkt->usb_local != 0);
-        dev->sd_present = (pkt->sd_local != 0);
-        dev->usb_local_raw = pkt->usb_local;
-        dev->sd_local_raw = pkt->sd_local;
+        dev->usb_present = (pkt->usb_state != MEDIA_STATE_NONE);
+        dev->sd_present = (pkt->sd_state != MEDIA_STATE_NONE);
+        dev->usb_local_raw = pkt->usb_state;
+        dev->sd_local_raw = pkt->sd_state;
 
         /* Media byte logging (verbose only) */
         if ((dev->usb_present != old_usb || dev->sd_present != old_sd) && verbose) {
-            logmsg("cdj", "Dev%d media bytes: [34-3a]=%02x %02x %02x %02x %02x %02x %02x "
-                   "Dr=%d Sr=0x%02x",
+            logmsg("cdj", "Dev%d media: Ul=0x%02x Sl=0x%02x L=0x%02x Mp=0x%02x "
+                   "Dr=%d Sr=0x%02x tsrc=0x%02x",
                     device_num,
-                    data[0x34], data[0x35], data[0x36],
-                    data[0x37], data[0x38], data[0x39], data[0x3a],
-                    dev->track_source_player, pkt->track_slot);
+                    pkt->usb_state, pkt->sd_state, pkt->link_available,
+                    pkt->media_presence,
+                    dev->track_source_player, pkt->track_slot, pkt->track_menu);
         }
         
         /* USB inserted */
@@ -448,9 +448,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
             /* Fetch USB databases if USB is present locally (not via Link).
              * Byte 0x3a == 0x01 indicates Link client — no local media.
-             * CDJ-3000X always reports usb_local=0x02 even without physical
-             * media, so give up after 3 NFS failures (no real USB). */
-            if (dev->usb_present && pkt->sd_remote == 0 &&
+             * usb_state 0x00 (MEDIA_STATE_LOADED) = real media present.
+             * Give up after 3 NFS failures. */
+            if (dev->usb_local_raw == MEDIA_STATE_LOADED &&
                 dev->usb_fetch_fails < 3 &&
                 (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
                 fetch_now - dev->usb_fetch_attempt >= 10) {
@@ -492,7 +492,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
 
             /* Fetch SD databases - same strategy */
-            if (dev->sd_present && pkt->sd_remote == 0 &&
+            if (dev->sd_local_raw == MEDIA_STATE_LOADED &&
                 dev->sd_fetch_fails < 3 &&
                 (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
                 fetch_now - dev->sd_fetch_attempt >= 10) {
