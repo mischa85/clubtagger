@@ -57,8 +57,9 @@ pdb_database_t *create_pdb_database(uint32_t device_ip, uint8_t slot);
 /* Remove database for device/slot (e.g., when media ejected) */
 void remove_pdb_database(uint32_t device_ip, uint8_t slot);
 
-/* Look up track by rekordbox ID in any loaded database */
-TrackID *lookup_pdb_track(uint32_t rekordbox_id);
+/* Look up track by rekordbox ID. If device_ip is non-zero, only search
+ * the database for that specific device+slot. Otherwise search all. */
+TrackID *lookup_pdb_track(uint32_t rekordbox_id, uint32_t device_ip, uint8_t slot);
 
 /*
  * ============================================================================

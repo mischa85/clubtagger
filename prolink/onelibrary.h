@@ -79,10 +79,12 @@ void remove_onelibrary(uint32_t device_ip, uint8_t slot);
  * ============================================================================
  */
 
-/* Look up track by content_id (= rekordbox_id) across all loaded databases.
+/* Look up track by content_id (= rekordbox_id) in a specific device's database.
+ * If device_ip is 0, searches all loaded databases (legacy behavior).
  * Populates title/artist/isrc into provided buffers.
  * Returns 0 on success, -1 if not found. */
 int onelibrary_lookup(uint32_t content_id,
+                      uint32_t device_ip, uint8_t slot,
                       char *title, size_t title_len,
                       char *artist, size_t artist_len,
                       char *isrc, size_t isrc_len);

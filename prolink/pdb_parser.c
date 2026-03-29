@@ -91,9 +91,11 @@ void remove_pdb_database(uint32_t device_ip, uint8_t slot) {
     }
 }
 
-TrackID *lookup_pdb_track(uint32_t rekordbox_id) {
+TrackID *lookup_pdb_track(uint32_t rekordbox_id, uint32_t device_ip, uint8_t slot) {
     for (int d = 0; d < pdb_database_count; d++) {
         pdb_database_t *db = &pdb_databases[d];
+        if (device_ip != 0 && (db->device_ip != device_ip || db->slot != slot))
+            continue;
         for (int t = 0; t < db->track_count; t++) {
             if (db->tracks[t].rekordbox_id == rekordbox_id) {
                 if (verbose) {

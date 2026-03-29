@@ -310,6 +310,7 @@ void remove_onelibrary(uint32_t device_ip, uint8_t slot)
  */
 
 int onelibrary_lookup(uint32_t content_id,
+                      uint32_t device_ip, uint8_t slot,
                       char *title, size_t title_len,
                       char *artist, size_t artist_len,
                       char *isrc, size_t isrc_len)
@@ -318,6 +319,10 @@ int onelibrary_lookup(uint32_t content_id,
 
     for (int i = 0; i < olib_count; i++) {
         if (!olib_databases[i].db) continue;
+        /* If device_ip specified, only search matching database */
+        if (device_ip != 0 &&
+            (olib_databases[i].device_ip != device_ip || olib_databases[i].slot != slot))
+            continue;
 
         sqlite3_stmt *stmt = NULL;
         int rc = sqlite3_prepare_v2(olib_databases[i].db,

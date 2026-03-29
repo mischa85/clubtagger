@@ -477,6 +477,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             logmsg("cdj", "✅ Device %d: USB PDB loaded (%d tracks)",
                                    device_num, db->track_count);
                             dev->usb_db_fetched = 1;
+                            dev->usb_olib_fetched = 1; /* PDB success → skip OneLibrary */
                             dev->usb_fetch_fails = 0;
                             usb_fetched_something = 1;
                             if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0')
@@ -519,6 +520,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             logmsg("cdj", "✅ Device %d: SD PDB loaded (%d tracks)",
                                    device_num, db->track_count);
                             dev->sd_db_fetched = 1;
+                            dev->sd_olib_fetched = 1; /* PDB success → skip OneLibrary */
                             dev->sd_fetch_fails = 0;
                             sd_fetched_something = 1;
                             if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0')
@@ -664,8 +666,19 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 retry_later = try_resolve_track_name(dev);
                 found = (dev->track_title[0] != '\0');
             } else if (dev->track_slot > 0) {
-                /* First try track cache */
-                track_cache_entry_t *tc = find_track_by_id(dev->rekordbox_id);
+                /* Determine source device for database lookups.
+                 * Link tracks come from a different device's media. */
+                uint32_t src_ip = dev->ip_addr;
+                uint8_t  src_slot = dev->track_slot;
+                if (dev->track_source_player > 0 &&
+                    dev->track_source_player != dev->device_num) {
+                    cdj_device_t *src = get_device(dev->track_source_player);
+                    if (src && src->ip_addr)
+                        src_ip = src->ip_addr;
+                }
+
+                /* First try track cache (scoped to source device) */
+                track_cache_entry_t *tc = find_track_cache(dev->rekordbox_id, src_ip);
                 if (tc && tc->title[0]) {
                     utf8_safe_copy(dev->track_title, tc->title, sizeof(dev->track_title));
                     if (tc->artist[0]) {
@@ -676,9 +689,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     }
                     found = 1;
                 } else {
-                    /* Try OneLibrary first (richer metadata from CDJ-3000X) */
+                    /* Try OneLibrary first (scoped to source device) */
                     char ol_title[128] = {0}, ol_artist[128] = {0}, ol_isrc[64] = {0};
                     if (onelibrary_lookup(dev->rekordbox_id,
+                                          src_ip, src_slot,
                                           ol_title, sizeof(ol_title),
                                           ol_artist, sizeof(ol_artist),
                                           ol_isrc, sizeof(ol_isrc)) == 0 &&
@@ -694,7 +708,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
                     /* Try PDB database by rekordbox_id */
                     if (!found) {
-                    TrackID *pdb = lookup_pdb_track(dev->rekordbox_id);
+                    TrackID *pdb = lookup_pdb_track(dev->rekordbox_id, src_ip, src_slot);
                     
                     if (pdb && pdb->title[0]) {
                         utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
