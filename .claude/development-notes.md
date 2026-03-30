@@ -38,18 +38,28 @@ Each deck accumulates a score (0-1000) from weighted signals:
 
 | Signal | Weight | When |
 |--------|--------|------|
-| CDJ_LOADED | +200 | Track metadata resolved from database |
-| CDJ_PLAYING | +50 | Deck started playing |
-| CDJ_DURATION | +15/10s | Continuous playback (cap +150) |
+| CDJ_LOADED | +150 | Track metadata resolved from database |
+| CDJ_PLAYING | +50 | Deck started playing (fires once per track, not per cue) |
+| CDJ_DURATION | +50/10s | Continuous playback (cap 15 ticks). Only counts from name resolve. |
 | CDJ_ON_AIR | +100 | DJM reports deck on-air |
-| CDJ_ON_AIR_EDGE | +200 | Moment fader goes up |
-| SHAZAM_MATCH | +250 | Shazam returned a result |
-| SHAZAM_CONFIRM | +150 | Consecutive Shazam match |
-| ISRC_MATCH | +400 | ISRC match CDJ+Shazam |
+| CDJ_ON_AIR_EDGE | +150 | Moment fader goes up |
+| SHAZAM_MATCH | +100 | Shazam returned a result (scaled by confidence) |
+| SHAZAM_CONFIRM | +200 | Consecutive Shazam match (scaled by confidence) |
+| ISRC_MATCH | +300 | ISRC match CDJ+Shazam |
 | FUZZY_MATCH | +200 | Title+artist match CDJ+Shazam |
-| SHAZAM_DISAGREE | -100 | Different track returned |
+| SHAZAM_DISAGREE | -150 | Different track returned (scaled by confidence) |
+| SHAZAM_NO_MATCH | -10 | Shazam found nothing |
+| CDJ_OFF_AIR | -150 | Fader down |
 
-Track accepted at 600 (60%). Decay: 3 units/second with no signals.
+Track accepted at 550 (55%). Decay: 1 unit/second with no signals.
+
+Key design decisions (2026-03-29):
+- CDJ_PLAYING gated on `signals_seen` not `signals_active` — cueing (play/pause
+  cycles) no longer inflates confidence. DJ can cue 10 times, still only +50.
+- Duration clock resets when CDJ_LOADED fires — prevents accumulated unnamed
+  playback from dumping confidence instantly when track name resolves.
+- Unnamed playing decks count as needing Shazam — prevents Shazam thread from
+  sleeping when only unnamed tracks are active.
 
 ### Track Source Types
 
@@ -99,9 +109,9 @@ Track accepted at 600 (60%). Decay: 3 units/second with no signals.
 
 | Constant | Value | Location |
 |----------|-------|----------|
-| Accept threshold | 600 (60%) | confidence.h |
-| Decay rate | 3/second | confidence.h |
-| Duration tick | 15 per 10s | confidence.h |
+| Accept threshold | 550 (55%) | confidence.h |
+| Decay rate | 1/second | confidence.h |
+| Duration tick | 50 per 10s | confidence.h |
 | Shazam gap | 20s default | main.c |
 | Same-track hold | 120s default | main.c |
 | Shazam backoff | 30-300s on error | id_thread.c |

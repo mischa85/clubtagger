@@ -46,26 +46,58 @@ Offset  Size  Field
 ```
 Offset  Size  Field
 0x0a    1     Subtype (0x0a)
-0x0b    20    Device name
+0x0b    20    Device name (space-padded)
 0x20    1     Subtype2 (0x03=CDJ status with track data)
-0x21    1     Device number (1-6)
-0x28    1     Source player (for Link tracks)
-0x29    1     Track slot (0x01=CD, 0x02=SD, 0x03=USB, 0x04=Link, 0x06=Streaming, 0x09=Beatport)
-0x2a    1     Track type (0x01=rekordbox, 0x02=unanalyzed, 0x05=CD, 0x06=streaming)
+0x21    1     D - Device number (1-6)
+0x27    1     A - Activity (0x00=idle, 0x01=active)
+0x28    1     Dr - Source player for track (0=none, else device#)
+0x29    1     Sr - Slot (0x00=none, 0x01=CD, 0x02=SD, 0x03=USB, 0x04=Link, 0x06=Streaming, 0x09=Beatport)
+0x2a    1     Tr - Track type (0x00=none, 0x01=rekordbox, 0x02=unanalyzed, 0x05=CD, 0x06=streaming)
 0x2c    4     Rekordbox ID (big-endian uint32)
-0x32    2     Track number (big-endian uint16)
-0x37    1     USB mounted locally
-0x38    1     SD mounted locally
-0x7b    1     Play state (0x00=empty, 0x02=loading, 0x03=playing, 0x04=looping, 0x05=paused, 0x06=cued, 0x07=cuing, 0x08=platter held, 0x09=searching, 0x0e=spun down, 0x11=ended)
-0x89    1     Status flags (bit 6=playing, bit 5=master, bit 4=sync, bit 3=on-air)
-0x8d    3     Slider pitch (24-bit, offset from 0x100000)
+0x32    2     Track number in list (big-endian uint16)
+0x35    1     tsrt - Track sort mode when loaded
+0x37    1     tsrc - Menu track was loaded from (0x02=artist, 0x04=track, 0x05=playlist, etc.)
+0x38    3     tcat1 - Menu category 1
+0x3b    5     tcat2 - Menu category 2
+0x46    2     dn - Track count on disc/playlist
+0x58    1     ld1 - Load indicator (0x80 on new song, nxs2/XDJ-1000)
+0x5a    2     uc1 - Cue update (0xffff on cue add/delete)
+0x5e    2     ut - Tag update
+0x66    2     ld2 - Load finished indicator (0xffff, nxs2/XDJ-1000)
+0x6a    1     Ua - USB activity (alternates 0x04/0x06)
+0x6b    1     Sa - SD activity
+0x6f    1     Ul - USB local: 0x04=no media, 0x00=loaded, 0x02-03=ejecting
+0x73    1     Sl - SD local: same as Ul
+0x75    1     L - Link available: 0x01 if any USB/SD/CD on network
+0x7b    1     P1 - Play state (0x00=empty, 0x02=loading, 0x03=playing, 0x04=looping,
+               0x05=paused, 0x06=cued, 0x07=cuing, 0x08=platter held, 0x09=searching,
+               0x0e=spun down, 0x11=ended, 0x12=emergency loop)
+0x7c    4     Firmware version ASCII
+0x84    4     Syncn - Increments on master handoff
+0x89    1     F - Status flags (bit6=play, bit5=master, bit4=sync, bit3=on-air, bit0=BPM sync)
+0x8b    1     P2 - Secondary play state (0x7a=playing, 0x7e=stopped, 0x6e=jog)
+0x8c    4     Pitch1 - Current effective pitch (0x100000=0%, 0x000000=−100%, 0x200000=+100%)
+0x90    2     Mv - Master validity (0x7fff=no track, 0x8000=rekordbox, 0x0000=non-rb)
 0x92    2     BPM × 100 (big-endian uint16)
-0x99    3     Effective pitch
-0xa0    4     Beat counter (big-endian uint32)
-0xa4    2     Beats until cue
-0xa6    1     Beat in measure (1-4)
-0xba    1     Emergency mode
-0xc8    4     Packet counter (incrementing)
+0x94    2     Mslip - Master slip (0x7fff when not slipping)
+0x96    2     BPMslip - Slip mode BPM
+0x98    4     Pitch2 - Fader position with brake/release speed
+0x9d    1     P3 - Mode (0x09=vinyl fwd, 0x0d=CDJ fwd, 0x0b=slip)
+0x9e    1     Mm - Master meaningful (0x00=not, 0x01=rb master, 0x02=non-rb master)
+0x9f    1     Mh - Master handoff (0xff=normal, else device# taking over)
+0xa0    4     Beat counter (big-endian uint32, 0xffffffff if no rb track)
+0xa4    2     Cue countdown in bars (0x01ff=none/64+ bars)
+0xa6    1     Bb - Beat in measure (1-4, 0x00 if no rb track)
+0xb3    1     ug - Grid update (0xff when beat grid modified)
+0xb7    1     Mp - CDJ-3000 media presence bitmask (bits for USB/SD)
+0xb8    1     Ue - USB unsafe eject (0x01)
+0xb9    1     Se - SD unsafe eject (0x01)
+0xba    1     el - Emergency loop active (0x01)
+0xc0    4     Pitch3 - Effective pitch (duplicate of Pitch1)
+0xc4    4     Pitch4 - Fader position (instant response)
+0xc8    4     Packet counter (not all players increment)
+0xcc    1     nx - Hardware type (0x05=older, 0x0f=nexus, 0x1f=CDJ-3000/XDJ-XZ)
+0xcd    1     t - Touch Audio support (bit 5)
 ```
 
 **CDJ-3000X note:** Sends 1152-byte status packets with alternating subtype2 values. Only subtype2=0x03 has track data at standard offsets. Other variants (0x05, 0x06) have different layouts — skip track fields if rekordbox_id=0 and slot=0 to avoid flipping.
