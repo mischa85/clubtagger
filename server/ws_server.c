@@ -29,6 +29,31 @@ void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
     (void)port_id; (void)src_ip; (void)payload; (void)len;
 }
 
+static void serve_debug_page(int fd) {
+    static const char page[] =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        "Connection: close\r\n\r\n"
+        "<!DOCTYPE html><html><body style='background:#111;color:#eee;font:16px monospace'>"
+        "<h2>WS Debug</h2><pre id=log></pre>"
+        "<script>\n"
+        "var L=document.getElementById('log');\n"
+        "function log(s){L.textContent+=s+'\\n';console.log(s);}\n"
+        "var url='ws://'+location.host;\n"
+        "log('connecting to '+url);\n"
+        "var ws=new WebSocket(url);\n"
+        "ws.binaryType='arraybuffer';\n"
+        "ws.onopen=function(){log('OPEN');};\n"
+        "ws.onmessage=function(e){\n"
+        "  if(typeof e.data==='string') log('MSG: '+e.data);\n"
+        "  else log('BIN: '+e.data.byteLength+' bytes');\n"
+        "};\n"
+        "ws.onclose=function(e){log('CLOSE code='+e.code+' reason='+e.reason+' clean='+e.wasClean);};\n"
+        "ws.onerror=function(){log('ERROR');};\n"
+        "</script></body></html>";
+    send(fd, page, sizeof(page) - 1, 0);
+}
+
 static int do_handshake(int fd) {
     char buf[4096];
     ssize_t n = recv(fd, buf, sizeof(buf)-1, 0);
@@ -36,11 +61,14 @@ static int do_handshake(int fd) {
     if (n <= 0) return -1;
     buf[n] = '\0';
 
+    logmsg("ws", "request: %.200s", buf);
+
     /* Find key — case-insensitive, handle variable spacing */
     char *kp = strcasestr(buf, "sec-websocket-key:");
     if (!kp) {
-        logmsg("ws", "no key found in: %.200s", buf);
-        return -1;
+        logmsg("ws", "no WS key — serving debug page");
+        serve_debug_page(fd);
+        return -2; /* not a WS request */
     }
     kp += 18; /* skip "sec-websocket-key:" */
     while (*kp == ' ' || *kp == '\t') kp++; /* skip whitespace */
@@ -180,7 +208,13 @@ void *ws_main(void *arg) {
 
         logmsg("ws", "accepted fd=%d", cfd);
 
-        if (do_handshake(cfd) != 0) {
+        int hs = do_handshake(cfd);
+        if (hs == -2) {
+            /* Debug page served, close */
+            close(cfd);
+            continue;
+        }
+        if (hs != 0) {
             logmsg("ws", "handshake failed");
             close(cfd);
             continue;
