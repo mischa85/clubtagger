@@ -1,11 +1,8 @@
 /*
- * ws_server.c - Minimal WebSocket server (step-by-step build)
+ * ws_server.c - Bare minimum WebSocket server
  */
 #include "ws_server.h"
 #include "../common.h"
-#include "../prolink/cdj_types.h"
-#include "../confidence.h"
-#include "../db/database.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -14,209 +11,173 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
-#include <sys/stat.h>
 #include <sys/un.h>
 #include <netinet/in.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/stat.h>
+#include <poll.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 
-#define WS_MAX_CLIENTS 8
-#define WS_MAGIC_GUID "258EAFA5-E914-47DA-95CA-5AB0141B3CF2"
+#define WS_MAX_CLIENTS 4
 
-static const char *ws_token = NULL;
-static _Atomic int ws_clients[WS_MAX_CLIENTS];
-
-/* ============================================================================
- * WebSocket frame send (server→client, no masking)
- * ============================================================================ */
-
-static ssize_t ws_send_frame(int fd, uint8_t opcode, const void *data, size_t len) {
-    uint8_t hdr[4];
-    int hlen;
-    hdr[0] = 0x80 | opcode;
-    if (len < 126) {
-        hdr[1] = (uint8_t)len;
-        hlen = 2;
-    } else {
-        hdr[1] = 126;
-        hdr[2] = (uint8_t)(len >> 8);
-        hdr[3] = (uint8_t)(len & 0xFF);
-        hlen = 4;
-    }
-    /* Two separate sends — simple and portable */
-    ssize_t s1 = send(fd, hdr, hlen, MSG_NOSIGNAL);
-    if (s1 < 0) return s1;
-    ssize_t s2 = send(fd, data, len, MSG_NOSIGNAL);
-    return s2;
-}
-
-static ssize_t ws_send_text(int fd, const char *data, size_t len) {
-    return ws_send_frame(fd, 0x01, data, len);
-}
-
-/* ============================================================================
- * WebSocket handshake
- * ============================================================================ */
-
-static int ws_handshake(int fd) {
-    char req[2048];
-    ssize_t n = recv(fd, req, sizeof(req) - 1, 0);
-    if (n <= 0) {
-        logmsg("ws", "handshake: recv failed n=%zd errno=%d", n, errno);
-        return -1;
-    }
-    req[n] = '\0';
-    logmsg("ws", "handshake: received %zd bytes: %.200s", n, req);
-
-    if (!strcasestr(req, "Upgrade: websocket")) {
-        logmsg("ws", "handshake: no Upgrade header found");
-        return -1;
-    }
-
-    /* Validate token if configured */
-    if (ws_token && ws_token[0]) {
-        char expect[256];
-        snprintf(expect, sizeof(expect), "token=%s", ws_token);
-        if (!strstr(req, expect)) return -1;
-    }
-
-    /* Extract Sec-WebSocket-Key */
-    const char *kp = strcasestr(req, "Sec-WebSocket-Key:");
-    if (!kp) return -1;
-    kp += 18;
-    while (*kp == ' ') kp++;
-    char key[128];
-    int ki = 0;
-    while (*kp && *kp != '\r' && *kp != '\n' && ki < 126)
-        key[ki++] = *kp++;
-    key[ki] = '\0';
-
-    /* SHA1(key + GUID) → base64 */
-    char cat[256];
-    snprintf(cat, sizeof(cat), "%s%s", key, WS_MAGIC_GUID);
-    unsigned char hash[SHA_DIGEST_LENGTH];
-    SHA1((unsigned char *)cat, strlen(cat), hash);
-    char accept[64];
-    EVP_EncodeBlock((unsigned char *)accept, hash, SHA_DIGEST_LENGTH);
-
-    /* 101 response */
-    char resp[512];
-    int rlen = snprintf(resp, sizeof(resp),
-        "HTTP/1.1 101 Switching Protocols\r\n"
-        "Upgrade: websocket\r\n"
-        "Connection: Upgrade\r\n"
-        "Sec-WebSocket-Accept: %s\r\n\r\n", accept);
-    return (send(fd, resp, rlen, MSG_NOSIGNAL) == rlen) ? 0 : -1;
-}
-
-/* ============================================================================
- * Broadcast packet stub (called from prolink thread)
- * ============================================================================ */
+static _Atomic int ws_fds[WS_MAX_CLIENTS];
 
 void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
                          const uint8_t *payload, size_t len) {
     (void)port_id; (void)src_ip; (void)payload; (void)len;
-    /* Disabled until basic connection works */
 }
 
-/* ============================================================================
- * Main thread
- * ============================================================================ */
+static int do_handshake(int fd) {
+    char buf[4096];
+    ssize_t n = recv(fd, buf, sizeof(buf)-1, 0);
+    logmsg("ws", "recv returned %zd", n);
+    if (n <= 0) return -1;
+    buf[n] = '\0';
+
+    /* Find key */
+    char *kp = strstr(buf, "Sec-WebSocket-Key: ");
+    if (!kp) kp = strstr(buf, "sec-websocket-key: ");
+    if (!kp) {
+        logmsg("ws", "no key found in: %.100s", buf);
+        return -1;
+    }
+    kp += 19;
+    char key[64] = {0};
+    for (int i = 0; i < 60 && kp[i] && kp[i] != '\r' && kp[i] != '\n'; i++)
+        key[i] = kp[i];
+
+    /* SHA1(key + guid) */
+    char cat[256];
+    snprintf(cat, sizeof(cat), "%s258EAFA5-E914-47DA-95CA-5AB0141B3CF2", key);
+    unsigned char hash[20];
+    SHA1((unsigned char*)cat, strlen(cat), hash);
+    char b64[64];
+    EVP_EncodeBlock((unsigned char*)b64, hash, 20);
+
+    char resp[256];
+    int rn = snprintf(resp, sizeof(resp),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n\r\n", b64);
+
+    ssize_t sent = send(fd, resp, rn, 0);
+    logmsg("ws", "sent 101 response: %zd bytes", sent);
+    return (sent == rn) ? 0 : -1;
+}
+
+static ssize_t ws_text(int fd, const char *msg, int len) {
+    uint8_t hdr[4];
+    hdr[0] = 0x81; /* FIN + text */
+    if (len < 126) {
+        hdr[1] = (uint8_t)len;
+        send(fd, hdr, 2, MSG_NOSIGNAL | MSG_DONTWAIT);
+    } else {
+        hdr[1] = 126;
+        hdr[2] = (uint8_t)(len >> 8);
+        hdr[3] = (uint8_t)(len & 0xff);
+        send(fd, hdr, 4, MSG_NOSIGNAL | MSG_DONTWAIT);
+    }
+    return send(fd, msg, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+}
 
 void *ws_main(void *arg) {
+    (void)arg;
     App *app = (App *)arg;
-    const char *socket_path = app->cfg.ws_socket;
-    ws_token = app->cfg.ws_token;
+    const char *path = app->cfg.ws_socket;
+    if (!path) return NULL;
 
-    for (int i = 0; i < WS_MAX_CLIENTS; i++)
-        atomic_store(&ws_clients[i], -1);
+    int server_fd;
+    int port = atoi(path);
 
-    /* Create server socket — TCP if path looks like a port number */
-    int server_fd, is_tcp = 0;
-    int port = atoi(socket_path);
-    if (port > 0 && port < 65536) {
-        is_tcp = 1;
+    if (port > 0) {
         server_fd = socket(AF_INET, SOCK_STREAM, 0);
         int opt = 1;
         setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
         struct sockaddr_in a = {0};
         a.sin_family = AF_INET;
-        a.sin_addr.s_addr = INADDR_ANY;
-        a.sin_port = htons((uint16_t)port);
-        if (bind(server_fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
-            logmsg("ws", "TCP bind(%d) failed: %s", port, strerror(errno));
+        a.sin_port = htons(port);
+        if (bind(server_fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
+            logmsg("ws", "bind %d: %s", port, strerror(errno));
+            close(server_fd);
             return NULL;
         }
-        logmsg("ws", "started: TCP port %d (WebSocket)", port);
     } else {
         server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-        unlink(socket_path);
+        unlink(path);
         struct sockaddr_un a = {0};
         a.sun_family = AF_UNIX;
-        snprintf(a.sun_path, sizeof(a.sun_path), "%s", socket_path);
-        if (bind(server_fd, (struct sockaddr *)&a, sizeof(a)) < 0) {
-            logmsg("ws", "bind() failed: %s", strerror(errno));
+        snprintf(a.sun_path, sizeof(a.sun_path), "%s", path);
+        if (bind(server_fd, (struct sockaddr*)&a, sizeof(a)) < 0) {
+            logmsg("ws", "bind: %s", strerror(errno));
+            close(server_fd);
             return NULL;
         }
-        chmod(socket_path, 0666);
-        logmsg("ws", "started: socket=%s (WebSocket)", socket_path);
+        chmod(path, 0666);
     }
 
-    listen(server_fd, 8);
-    fcntl(server_fd, F_SETFL, O_NONBLOCK);
+    listen(server_fd, 4);
+    logmsg("ws", "listening on %s", path);
 
+    for (int i = 0; i < WS_MAX_CLIENTS; i++)
+        atomic_store(&ws_fds[i], -1);
+
+    /* BLOCKING accept loop — simple and correct */
     while (g_running) {
-        /* Accept */
-        int cfd = accept(server_fd, NULL, NULL);
-        if (cfd >= 0) {
-            if (ws_handshake(cfd) != 0) {
-                close(cfd);
-            } else {
-                /* Find slot */
-                int added = 0;
-                for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-                    if (atomic_load(&ws_clients[i]) < 0) {
-                        fcntl(cfd, F_SETFL, O_NONBLOCK);
-                        atomic_store(&ws_clients[i], cfd);
-                        logmsg("ws", "client connected (slot %d)", i);
-                        added = 1;
-                        break;
-                    }
-                }
-                if (!added) close(cfd);
-            }
-        }
-
-        /* Send a heartbeat text frame to all clients every loop (~60Hz) */
-        static int counter = 0;
-        if (++counter >= 60) {  /* ~1 second */
-            counter = 0;
-            char msg[128];
-            int len = snprintf(msg, sizeof(msg),
-                "{\"event\":\"ping\",\"t\":%ld}", (long)time(NULL));
+        /* Use poll to avoid blocking forever */
+        struct pollfd pfd = { .fd = server_fd, .events = POLLIN };
+        int pr = poll(&pfd, 1, 1000); /* 1 second timeout */
+        if (pr <= 0) {
+            /* Timeout or error — send pings to existing clients */
+            char ping[64];
+            int plen = snprintf(ping, sizeof(ping), "{\"t\":%ld}", (long)time(NULL));
             for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-                int fd = atomic_load(&ws_clients[i]);
+                int fd = atomic_load(&ws_fds[i]);
                 if (fd < 0) continue;
-                ssize_t sent = ws_send_text(fd, msg, len);
-                if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                    logmsg("ws", "client disconnected (slot %d, errno=%d)", i, errno);
+                if (ws_text(fd, ping, plen) < 0) {
+                    logmsg("ws", "slot %d dead", i);
                     close(fd);
-                    atomic_store(&ws_clients[i], -1);
+                    atomic_store(&ws_fds[i], -1);
                 }
             }
+            continue;
         }
 
-        struct timespec ts = {0, 16666666};
-        nanosleep(&ts, NULL);
+        int cfd = accept(server_fd, NULL, NULL);
+        if (cfd < 0) continue;
+
+        logmsg("ws", "accepted fd=%d", cfd);
+
+        if (do_handshake(cfd) != 0) {
+            logmsg("ws", "handshake failed");
+            close(cfd);
+            continue;
+        }
+
+        logmsg("ws", "handshake OK");
+
+        /* Send a hello */
+        const char *hello = "{\"event\":\"hello\"}";
+        ws_text(cfd, hello, strlen(hello));
+
+        /* Store in slot */
+        int stored = 0;
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            if (atomic_load(&ws_fds[i]) < 0) {
+                atomic_store(&ws_fds[i], cfd);
+                logmsg("ws", "client in slot %d", i);
+                stored = 1;
+                break;
+            }
+        }
+        if (!stored) {
+            logmsg("ws", "no slot, closing");
+            close(cfd);
+        }
     }
 
-    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-        int fd = atomic_load(&ws_clients[i]);
-        if (fd >= 0) close(fd);
-    }
     close(server_fd);
-    if (!is_tcp) unlink(socket_path);
     return NULL;
 }
