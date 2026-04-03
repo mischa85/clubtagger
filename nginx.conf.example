@@ -42,7 +42,7 @@ server {
     }
 
     # WebSocket proxy to clubtagger Unix socket
-    location /sse {
+    location /ws {
         proxy_pass http://clubtagger;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;

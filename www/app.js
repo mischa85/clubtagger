@@ -515,7 +515,7 @@
         if (ws) ws.close();
 
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(proto + '//' + location.host + '/sse');
+        ws = new WebSocket(proto + '//' + location.host + '/ws');
         ws.binaryType = 'arraybuffer';
 
         ws.onopen = function() {
