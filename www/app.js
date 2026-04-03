@@ -193,6 +193,19 @@
     }
 
     // Update CDJ deck status
+    function keyName(note, scale, acc) {
+        if (note > 11) return '';
+        const notes = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+        let name = notes[note];
+        if (acc === 1) name = notes[note]; // sharp already in array
+        else if (acc === 255 || acc === 0xff) {
+            // flat: use flat notation
+            const flats = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
+            name = flats[note];
+        }
+        return name + (scale === 0 ? 'm' : '');
+    }
+
     function updateDecks(decks) {
         // Filter out audio-only entries (shown in identification panel instead)
         const cdjDecks = decks ? decks.filter(d => !d.audio_only) : [];
@@ -204,20 +217,51 @@
 
         // Sort by deck number
         cdjDecks.sort((a, b) => a.n - b.n);
-        const decksToRender = cdjDecks;
-        
-        decksEl.innerHTML = decksToRender.map(d => {
+
+        decksEl.innerHTML = cdjDecks.map(d => {
             const classes = ['deck'];
             if (d.playing) classes.push('playing');
             if (d.on_air) classes.push('on-air');
 
-            const slotName = SLOTS[d.slot] || '';
-            const bpmText = d.bpm > 0 ? `<span class="deck-bpm">${d.bpm} BPM</span>` : '';
-            const slotText = slotName ? ` · ${slotName}` : '';
             const deckLabel = (d.name || 'CDJ') + ' (' + d.n + ')';
-            const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
 
-            // Track position (from CDJ-3000X position packets) or continuous play time
+            // Beat indicator (4 dots, current beat highlighted)
+            const beatDots = d.bpm > 0 ? '<div class="beat-indicator">' +
+                [1,2,3,4].map(b => `<span class="beat-dot${d.beat === b ? ' active' : ''}"></span>`).join('') +
+                '</div>' : '';
+
+            // BPM with pitch
+            let bpmText = '';
+            if (d.bpm > 0) {
+                const pitchPct = d.pitch / 6400;
+                const effectiveBpm = (d.bpm * (1 + pitchPct / 100)).toFixed(1);
+                const pitchStr = Math.abs(pitchPct) > 0.05
+                    ? ` <span class="deck-pitch">(${pitchPct >= 0 ? '+' : ''}${pitchPct.toFixed(1)}%)</span>` : '';
+                bpmText = `<span class="deck-bpm">${effectiveBpm} BPM${pitchStr}</span>`;
+            }
+
+            // Track source
+            const slotName = SLOTS[d.slot] || '';
+            let sourceText = '';
+            if (slotName) {
+                if (d.src_player > 0 && d.src_player !== d.n) {
+                    sourceText = `<span class="deck-source">CDJ${d.src_player}/${slotName} (Link)</span>`;
+                } else {
+                    sourceText = `<span class="deck-source">${slotName}</span>`;
+                }
+            }
+
+            // Key display
+            const keyText = d.key_note <= 11 ? `<span class="deck-key">${keyName(d.key_note, d.key_scale, d.key_acc)}</span>` : '';
+
+            // Loop badge
+            const loopBadge = d.looping
+                ? `<span class="deck-badge loop">LOOP${d.loop_beats > 0 ? ' ' + d.loop_beats : ''}</span>` : '';
+
+            // Master tempo badge
+            const mtBadge = d.master_tempo ? '<span class="deck-badge mt">MT</span>' : '';
+
+            // Track position or continuous play time
             let playTimeText = '';
             if (d.position_ms > 0) {
                 const pm = Math.floor(d.position_ms / 60000);
@@ -233,25 +277,20 @@
             } else if (d.playing && d.play_time > 0) {
                 const m = Math.floor(d.play_time / 60);
                 const s = d.play_time % 60;
-                playTimeText = `<span class="deck-playtime" title="Continuous play time">${m}:${s < 10 ? '0' : ''}${s}</span>`;
+                playTimeText = `<span class="deck-playtime">${m}:${s < 10 ? '0' : ''}${s}</span>`;
             }
 
-            // Media indicators
-            const mediaIcons = [];
-            if (d.usb) mediaIcons.push('USB');
-            if (d.sd) mediaIcons.push('SD');
-            const mediaText = mediaIcons.length > 0 ? `<span class="deck-media">${mediaIcons.join('+')}</span>` : '';
-
-            // Database source
+            const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
             const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
 
             return `
                 <div class="${classes.join(' ')}">
                     <div class="deck-header">
-                        <span class="deck-num">${deckLabel}</span>
+                        <span class="deck-num">${deckLabel}</span>${beatDots}
                         <div class="deck-status">
                             ${d.playing ? '<span class="deck-badge playing">▶ Playing</span>' : '<span class="deck-badge paused">❚❚ Paused</span>'}
                             ${d.on_air_known ? (d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : '<span class="deck-badge off-air">OFF AIR</span>') : ''}
+                            ${loopBadge}${mtBadge}
                             ${playTimeText}
                         </div>
                     </div>
@@ -260,9 +299,9 @@
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}</div>
                     </div>
                     <div class="deck-meta">
-                        ${bpmText}${slotText}
+                        ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}
                         ${isrcText ? ' · ' + isrcText : ''}
-                        ${mediaText ? ' · ' + mediaText : ''}${dbText ? ' · ' + dbText : ''}
+                        ${dbText ? ' · ' + dbText : ''}
                     </div>
                 </div>
             `;

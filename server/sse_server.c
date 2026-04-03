@@ -279,7 +279,7 @@ void *sse_main(void *arg) {
         static int deck_counter = 0;
         if (++deck_counter >= 30) {  /* 30 * 16.7ms = ~500ms */
             deck_counter = 0;
-            char deck_msg[2048];
+            char deck_msg[4096];
             int deck_len = 0;
             deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len,
                                  "event: decks\ndata: [");
@@ -329,6 +329,10 @@ void *sse_main(void *arg) {
                     "\"isrc\":\"%s\",\"play_time\":%d,\"position_ms\":%u,\"track_length\":%u,"
                     "\"rekordbox_id\":%u,\"db_src\":\"%s\","
                     "\"usb\":%d,\"sd\":%d,"
+                    "\"beat\":%d,\"pitch\":%d,"
+                    "\"looping\":%d,\"loop_beats\":%d,"
+                    "\"key_note\":%d,\"key_scale\":%d,\"key_acc\":%d,"
+                    "\"master_tempo\":%d,\"src_player\":%d,"
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
                     dev->device_num, escaped_name, dev->playing ? 1 : 0, dev->on_air ? 1 : 0,
                     dev->on_air_available ? 1 : 0,
@@ -336,6 +340,10 @@ void *sse_main(void *arg) {
                     escaped_isrc, play_secs, dev->position_ms, dev->track_length_sec,
                     dev->rekordbox_id, db_src,
                     dev->usb_present ? 1 : 0, dev->sd_present ? 1 : 0,
+                    dev->beat_in_bar, dev->pitch_raw,
+                    dev->looping ? 1 : 0, dev->loop_beats,
+                    dev->key_note, dev->key_scale, dev->key_accidental,
+                    dev->master_tempo, dev->track_source_player,
                     conf_pct, conf_accepted, conf_src);
             }
 

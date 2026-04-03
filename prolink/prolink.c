@@ -296,8 +296,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         zc[6] = data[0xb8]; zc[7] = data[0xb9];
                         zc[8] = data[0x37]; zc[9] = data[0x29]; zc[10] = data[0x28];
                     }
-                    int zchanged = memcmp(zc, prev_zd[zidx], sizeof(zc)) != 0;
-                    if (zchanged || (now_zd - last_zd_dump[zidx] >= 5)) {
+                    /* Skip Ua/Sa (index 0,1) in comparison — they toggle every packet */
+                    int zchanged = memcmp(zc + 2, prev_zd[zidx] + 2, sizeof(zc) - 2) != 0;
+                    if (zchanged || (verbose && now_zd - last_zd_dump[zidx] >= 5)) {
                         logmsg("cdj", "Dev%d [media-zd] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
                                "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
                                device_num, zc[0], zc[1], zc[2], zc[3], zc[4],
@@ -431,8 +432,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 cur[10] = data[0x28];                        /* Dr */
             }
 
-            int changed = memcmp(cur, prev_bytes[didx], sizeof(cur)) != 0;
-            if (changed || (now_dbg - last_media_dump[didx] >= 5)) {
+            /* Skip Ua/Sa (index 0,1) in comparison — they toggle every packet */
+            int changed = memcmp(cur + 2, prev_bytes[didx] + 2, sizeof(cur) - 2) != 0;
+            if (changed || (verbose && now_dbg - last_media_dump[didx] >= 5)) {
                 logmsg("cdj", "Dev%d [media] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
                        "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
                        device_num, cur[0], cur[1], cur[2], cur[3], cur[4],
@@ -678,7 +680,29 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         }
         
         dev->beat_number = BE32_TO_HOST(pkt->beat_num_be);
-        
+        dev->beat_in_bar = pkt->beat_in_bar;
+
+        /* Loop detection from play state */
+        dev->looping = (pkt->play_state == PLAY_STATE_LOOPING) ||
+                       (pkt->emergency_loop != 0);
+        dev->loop_beats = 0;
+
+        /* CDJ-3000 extended fields (512-byte packets) */
+        if (len >= 0x1ca) {
+            uint32_t loop_start = BE32_TO_HOST(data + 0x1b6);
+            uint32_t loop_end   = BE32_TO_HOST(data + 0x1be);
+            if (loop_start > 0 && loop_end > loop_start) {
+                dev->looping = 1;
+                dev->loop_beats = (uint16_t)((data[0x1c8] << 8) | data[0x1c9]);
+            }
+        }
+        if (len >= 0x15f) {
+            dev->key_note = data[0x15c];
+            dev->key_scale = data[0x15d];
+            dev->key_accidental = data[0x15e];
+            dev->master_tempo = data[0x158];
+        }
+
         int track_changed = (dev->track_id != old_track) || 
                             (dev->rekordbox_id != old_rekordbox) ||
                             (dev->track_slot != old_slot);  /* Also trigger on slot change! */
@@ -856,10 +880,18 @@ void parse_beat(const uint8_t *data, size_t len, uint32_t src_ip) {
         log_message("[BEAT-PORT] type=0x%02x len=%zu from CDJ#%d", subtype, len, device_num);
     }
     
+    /* Store beat position for UI visualization */
+    cdj_device_t *bdev = find_device(device_num);
+    if (bdev) {
+        bdev->beat_in_bar = pkt->beat_in_bar;
+        uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
+        if (bpm > 2000 && bpm < 25000) bdev->bpm_raw = bpm;
+    }
+
     if (verbose > 2) {
         uint32_t next_beat_ms = BE32_TO_HOST(pkt->next_beat_be);
         uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
-        log_message("[BEAT] CDJ #%d next_beat=%u ms bpm=%.2f beat=%u/4", 
+        log_message("[BEAT] CDJ #%d next_beat=%u ms bpm=%.2f beat=%u/4",
                    device_num, next_beat_ms, bpm / 100.0f, pkt->beat_in_bar);
     }
 }
@@ -917,6 +949,12 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
         /* Position packet BPM is *10, our bpm_raw is *100 */
         dev->bpm_raw = (uint16_t)(raw_bpm * 10);
     }
+
+    /* Store pitch for UI display */
+    int32_t pitch_raw;
+    memcpy(&pitch_raw, pkt->pitch_be, 4);
+    pitch_raw = (int32_t)BE32_TO_HOST((const uint8_t *)&pitch_raw);
+    dev->pitch_raw = pitch_raw;
 
     /* Don't set dev->playing from position packets — F bit 6 in status
      * packets is authoritative. Position packets arrive even when paused. */
