@@ -380,10 +380,12 @@ void *ws_main(void *arg) {
             }
         }
 
-        /* Handle incoming client frames (ping/pong/close) */
+        /* Handle incoming client frames (ping/pong/close).
+         * Skip clients that haven't been initialized yet — recv on a
+         * fresh connection can return 0 on some systems. */
         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
             int fd = atomic_load(&ws_clients[i]);
-            if (fd < 0) continue;
+            if (fd < 0 || !atomic_load(&ws_client_ready[i])) continue;
             if (ws_handle_client_frame(fd) < 0) {
                 logmsg("ws", "client disconnected (slot %d)", i);
                 atomic_store(&ws_client_ready[i], 0);
