@@ -38,6 +38,9 @@
 #define WS_INITIAL_TRACKS 5
 #define WS_MAGIC_GUID "258EAFA5-E914-47DA-95CA-5AB0141B3CF2"
 
+/* Auth token — set from config before thread starts */
+static const char *ws_token = NULL;
+
 /* Shared client array — prolink thread sends binary, ws thread sends text.
  * Writes to ws_clients[i] are only done by ws thread (accept/close).
  * Reads + send() can happen from any thread (non-blocking, atomic FDs). */
@@ -144,13 +147,26 @@ static int ws_handshake(int fd) {
 
     /* Check for WebSocket upgrade request */
     if (!strcasestr(request, "Upgrade: websocket")) {
-        /* Not a WebSocket request — send a simple HTTP response for browsers */
         const char *http_resp = "HTTP/1.1 426 Upgrade Required\r\n"
                                 "Content-Type: text/plain\r\n"
                                 "Connection: close\r\n\r\n"
                                 "WebSocket connection required\n";
         send(fd, http_resp, strlen(http_resp), MSG_NOSIGNAL);
         return -1;
+    }
+
+    /* Validate auth token from query string: GET /ws?token=xxx */
+    if (ws_token && ws_token[0]) {
+        char expected[256];
+        snprintf(expected, sizeof(expected), "token=%s", ws_token);
+        if (!strstr(request, expected)) {
+            const char *http_resp = "HTTP/1.1 403 Forbidden\r\n"
+                                    "Content-Type: text/plain\r\n"
+                                    "Connection: close\r\n\r\n"
+                                    "Invalid token\n";
+            send(fd, http_resp, strlen(http_resp), MSG_NOSIGNAL);
+            return -1;
+        }
     }
 
     /* Extract Sec-WebSocket-Key */
@@ -220,13 +236,15 @@ void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
  * Returns 0 on success, -1 if connection should be closed. */
 static int ws_handle_client_frame(int fd) {
     uint8_t header[2];
-    ssize_t n = recv(fd, header, 2, MSG_DONTWAIT);
+    ssize_t n = recv(fd, header, 2, MSG_DONTWAIT | MSG_PEEK);
     if (n <= 0) {
-        if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
-            return -1;
-        return 0;  /* No data ready */
+        if (n == 0) return -1;  /* Peer closed */
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        return -1;  /* Error */
     }
-    if (n < 2) return -1;
+    if (n < 2) return 0;  /* Partial header, wait for more */
+    /* Now actually consume the 2 bytes */
+    recv(fd, header, 2, MSG_DONTWAIT);
 
     uint8_t opcode = header[0] & 0x0F;
     int masked = (header[1] & 0x80) != 0;
@@ -285,6 +303,7 @@ static int ws_handle_client_frame(int fd) {
 void *ws_main(void *arg) {
     App *app = (App *)arg;
     const char *socket_path = app->cfg.ws_socket;
+    ws_token = app->cfg.ws_token;
 
     /* Create Unix socket */
     int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
