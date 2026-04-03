@@ -19,6 +19,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <poll.h>
+#include <sys/ioctl.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
 
@@ -314,6 +315,11 @@ static int do_handshake(int fd, int seq) {
 
     if (sent != rn) return -1;
 
+    /* Check how much data is still in the kernel send buffer */
+    int outq = 0;
+    ioctl(fd, TIOCOUTQ, &outq);
+    logmsg("ws", "[#%d] TIOCOUTQ after 101: %d bytes pending in kernel", seq, outq);
+
     /* Check socket after sending 101 */
     log_socket_state(fd, seq, "post-send");
     check_alive(fd, seq);
@@ -324,7 +330,7 @@ static int do_handshake(int fd, int seq) {
         int err = 0;
         socklen_t elen = sizeof(err);
         getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen);
-        fprintf(dbg, "=== POST-SEND ===\nsent=%zd/%d SO_ERROR=%d\n", sent, rn, err);
+        fprintf(dbg, "=== POST-SEND ===\nsent=%zd/%d SO_ERROR=%d TIOCOUTQ=%d\n", sent, rn, err, outq);
         fclose(dbg);
     }
 
@@ -459,6 +465,13 @@ void *ws_main(void *arg) {
 
         logmsg("ws", "[#%d] accepted fd=%d (revents=0x%x)", seq, cfd, pfd.revents);
         log_peer(cfd, seq);
+
+        /* TCP_NODELAY: send 101 response immediately, no Nagle buffering */
+        {
+            int one = 1;
+            setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
+        }
+
         log_socket_state(cfd, seq, "after-accept");
 
         int hs = do_handshake(cfd, seq);
