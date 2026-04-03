@@ -115,7 +115,7 @@ static void ws_broadcast_text(const char *data, size_t len) {
         if (fd < 0 || !atomic_load(&ws_client_ready[i])) continue;
         ssize_t sent = ws_send_text(fd, data, len);
         if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-            logmsg("ws", "client disconnected (slot %d)", i);
+            logmsg("ws", "client send failed (slot %d): errno=%d %s", i, errno, strerror(errno));
             atomic_store(&ws_client_ready[i], 0);
             close(fd);
             atomic_store(&ws_clients[i], -1);
@@ -423,11 +423,13 @@ void *ws_main(void *arg) {
                         timestamps[t], ea, et, sources[t], confidences[t], ei);
                 }
                 len += snprintf(msg + len, sizeof(msg) - len, "]}");
-                ws_send_text(fd, msg, len);
+                ssize_t sent = ws_send_text(fd, msg, len);
+                logmsg("ws", "init send: %zd bytes (payload %d)", sent, len);
             }
 
-            /* Mark client ready for binary broadcasts */
+            /* Mark client ready for broadcasts */
             atomic_store(&ws_client_ready[i], 1);
+            logmsg("ws", "client ready (slot %d)", i);
         }
 
         /* Build VU/stats message */
