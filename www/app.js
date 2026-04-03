@@ -277,6 +277,8 @@
                 ? `<span class="deck-badge loop">LOOP${d.loop_beats > 0 ? ' ' + d.loop_beats : ''}</span>` : '';
 
             const mtBadge = d.master_tempo ? '<span class="deck-badge mt">MT</span>' : '';
+            const masterBadge = d.master ? '<span class="deck-badge master">MASTER</span>' : '';
+            const syncBadge = d.sync ? '<span class="deck-badge sync">SYNC</span>' : '';
 
             let playTimeText = '';
             const posMs = d.playhead_ms || 0;
@@ -302,9 +304,9 @@
                     <div class="deck-header">
                         <span class="deck-num">${deckLabel}</span>${beatDots}
                         <div class="deck-status">
-                            ${d.playing ? '<span class="deck-badge playing">▶ Playing</span>' : '<span class="deck-badge paused">❚❚ Paused</span>'}
+                            ${d.playing ? (d.play_state === 0x05 ? '<span class="deck-badge cueing">▶ Cue</span>' : '<span class="deck-badge playing">▶ Playing</span>') : '<span class="deck-badge paused">❚❚ Paused</span>'}
                             ${d.on_air_known ? (d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : '<span class="deck-badge off-air">OFF AIR</span>') : ''}
-                            ${loopBadge}${mtBadge}
+                            ${masterBadge}${syncBadge}${loopBadge}${mtBadge}
                             ${playTimeText}
                         </div>
                     </div>
@@ -399,8 +401,11 @@
         if (!rawDecks[devNum]) rawDecks[devNum] = {};
         const d = rawDecks[devNum];
 
-        d.playing = (dv.getUint8(PKT.FLAGS) & 0x40) !== 0;
-        d.on_air = (dv.getUint8(PKT.FLAGS) & 0x08) !== 0;
+        const flags = dv.getUint8(PKT.FLAGS);
+        d.playing = (flags & 0x40) !== 0;
+        d.master = (flags & 0x20) !== 0;
+        d.sync = (flags & 0x10) !== 0;
+        d.on_air = (flags & 0x08) !== 0;
         d.play_state = dv.getUint8(PKT.PLAY_STATE);
         d.bpm = dv.getUint16(PKT.BPM);
         d.beat_in_bar = dv.getUint8(PKT.BEAT_IN_BAR);
