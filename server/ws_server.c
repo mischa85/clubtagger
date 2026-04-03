@@ -39,17 +39,44 @@ static void serve_debug_page(int fd) {
         "<script>\n"
         "var L=document.getElementById('log');\n"
         "function log(s){L.textContent+=s+'\\n';console.log(s);}\n"
-        "var url='ws://'+location.host;\n"
-        "log('connecting to '+url);\n"
-        "var ws=new WebSocket(url);\n"
-        "ws.binaryType='arraybuffer';\n"
-        "ws.onopen=function(){log('OPEN');};\n"
-        "ws.onmessage=function(e){\n"
-        "  if(typeof e.data==='string') log('MSG: '+e.data);\n"
-        "  else log('BIN: '+e.data.byteLength+' bytes');\n"
-        "};\n"
-        "ws.onclose=function(e){log('CLOSE code='+e.code+' reason='+e.reason+' clean='+e.wasClean);};\n"
-        "ws.onerror=function(){log('ERROR');};\n"
+        "var host=location.host;\n"
+        "\n"
+        "/* Step 1: raw fetch with upgrade headers to see the 101 response */\n"
+        "log('--- RAW FETCH TEST ---');\n"
+        "var key='dGhlIHNhbXBsZSBub25jZQ==';\n"
+        "fetch('http://'+host+'/',{headers:{\n"
+        "  'Upgrade':'websocket','Connection':'Upgrade',\n"
+        "  'Sec-WebSocket-Key':key,'Sec-WebSocket-Version':'13'\n"
+        "}}).then(function(r){\n"
+        "  log('fetch status='+r.status+' statusText='+r.statusText);\n"
+        "  log('fetch headers:');\n"
+        "  r.headers.forEach(function(v,k){log('  '+k+': '+v);});\n"
+        "  return r.text();\n"
+        "}).then(function(t){\n"
+        "  if(t.length>0) log('fetch body('+t.length+'): '+t.substring(0,200));\n"
+        "  log('');\n"
+        "  startWS();\n"
+        "}).catch(function(e){\n"
+        "  log('fetch error: '+e);\n"
+        "  startWS();\n"
+        "});\n"
+        "\n"
+        "/* Step 2: actual WebSocket */\n"
+        "function startWS(){\n"
+        "  log('--- WEBSOCKET TEST ---');\n"
+        "  var url='ws://'+host;\n"
+        "  log('connecting to '+url);\n"
+        "  var ws=new WebSocket(url);\n"
+        "  ws.binaryType='arraybuffer';\n"
+        "  log('readyState after new: '+ws.readyState);\n"
+        "  ws.onopen=function(){log('OPEN readyState='+ws.readyState);};\n"
+        "  ws.onmessage=function(e){\n"
+        "    if(typeof e.data==='string') log('MSG: '+e.data);\n"
+        "    else log('BIN: '+e.data.byteLength+' bytes');\n"
+        "  };\n"
+        "  ws.onclose=function(e){log('CLOSE code='+e.code+' reason=['+e.reason+'] clean='+e.wasClean+' readyState='+ws.readyState);};\n"
+        "  ws.onerror=function(){log('ERROR readyState='+ws.readyState);};\n"
+        "}\n"
         "</script></body></html>";
     send(fd, page, sizeof(page) - 1, 0);
 }
@@ -95,15 +122,22 @@ static int do_handshake(int fd) {
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n\r\n", b64);
 
-    logmsg("ws", "keylen=%d acceptlen=%zu", ki, strlen(b64));
-    /* Write to file for debugging since journald mangles base64 */
+    logmsg("ws", "keylen=%d acceptlen=%zu accept=[%s]", ki, strlen(b64), b64);
+
+    /* Dump full request + response to file for hex inspection */
     FILE *dbg = fopen("/tmp/ws_handshake.log", "w");
     if (dbg) {
-        fprintf(dbg, "key=[%s]\ncat=[%s]\naccept=[%s]\nresp=[%s]\n", key, cat, b64, resp);
+        fprintf(dbg, "=== REQUEST (%zd bytes) ===\n%s\n", n, buf);
+        fprintf(dbg, "=== PARSED ===\nkey=[%s]\ncat=[%s]\naccept=[%s]\n", key, cat, b64);
+        fprintf(dbg, "=== RESPONSE (%d bytes) ===\n%s\n", rn, resp);
+        fprintf(dbg, "=== RESPONSE HEX ===\n");
+        for (int i = 0; i < rn; i++)
+            fprintf(dbg, "%02x ", (unsigned char)resp[i]);
+        fprintf(dbg, "\n");
         fclose(dbg);
     }
     ssize_t sent = send(fd, resp, rn, 0);
-    logmsg("ws", "sent 101 response: %zd bytes", sent);
+    logmsg("ws", "sent 101 response: %zd/%d bytes", sent, rn);
     return (sent == rn) ? 0 : -1;
 }
 
