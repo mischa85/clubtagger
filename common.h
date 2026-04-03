@@ -94,6 +94,13 @@ int str_similarity(const char *s1, const char *s2);
 /* Check if needle is a substring of haystack (normalized, case-insensitive) */
 int str_contains(const char *haystack, const char *needle);
 
+/* Core title match: compare prefix of normalized strings.
+ * Handles different remix/version suffixes. */
+int str_core_match(const char *s1, const char *s2);
+
+/* Artist match with "ft."/"feat."/"&" normalization */
+int str_artist_match(const char *a1, const char *a2);
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * UTF-8 utilities
  * ───────────────────────────────────────────────────────────────────────────── */
