@@ -955,9 +955,10 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
         dev->bpm_raw = (uint16_t)(raw_bpm * 10);
     }
 
-    /* Pitch also available from position packet, but status packet pitch
-     * (parsed in parse_cdj_status) uses the well-documented encoding.
-     * Position packet pitch encoding differs — skip here. */
+    /* Pitch: status packet Pitch1 (0x8c) is the authoritative source using
+     * the well-documented 0x100000 encoding, parsed in parse_cdj_status.
+     * Works on all CDJ models. Position packet pitch at 0x2c uses a
+     * different encoding — not used for display. */
 
     /* Don't set dev->playing from position packets — F bit 6 in status
      * packets is authoritative. Position packets arrive even when paused. */

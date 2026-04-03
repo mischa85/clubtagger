@@ -255,13 +255,24 @@ typedef struct __attribute__((packed)) {
     uint8_t  _pad88;            /* 0x88 (136) */
     uint8_t  status_flags;      /* 0x89 (137): F - Status flag bits */
     uint8_t  _pad8a;            /* 0x8a (138) */
-    uint8_t  play_state2;       /* 0x8b (139): P2 - 0x7a=playing, 0x7e=stopped, 0x6e=jog */
-    uint8_t  pitch1_be[4];      /* 0x8c-0x8f (140-143): Pitch1 - Current effective pitch */
-    uint8_t  master_valid[2];   /* 0x90-0x91 (144-145): Mv - 0x7fff=no track, 0x8000=rb */
-    uint8_t  bpm_be[2];         /* 0x92-0x93 (146-147): BPM * 100 (big-endian) */
-    uint8_t  master_slip[2];    /* 0x94-0x95 (148-149): Mslip - 0x7fff when not slipping */
-    uint8_t  bpm_slip[2];       /* 0x96-0x97 (150-151): BPMslip - Slip mode BPM */
-    uint8_t  pitch2_be[4];      /* 0x98-0x9b (152-155): Pitch2 - Fader position w/ brake */
+    uint8_t  play_state2;       /* 0x8b (139): P2 - Bit field like F.
+                                 *   nexus: 0x7a=playing, 0x7e=stopped
+                                 *   pre-nexus: 0x6a/0x6e, nxs2: 0xfa/0xfe, XDJ-XZ: 0x9a/0x9e
+                                 *   P1=playing + P2=stopped → jog wheel held by DJ */
+    uint8_t  pitch1_be[4];      /* 0x8c-0x8f (140-143): Pitch1 - Current effective pitch.
+                                 *   0x100000=0%, 0x000000=-100%, 0x200000=+100%.
+                                 *   Pitch1 and Pitch3 = actual playing pitch (synced or local).
+                                 *   pct = (raw - 0x100000) * 100.0 / 0x100000 */
+    uint8_t  master_valid[2];   /* 0x90-0x91 (144-145): Mv - 0x7fff=no track, 0x8000=rb,
+                                 *   0x0000=non-rb. Only 0x8000 syncs tempo when master. */
+    uint8_t  bpm_be[2];         /* 0x92-0x93 (146-147): BPM * 100 (big-endian). Track BPM at
+                                 *   current position. Effective BPM = BPM * Pitch1 / 0x100000.
+                                 *   Variable BPM tracks: changes during playback. 0xffff=none. */
+    uint8_t  master_slip[2];    /* 0x94-0x95 (148-149): Mslip - Like Mv during slip play (nxs2) */
+    uint8_t  bpm_slip[2];       /* 0x96-0x97 (150-151): BPMslip - Slip BPM (nxs2). 0xffff=none */
+    uint8_t  pitch2_be[4];      /* 0x98-0x9b (152-155): Pitch2 - Local fader position w/ brake.
+                                 *   Same encoding as Pitch1. Drops to 0 on pause (brake speed).
+                                 *   Rises on play (release speed). 0x100000 when tempo reset. */
     uint8_t  _pad9c;            /* 0x9c (156) */
     uint8_t  play_state3;       /* 0x9d (157): P3 - 0x09=vinyl fwd, 0x0d=CDJ fwd, 0x0b=slip */
     uint8_t  master_meaningful; /* 0x9e (158): Mm - 0x00=not master, 0x01=rb master */
@@ -277,8 +288,9 @@ typedef struct __attribute__((packed)) {
     uint8_t  sd_unsafe_eject;   /* 0xb9 (185): Se - 0x01 if SD ejected unsafely */
     uint8_t  emergency_loop;    /* 0xba (186): el - 0x01 when emergency loop active */
     uint8_t  _padbb[5];         /* 0xbb-0xbf (187-191) */
-    uint8_t  pitch3_be[4];      /* 0xc0-0xc3 (192-195): Pitch3 - Effective pitch (dup) */
-    uint8_t  pitch4_be[4];      /* 0xc4-0xc7 (196-199): Pitch4 - Fader position (instant) */
+    uint8_t  pitch3_be[4];      /* 0xc0-0xc3 (192-195): Pitch3 - Effective pitch (same as Pitch1) */
+    uint8_t  pitch4_be[4];      /* 0xc4-0xc7 (196-199): Pitch4 - Fader position (instant).
+                                 *   Like Pitch2 but responds instantly (no brake/release). */
     uint8_t  packet_counter_be[4]; /* 0xc8-0xcb (200-203): Packet counter */
     uint8_t  hardware_type;     /* 0xcc (204): nx - 0x05=older, 0x0f=nexus, 0x1f=CDJ-3000 */
     uint8_t  touch_audio;       /* 0xcd (205): t - Touch Audio support (bit 5) */
