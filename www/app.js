@@ -206,79 +206,96 @@
         return name + (scale === 0 ? 'm' : '');
     }
 
-    function updateDecks(decks) {
-        // Filter out audio-only entries (shown in identification panel instead)
-        const cdjDecks = decks ? decks.filter(d => !d.audio_only) : [];
+    // Merge metadata from 'decks' JSON into rawDecks (C-side data: title, artist, confidence)
+    function mergeDecksMetadata(decks) {
+        if (!decks) return;
+        for (const d of decks) {
+            if (d.audio_only) continue; // handled by updateIdentification
+            const n = d.n;
+            if (!rawDecks[n]) rawDecks[n] = {};
+            if (d.title) rawDecks[n].title = d.title;
+            if (d.artist) rawDecks[n].artist = d.artist;
+            if (d.isrc) rawDecks[n].isrc = d.isrc;
+            if (d.name) rawDecks[n].name = d.name;
+            if (d.conf !== undefined) rawDecks[n].conf = d.conf;
+            if (d.conf_ok !== undefined) rawDecks[n].conf_ok = d.conf_ok;
+            if (d.conf_src) rawDecks[n].conf_src = d.conf_src;
+            if (d.rekordbox_id) rawDecks[n].rekordbox_id = d.rekordbox_id;
+            if (d.db_src) rawDecks[n].db_src = d.db_src;
+            rawDecks[n].on_air_known = true; // C knows on-air state
+        }
+    }
 
-        if (cdjDecks.length === 0) {
+    // Render all deck cards from rawDecks (single source of truth)
+    function renderDecks() {
+        // Collect active decks (seen within last 10s)
+        const now = Date.now();
+        const active = [];
+        for (const n in rawDecks) {
+            const d = rawDecks[n];
+            if (!d.lastUpdate || now - d.lastUpdate > 10000) continue;
+            active.push({n: parseInt(n), ...d});
+        }
+
+        if (active.length === 0) {
             decksEl.innerHTML = '<div class="no-decks">No CDJs detected</div>';
             return;
         }
 
-        // Sort by deck number
-        cdjDecks.sort((a, b) => a.n - b.n);
+        active.sort((a, b) => a.n - b.n);
 
-        decksEl.innerHTML = cdjDecks.map(d => {
+        decksEl.innerHTML = active.map(d => {
             const classes = ['deck'];
             if (d.playing) classes.push('playing');
             if (d.on_air) classes.push('on-air');
 
             const deckLabel = (d.name || 'CDJ') + ' (' + d.n + ')';
 
-            // Beat indicator (4 dots with IDs for real-time update from raw packets)
             const beatDots = d.bpm > 0 ? '<div class="beat-indicator">' +
-                [1,2,3,4].map(b => `<span class="beat-dot${d.beat === b ? ' active' : ''}" id="beat-${d.n}-${b}"></span>`).join('') +
+                [1,2,3,4].map(b => `<span class="beat-dot${d.beat_in_bar === b ? ' active' : ''}" id="beat-${d.n}-${b}"></span>`).join('') +
                 '</div>' : '';
 
-            // BPM (raw = bpm * 100), pitch (raw = percentage * 100)
             let bpmText = '';
             if (d.bpm > 0) {
                 const baseBpm = d.bpm / 100;
-                const pitchPct = d.pitch / 100;
+                const pitchPct = (d.pitch || 0) / 100;
                 const effectiveBpm = (baseBpm * (1 + pitchPct / 100)).toFixed(1);
                 const pitchStr = Math.abs(pitchPct) > 0.05
                     ? ` <span class="deck-pitch">(${pitchPct >= 0 ? '+' : ''}${pitchPct.toFixed(2)}%)</span>` : '';
                 bpmText = `<span class="deck-bpm" id="bpm-${d.n}">${effectiveBpm} BPM${pitchStr}</span>`;
             }
 
-            // Track source
-            const slotName = SLOTS[d.slot] || '';
+            const slotName = SLOTS[d.track_slot] || '';
             let sourceText = '';
             if (slotName) {
-                if (d.src_player > 0 && d.src_player !== d.n) {
-                    sourceText = `<span class="deck-source">CDJ${d.src_player}/${slotName} (Link)</span>`;
+                if (d.source_player > 0 && d.source_player !== d.n) {
+                    sourceText = `<span class="deck-source">CDJ${d.source_player}/${slotName} (Link)</span>`;
                 } else {
                     sourceText = `<span class="deck-source">${slotName}</span>`;
                 }
             }
 
-            // Key display
             const keyText = d.key_note <= 11 ? `<span class="deck-key">${keyName(d.key_note, d.key_scale, d.key_acc)}</span>` : '';
 
-            // Loop badge
             const loopBadge = d.looping
                 ? `<span class="deck-badge loop">LOOP${d.loop_beats > 0 ? ' ' + d.loop_beats : ''}</span>` : '';
 
-            // Master tempo badge
             const mtBadge = d.master_tempo ? '<span class="deck-badge mt">MT</span>' : '';
 
-            // Track position or continuous play time
             let playTimeText = '';
-            if (d.position_ms > 0) {
-                const pm = Math.floor(d.position_ms / 60000);
-                const ps = Math.floor((d.position_ms % 60000) / 1000);
+            const posMs = d.playhead_ms || 0;
+            const trackLen = d.track_length || 0;
+            if (posMs > 0) {
+                const pm = Math.floor(posMs / 60000);
+                const ps = Math.floor((posMs % 60000) / 1000);
                 const posStr = `${pm}:${ps < 10 ? '0' : ''}${ps}`;
-                if (d.track_length > 0) {
-                    const tm = Math.floor(d.track_length / 60);
-                    const ts = d.track_length % 60;
+                if (trackLen > 0) {
+                    const tm = Math.floor(trackLen / 60);
+                    const ts = trackLen % 60;
                     playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr} / ${tm}:${ts < 10 ? '0' : ''}${ts}</span>`;
                 } else {
                     playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr}</span>`;
                 }
-            } else if (d.playing && d.play_time > 0) {
-                const m = Math.floor(d.play_time / 60);
-                const s = d.play_time % 60;
-                playTimeText = `<span class="deck-playtime">${m}:${s < 10 ? '0' : ''}${s}</span>`;
             }
 
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
@@ -308,6 +325,7 @@
             `;
         }).join('');
     }
+
     
     // Add track to list
     function addTrack(artist, title, timestamp, source, confidence, isrc) {
@@ -419,6 +437,7 @@
         }
 
         d.lastUpdate = Date.now();
+        renderDecks();
         updateDeckFromRaw(devNum);
     }
 
@@ -546,7 +565,7 @@
                         addTrack(msg.a, msg.t, null, msg.src, msg.conf, msg.isrc);
                     break;
                 case 'decks':
-                    updateDecks(msg.data);
+                    mergeDecksMetadata(msg.data);
                     updateIdentification(msg.data);
                     break;
                 case 'history':
@@ -571,6 +590,9 @@
                             logEl.removeChild(logEl.firstChild);
                         logEl.scrollTop = logEl.scrollHeight;
                     }
+                    break;
+                case 'stats':
+                    updateAudioStats(msg);
                     break;
                 case 'shazam':
                     /* Shazam state updates — could add UI for this */
