@@ -167,11 +167,7 @@ void *ws_main(void *arg) {
 
         logmsg("ws", "handshake OK");
 
-        /* Send a hello */
-        const char *hello = "{\"event\":\"hello\"}";
-        ws_text(cfd, hello, strlen(hello));
-
-        /* Store in slot */
+        /* Store in slot — don't send data yet, let poll timeout send first ping */
         int stored = 0;
         for (int i = 0; i < WS_MAX_CLIENTS; i++) {
             if (atomic_load(&ws_fds[i]) < 0) {
