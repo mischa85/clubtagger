@@ -508,28 +508,7 @@ int main(int argc, char **argv) {
     
     /* Start WebSocket server thread (if configured) */
     if (app.cfg.ws_socket) {
-        /* Auto-generate token if not set */
-        if (!app.cfg.ws_token) {
-            static char auto_token[33];
-            uint8_t rnd[16];
-            random_bytes(rnd, sizeof(rnd));
-            for (int i = 0; i < 16; i++)
-                snprintf(auto_token + i * 2, 3, "%02x", rnd[i]);
-            app.cfg.ws_token = auto_token;
-        }
-        logmsg("main", "WebSocket token: %s", app.cfg.ws_token);
-        /* Write token to file for nginx to serve (auth-protected) */
-        {
-            const char *webroot = getenv("WEB_ROOT");
-            if (!webroot) webroot = "/var/www/clubtagger";
-            char token_path[256];
-            snprintf(token_path, sizeof(token_path), "%s/ws-token.json", webroot);
-            FILE *tf = fopen(token_path, "w");
-            if (tf) {
-                fprintf(tf, "{\"token\":\"%s\"}\n", app.cfg.ws_token);
-                fclose(tf);
-            }
-        }
+        /* Token auth disabled for now */
         if (pthread_create(&app.th_ws, NULL, ws_main, &app) != 0) {
             logmsg("main", "pthread ws failed");
             g_running = 0;
