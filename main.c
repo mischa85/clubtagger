@@ -168,8 +168,6 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             cfg->pcap_buffer_mb = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--ws-socket") && i + 1 < argc)
             cfg->ws_socket = argv[++i];
-        else if (!strcmp(a, "--sse-socket") && i + 1 < argc)  /* Legacy alias */
-            cfg->ws_socket = argv[++i];
         else if (!strcmp(a, "--prolink-interface") && i + 1 < argc)
             cfg->prolink_interface = argv[++i];
         else if (!strcmp(a, "--prolink-passive"))
