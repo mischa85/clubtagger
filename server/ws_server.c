@@ -43,12 +43,17 @@ static const char *ws_token = NULL;
 
 /* Shared client array — prolink thread sends binary, ws thread sends text.
  * Writes to ws_clients[i] are only done by ws thread (accept/close).
- * Reads + send() can happen from any thread (non-blocking, atomic FDs). */
+ * Reads + send() can happen from any thread (non-blocking, atomic FDs).
+ * ws_client_ready: set after first successful text frame send.
+ * Binary broadcasts only go to ready clients (prevents race with handshake). */
 static _Atomic int ws_clients[WS_MAX_CLIENTS];
+static _Atomic int ws_client_ready[WS_MAX_CLIENTS];
 
 static void ws_clients_init(void) {
-    for (int i = 0; i < WS_MAX_CLIENTS; i++)
+    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
         atomic_store(&ws_clients[i], -1);
+        atomic_store(&ws_client_ready[i], 0);
+    }
 }
 
 /*
@@ -111,6 +116,7 @@ static void ws_broadcast_text(const char *data, size_t len) {
         ssize_t sent = ws_send_text(fd, data, len);
         if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             logmsg("ws", "client disconnected (slot %d)", i);
+            atomic_store(&ws_client_ready[i], 0);
             close(fd);
             atomic_store(&ws_clients[i], -1);
         }
@@ -220,7 +226,7 @@ void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
 
     for (int i = 0; i < WS_MAX_CLIENTS; i++) {
         int fd = atomic_load(&ws_clients[i]);
-        if (fd < 0) continue;
+        if (fd < 0 || !atomic_load(&ws_client_ready[i])) continue;
         /* Non-blocking send — drop if client can't keep up */
         ws_send_binary(fd, buf, len + 7);
     }
@@ -237,11 +243,11 @@ void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
 static int ws_handle_client_frame(int fd) {
     uint8_t header[2];
     ssize_t n = recv(fd, header, 2, MSG_DONTWAIT | MSG_PEEK);
-    if (n <= 0) {
-        if (n == 0) return -1;  /* Peer closed */
+    if (n < 0) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
         return -1;  /* Error */
     }
+    if (n == 0) return -1;  /* Peer closed */
     if (n < 2) return 0;  /* Partial header, wait for more */
     /* Now actually consume the 2 bytes */
     recv(fd, header, 2, MSG_DONTWAIT);
@@ -361,6 +367,7 @@ void *ws_main(void *arg) {
                         atomic_store(&ws_clients[i], client_fd);
                         client_needs_init[i] = 1;
                         client_log_seq[i] = 0;
+                        atomic_store(&ws_client_ready[i], 0);
                         logmsg("ws", "client connected (slot %d)", i);
                         added = 1;
                         break;
@@ -379,6 +386,7 @@ void *ws_main(void *arg) {
             if (fd < 0) continue;
             if (ws_handle_client_frame(fd) < 0) {
                 logmsg("ws", "client disconnected (slot %d)", i);
+                atomic_store(&ws_client_ready[i], 0);
                 close(fd);
                 atomic_store(&ws_clients[i], -1);
             }
@@ -415,6 +423,9 @@ void *ws_main(void *arg) {
                 len += snprintf(msg + len, sizeof(msg) - len, "]}");
                 ws_send_text(fd, msg, len);
             }
+
+            /* Mark client ready for binary broadcasts */
+            atomic_store(&ws_client_ready[i], 1);
         }
 
         /* Build VU/stats message */
