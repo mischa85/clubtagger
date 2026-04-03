@@ -63,10 +63,17 @@ static ssize_t ws_send_text(int fd, const char *data, size_t len) {
 static int ws_handshake(int fd) {
     char req[2048];
     ssize_t n = recv(fd, req, sizeof(req) - 1, 0);
-    if (n <= 0) return -1;
+    if (n <= 0) {
+        logmsg("ws", "handshake: recv failed n=%zd errno=%d", n, errno);
+        return -1;
+    }
     req[n] = '\0';
+    logmsg("ws", "handshake: received %zd bytes: %.200s", n, req);
 
-    if (!strcasestr(req, "Upgrade: websocket")) return -1;
+    if (!strcasestr(req, "Upgrade: websocket")) {
+        logmsg("ws", "handshake: no Upgrade header found");
+        return -1;
+    }
 
     /* Validate token if configured */
     if (ws_token && ws_token[0]) {
