@@ -299,11 +299,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     /* Skip Ua/Sa (index 0,1) in comparison — they toggle every packet */
                     int zchanged = memcmp(zc + 2, prev_zd[zidx] + 2, sizeof(zc) - 2) != 0;
                     if (zchanged || (verbose && now_zd - last_zd_dump[zidx] >= 5)) {
-                        logmsg("cdj", "Dev%d [media-zd] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
-                               "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
-                               device_num, zc[0], zc[1], zc[2], zc[3], zc[4],
-                               zc[5], zc[6], zc[7], zc[8], zc[10], zc[9],
-                               zchanged ? " *** CHANGED" : "");
+                        vlogmsg("cdj", "Dev%d [media-zd] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
+                                "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
+                                device_num, zc[0], zc[1], zc[2], zc[3], zc[4],
+                                zc[5], zc[6], zc[7], zc[8], zc[10], zc[9],
+                                zchanged ? " *** CHANGED" : "");
                         memcpy(prev_zd[zidx], zc, sizeof(zc));
                         last_zd_dump[zidx] = now_zd;
                     }
@@ -435,11 +435,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             /* Skip Ua/Sa (index 0,1) in comparison — they toggle every packet */
             int changed = memcmp(cur + 2, prev_bytes[didx] + 2, sizeof(cur) - 2) != 0;
             if (changed || (verbose && now_dbg - last_media_dump[didx] >= 5)) {
-                logmsg("cdj", "Dev%d [media] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
-                       "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
-                       device_num, cur[0], cur[1], cur[2], cur[3], cur[4],
-                       cur[5], cur[6], cur[7], cur[8], cur[10], cur[9],
-                       changed ? " *** CHANGED" : "");
+                vlogmsg("cdj", "Dev%d [media] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
+                        "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
+                        device_num, cur[0], cur[1], cur[2], cur[3], cur[4],
+                        cur[5], cur[6], cur[7], cur[8], cur[10], cur[9],
+                        changed ? " *** CHANGED" : "");
                 memcpy(prev_bytes[didx], cur, sizeof(cur));
                 last_media_dump[didx] = now_dbg;
             }

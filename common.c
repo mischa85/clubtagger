@@ -36,11 +36,7 @@ activity_log_t g_activity_log = {0};
 
 static void activity_log_push(const char *tag, const char *fmt, va_list ap) {
     char msg[ACTIVITY_MSG_LEN];
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    int off = snprintf(msg, sizeof(msg), "%02d:%02d:%02d [%s] ",
-                       tm.tm_hour, tm.tm_min, tm.tm_sec, tag);
+    int off = snprintf(msg, sizeof(msg), "[%s] ", tag);
     if (off > 0 && (size_t)off < sizeof(msg)) {
         vsnprintf(msg + off, sizeof(msg) - off, fmt, ap);
     }
@@ -81,11 +77,7 @@ void logmsg(const char *tag, const char *fmt, ...) {
     va_list ap, ap2;
     va_start(ap, fmt);
     va_copy(ap2, ap);
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    fprintf(stderr, "%02d:%02d:%02d [%s] ",
-            tm.tm_hour, tm.tm_min, tm.tm_sec, tag);
+    fprintf(stderr, "[%s] ", tag);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     fflush(stderr);
@@ -99,11 +91,7 @@ void vlogmsg(const char *tag, const char *fmt, ...) {
     if (!g_verbose) return;
     va_list ap;
     va_start(ap, fmt);
-    time_t t = time(NULL);
-    struct tm tm;
-    localtime_r(&t, &tm);
-    fprintf(stderr, "%02d:%02d:%02d [%s] ",
-            tm.tm_hour, tm.tm_min, tm.tm_sec, tag);
+    fprintf(stderr, "[%s] ", tag);
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     fflush(stderr);
