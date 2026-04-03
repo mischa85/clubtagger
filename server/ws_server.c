@@ -22,6 +22,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <sys/un.h>
+#include <netinet/in.h>
 #include <time.h>
 #include <unistd.h>
 #include <openssl/sha.h>
@@ -313,24 +314,47 @@ void *ws_main(void *arg) {
     const char *socket_path = app->cfg.ws_socket;
     ws_token = app->cfg.ws_token;
 
-    /* Create Unix socket */
-    int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (server_fd < 0) {
-        logmsg("ws", "socket() failed: %s", strerror(errno));
-        return NULL;
-    }
+    int server_fd;
+    int is_tcp = 0;
 
-    unlink(socket_path);
-    struct sockaddr_un addr = {0};
-    addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socket_path);
-
-    if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        logmsg("ws", "bind() failed: %s", strerror(errno));
-        close(server_fd);
-        return NULL;
+    /* If socket_path looks like a port number, listen on TCP instead */
+    int port = atoi(socket_path);
+    if (port > 0 && port < 65536) {
+        is_tcp = 1;
+        server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (server_fd < 0) {
+            logmsg("ws", "socket() failed: %s", strerror(errno));
+            return NULL;
+        }
+        int opt = 1;
+        setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        struct sockaddr_in taddr = {0};
+        taddr.sin_family = AF_INET;
+        taddr.sin_addr.s_addr = INADDR_ANY;
+        taddr.sin_port = htons((uint16_t)port);
+        if (bind(server_fd, (struct sockaddr *)&taddr, sizeof(taddr)) < 0) {
+            logmsg("ws", "TCP bind(%d) failed: %s", port, strerror(errno));
+            close(server_fd);
+            return NULL;
+        }
+    } else {
+        /* Unix socket */
+        server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        if (server_fd < 0) {
+            logmsg("ws", "socket() failed: %s", strerror(errno));
+            return NULL;
+        }
+        unlink(socket_path);
+        struct sockaddr_un addr = {0};
+        addr.sun_family = AF_UNIX;
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socket_path);
+        if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            logmsg("ws", "bind() failed: %s", strerror(errno));
+            close(server_fd);
+            return NULL;
+        }
+        chmod(socket_path, 0666);
     }
-    chmod(socket_path, 0666);
 
     if (listen(server_fd, 8) < 0) {
         logmsg("ws", "listen() failed: %s", strerror(errno));
@@ -348,7 +372,10 @@ void *ws_main(void *arg) {
         client_log_seq[i] = 0;
     }
 
-    logmsg("ws", "started: socket=%s (WebSocket)", socket_path);
+    if (is_tcp)
+        logmsg("ws", "started: TCP port %d (WebSocket)", port);
+    else
+        logmsg("ws", "started: socket=%s (WebSocket)", socket_path);
 
     uint32_t last_track_seq = 0;
     int last_shazam_state = -1;
@@ -624,7 +651,7 @@ void *ws_main(void *arg) {
         if (fd >= 0) close(fd);
     }
     close(server_fd);
-    unlink(socket_path);
+    if (!is_tcp) unlink(socket_path);
     logmsg("ws", "exit");
     return NULL;
 }
