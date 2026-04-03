@@ -336,7 +336,7 @@ void *sse_main(void *arg) {
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
                     dev->device_num, escaped_name, dev->playing ? 1 : 0, dev->on_air ? 1 : 0,
                     dev->on_air_available ? 1 : 0,
-                    escaped_title, escaped_artist, dev->bpm_raw / 100, dev->track_slot,
+                    escaped_title, escaped_artist, dev->bpm_raw, dev->track_slot,
                     escaped_isrc, play_secs, dev->position_ms, dev->track_length_sec,
                     dev->rekordbox_id, db_src,
                     dev->usb_present ? 1 : 0, dev->sd_present ? 1 : 0,
