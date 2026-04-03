@@ -108,11 +108,11 @@ static ssize_t ws_send_binary(int fd, const void *data, size_t len) {
     return ws_send_frame(fd, 0x02, data, len);
 }
 
-/* Send text to all connected clients, remove dead ones */
+/* Send text to all connected and ready clients, remove dead ones */
 static void ws_broadcast_text(const char *data, size_t len) {
     for (int i = 0; i < WS_MAX_CLIENTS; i++) {
         int fd = atomic_load(&ws_clients[i]);
-        if (fd < 0) continue;
+        if (fd < 0 || !atomic_load(&ws_client_ready[i])) continue;
         ssize_t sent = ws_send_text(fd, data, len);
         if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
             logmsg("ws", "client disconnected (slot %d)", i);
