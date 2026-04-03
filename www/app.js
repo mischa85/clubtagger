@@ -225,9 +225,9 @@
 
             const deckLabel = (d.name || 'CDJ') + ' (' + d.n + ')';
 
-            // Beat indicator (4 dots, current beat highlighted)
+            // Beat indicator (4 dots with IDs for real-time update from raw packets)
             const beatDots = d.bpm > 0 ? '<div class="beat-indicator">' +
-                [1,2,3,4].map(b => `<span class="beat-dot${d.beat === b ? ' active' : ''}"></span>`).join('') +
+                [1,2,3,4].map(b => `<span class="beat-dot${d.beat === b ? ' active' : ''}" id="beat-${d.n}-${b}"></span>`).join('') +
                 '</div>' : '';
 
             // BPM (raw = bpm * 100), pitch (raw = percentage * 100)
@@ -238,7 +238,7 @@
                 const effectiveBpm = (baseBpm * (1 + pitchPct / 100)).toFixed(1);
                 const pitchStr = Math.abs(pitchPct) > 0.05
                     ? ` <span class="deck-pitch">(${pitchPct >= 0 ? '+' : ''}${pitchPct.toFixed(2)}%)</span>` : '';
-                bpmText = `<span class="deck-bpm">${effectiveBpm} BPM${pitchStr}</span>`;
+                bpmText = `<span class="deck-bpm" id="bpm-${d.n}">${effectiveBpm} BPM${pitchStr}</span>`;
             }
 
             // Track source
@@ -271,9 +271,9 @@
                 if (d.track_length > 0) {
                     const tm = Math.floor(d.track_length / 60);
                     const ts = d.track_length % 60;
-                    playTimeText = `<span class="deck-playtime">${posStr} / ${tm}:${ts < 10 ? '0' : ''}${ts}</span>`;
+                    playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr} / ${tm}:${ts < 10 ? '0' : ''}${ts}</span>`;
                 } else {
-                    playTimeText = `<span class="deck-playtime">${posStr}</span>`;
+                    playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr}</span>`;
                 }
             } else if (d.playing && d.play_time > 0) {
                 const m = Math.floor(d.play_time / 60);
@@ -285,7 +285,7 @@
             const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
 
             return `
-                <div class="${classes.join(' ')}">
+                <div class="${classes.join(' ')}" id="deck-${d.n}">
                     <div class="deck-header">
                         <span class="deck-num">${deckLabel}</span>${beatDots}
                         <div class="deck-status">
@@ -358,18 +358,167 @@
         return div.innerHTML;
     }
     
-    // SSE connection
-    let evtSource = null;
-    let reconnectTimeout = null;
-    
-    function connect() {
-        if (evtSource) {
-            evtSource.close();
+    // =========================================================================
+    // Raw CDJ packet parser (binary WebSocket frames)
+    // =========================================================================
+
+    /* Pro DJ Link packet offsets (from prolink_protocol.h) */
+    const PKT = {
+        DEVICE_NUM: 0x21, PLAY_STATE: 0x7b, FLAGS: 0x89, FLAGS2: 0x8b,
+        BPM: 0x92, PITCH1: 0x8c, BEAT_IN_BAR: 0xa6,
+        USB_STATE: 0x6f, SD_STATE: 0x73, LINK_AVAIL: 0x75,
+        MEDIA_PRESENCE: 0xb7, EMERGENCY_LOOP: 0xba,
+        SOURCE_PLAYER: 0x28, TRACK_SLOT: 0x29,
+        REKORDBOX_ID: 0x2c, TRACK_MENU: 0x37,
+        KEY_NOTE: 0x15c, KEY_SCALE: 0x15d, KEY_ACC: 0x15e,
+        MASTER_TEMPO: 0x158, LOOP_START: 0x1b6, LOOP_END: 0x1be,
+        LOOP_BEATS: 0x1c8
+    };
+    const BEAT_PKT = { DEVICE_NUM: 0x21, BEAT_IN_BAR: 0x5c, BPM: 0x5a };
+    const POS_PKT = { DEVICE_NUM: 0x21, TRACK_LEN: 0x24, PLAYHEAD: 0x28 };
+
+    /* Per-device state from raw packets */
+    const rawDecks = {};
+
+    function parseStatusPacket(dv, len) {
+        const devNum = dv.getUint8(PKT.DEVICE_NUM);
+        if (!rawDecks[devNum]) rawDecks[devNum] = {};
+        const d = rawDecks[devNum];
+
+        d.playing = (dv.getUint8(PKT.FLAGS) & 0x40) !== 0;
+        d.on_air = (dv.getUint8(PKT.FLAGS) & 0x08) !== 0;
+        d.play_state = dv.getUint8(PKT.PLAY_STATE);
+        d.bpm = dv.getUint16(PKT.BPM);
+        d.beat_in_bar = dv.getUint8(PKT.BEAT_IN_BAR);
+        d.source_player = dv.getUint8(PKT.SOURCE_PLAYER);
+        d.track_slot = dv.getUint8(PKT.TRACK_SLOT);
+        d.usb_state = dv.getUint8(PKT.USB_STATE);
+        d.sd_state = dv.getUint8(PKT.SD_STATE);
+
+        /* Pitch: 0x100000 = 0%, stored as pct*100 */
+        const pitchRaw = dv.getUint32(PKT.PITCH1);
+        d.pitch = Math.round((pitchRaw - 0x100000) * 10000 / 0x100000);
+
+        d.looping = (d.play_state === 0x04) || (dv.getUint8(PKT.EMERGENCY_LOOP) !== 0);
+        d.loop_beats = 0;
+
+        /* CDJ-3000 extended fields */
+        if (len >= 0x1ca) {
+            const ls = dv.getUint32(PKT.LOOP_START);
+            const le = dv.getUint32(PKT.LOOP_END);
+            if (ls > 0 && le > ls) {
+                d.looping = true;
+                d.loop_beats = dv.getUint16(PKT.LOOP_BEATS);
+            }
         }
-        
-        evtSource = new EventSource('/sse');
-        
-        evtSource.onopen = function() {
+        if (len >= 0x15f) {
+            d.key_note = dv.getUint8(PKT.KEY_NOTE);
+            d.key_scale = dv.getUint8(PKT.KEY_SCALE);
+            d.key_acc = dv.getUint8(PKT.KEY_ACC);
+            d.master_tempo = dv.getUint8(PKT.MASTER_TEMPO);
+        }
+
+        d.lastUpdate = Date.now();
+        updateDeckFromRaw(devNum);
+    }
+
+    function parseBeatPacket(dv) {
+        const devNum = dv.getUint8(BEAT_PKT.DEVICE_NUM);
+        if (!rawDecks[devNum]) rawDecks[devNum] = {};
+        rawDecks[devNum].beat_in_bar = dv.getUint8(BEAT_PKT.BEAT_IN_BAR);
+        rawDecks[devNum].lastBeat = Date.now();
+        updateDeckFromRaw(devNum);
+    }
+
+    function parsePositionPacket(dv) {
+        const devNum = dv.getUint8(POS_PKT.DEVICE_NUM);
+        if (!rawDecks[devNum]) rawDecks[devNum] = {};
+        rawDecks[devNum].playhead_ms = dv.getUint32(POS_PKT.PLAYHEAD);
+        rawDecks[devNum].track_length = dv.getUint32(POS_PKT.TRACK_LEN);
+        /* Position updates are fast (30ms) — don't rebuild DOM every time,
+         * just update the position display if it exists */
+        const posEl = document.getElementById('pos-' + devNum);
+        if (posEl && rawDecks[devNum].playhead_ms > 0) {
+            const pm = Math.floor(rawDecks[devNum].playhead_ms / 60000);
+            const ps = Math.floor((rawDecks[devNum].playhead_ms % 60000) / 1000);
+            const tl = rawDecks[devNum].track_length || 0;
+            const tm = Math.floor(tl / 60);
+            const ts = tl % 60;
+            posEl.textContent = `${pm}:${ps < 10 ? '0' : ''}${ps}` +
+                (tl > 0 ? ` / ${tm}:${ts < 10 ? '0' : ''}${ts}` : '');
+        }
+    }
+
+    function handleBinaryFrame(data) {
+        if (data.byteLength < 8) return;  /* 7-byte header + at least 1 byte payload */
+        const header = new DataView(data, 0, 7);
+        const portId = header.getUint8(0);
+        const payloadLen = (header.getUint8(5) << 8) | header.getUint8(6);
+        if (7 + payloadLen > data.byteLength) return;
+
+        const payload = new DataView(data, 7, payloadLen);
+
+        if (portId === 2 && payloadLen >= 0xa7) {
+            parseStatusPacket(payload, payloadLen);
+        } else if (portId === 1) {
+            /* Beat port: could be beat packet or position packet */
+            if (payloadLen >= 96 && payload.getUint8(0x0a) === 0x28) {
+                parseBeatPacket(payload);
+            } else if (payloadLen >= 52) {
+                parsePositionPacket(payload);
+            }
+        }
+    }
+
+    /* Update deck card UI from raw packet data.
+     * Called on every status/beat packet — updates in-place, no full rebuild. */
+    function updateDeckFromRaw(devNum) {
+        const d = rawDecks[devNum];
+        if (!d) return;
+
+        /* Update beat dots */
+        for (let b = 1; b <= 4; b++) {
+            const dot = document.getElementById('beat-' + devNum + '-' + b);
+            if (dot) {
+                if (d.beat_in_bar === b) dot.classList.add('active');
+                else dot.classList.remove('active');
+            }
+        }
+
+        /* Update play/on-air badges */
+        const deckEl = document.getElementById('deck-' + devNum);
+        if (deckEl) {
+            deckEl.classList.toggle('playing', !!d.playing);
+            deckEl.classList.toggle('on-air', !!d.on_air);
+        }
+
+        /* Update BPM/pitch display */
+        const bpmEl = document.getElementById('bpm-' + devNum);
+        if (bpmEl && d.bpm > 0) {
+            const baseBpm = d.bpm / 100;
+            const pitchPct = d.pitch / 100;
+            const effectiveBpm = (baseBpm * (1 + pitchPct / 100)).toFixed(1);
+            const pitchStr = Math.abs(pitchPct) > 0.05
+                ? ` <span class="deck-pitch">(${pitchPct >= 0 ? '+' : ''}${pitchPct.toFixed(2)}%)</span>` : '';
+            bpmEl.innerHTML = `${effectiveBpm} BPM${pitchStr}`;
+        }
+    }
+
+    // =========================================================================
+    // WebSocket connection
+    // =========================================================================
+
+    let ws = null;
+    let reconnectTimeout = null;
+
+    function connect() {
+        if (ws) ws.close();
+
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        ws = new WebSocket(proto + '//' + location.host + '/sse');
+        ws.binaryType = 'arraybuffer';
+
+        ws.onopen = function() {
             statusEl.textContent = 'Connected';
             statusEl.className = 'status connected';
             if (reconnectTimeout) {
@@ -377,87 +526,74 @@
                 reconnectTimeout = null;
             }
         };
-        
-        evtSource.onmessage = function(e) {
+
+        ws.onmessage = function(e) {
+            if (e.data instanceof ArrayBuffer) {
+                handleBinaryFrame(e.data);
+                return;
+            }
+
+            /* Text frame: JSON event */
             try {
-                const data = JSON.parse(e.data);
-                if (typeof data.l === 'number' && typeof data.r === 'number') {
-                    updateVU(data.l, data.r);
-                    updateAudioStats(data);
+                const msg = JSON.parse(e.data);
+                switch (msg.event) {
+                case 'vu':
+                    updateVU(msg.l, msg.r);
+                    updateAudioStats(msg);
+                    break;
+                case 'track':
+                    if (msg.a || msg.t)
+                        addTrack(msg.a, msg.t, null, msg.src, msg.conf, msg.isrc);
+                    break;
+                case 'decks':
+                    updateDecks(msg.data);
+                    updateIdentification(msg.data);
+                    break;
+                case 'history':
+                    if (msg.data) {
+                        for (let i = msg.data.length - 1; i >= 0; i--) {
+                            const t = msg.data[i];
+                            addTrack(t.a, t.t, t.ts, t.src, t.conf, t.isrc);
+                        }
+                    }
+                    break;
+                case 'log':
+                    if (msg.data) {
+                        const logEl = document.getElementById('activity-log');
+                        if (!logEl) break;
+                        msg.data.forEach(function(m) {
+                            const div = document.createElement('div');
+                            div.className = 'log-line';
+                            div.textContent = m;
+                            logEl.appendChild(div);
+                        });
+                        while (logEl.children.length > 50)
+                            logEl.removeChild(logEl.firstChild);
+                        logEl.scrollTop = logEl.scrollHeight;
+                    }
+                    break;
+                case 'shazam':
+                    /* Shazam state updates — could add UI for this */
+                    break;
                 }
             } catch (err) {
-                console.error('Parse error:', err);
+                console.error('WS parse error:', err);
             }
         };
-        
-        evtSource.addEventListener('track', function(e) {
-            try {
-                const data = JSON.parse(e.data);
-                if (data.a || data.t) {
-                    addTrack(data.a, data.t, null, data.src, data.conf, data.isrc);
-                }
-            } catch (err) {
-                console.error('Track parse error:', err);
-            }
-        });
-        
-        evtSource.addEventListener('decks', function(e) {
-            try {
-                const decks = JSON.parse(e.data);
-                updateDecks(decks);
-                updateIdentification(decks);
-            } catch (err) {
-                console.error('Decks parse error:', err);
-            }
-        });
-        
-        evtSource.addEventListener('history', function(e) {
-            try {
-                const tracks = JSON.parse(e.data);
-                // Add tracks in reverse order (oldest first, so newest ends up at top)
-                for (let i = tracks.length - 1; i >= 0; i--) {
-                    const t = tracks[i];
-                    addTrack(t.a, t.t, t.ts, t.src, t.conf, t.isrc);
-                }
-            } catch (err) {
-                console.error('History parse error:', err);
-            }
-        });
-        
-        evtSource.addEventListener('log', function(e) {
-            try {
-                const messages = JSON.parse(e.data);
-                const logEl = document.getElementById('activity-log');
-                if (!logEl) return;
-                messages.forEach(function(msg) {
-                    const div = document.createElement('div');
-                    div.className = 'log-line';
-                    div.textContent = msg;
-                    logEl.appendChild(div);
-                });
-                /* Keep only last 50 lines */
-                while (logEl.children.length > 50) {
-                    logEl.removeChild(logEl.firstChild);
-                }
-                /* Auto-scroll to bottom */
-                logEl.scrollTop = logEl.scrollHeight;
-            } catch (err) {
-                console.error('Log parse error:', err);
-            }
-        });
 
-        evtSource.onerror = function() {
+        ws.onclose = function() {
             statusEl.textContent = 'Disconnected';
             statusEl.className = 'status disconnected';
-            evtSource.close();
-            
-            // Reconnect after 2 seconds
             if (!reconnectTimeout) {
                 reconnectTimeout = setTimeout(connect, 2000);
             }
         };
+
+        ws.onerror = function() {
+            ws.close();
+        };
     }
-    
+
     // Start
     connect();
 })();

@@ -12,6 +12,7 @@
 #include "dbserver.h"
 #include "cdj_types.h"
 #include "registration.h"
+#include "../server/ws_server.h"
 #include "../common.h"
 #include <string.h>
 
@@ -112,6 +113,14 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *byt
                        pkt_type, payload_len);
         }
         
+        /* Broadcast raw packet to WebSocket clients */
+        {
+            uint8_t port_id = 0;
+            if (dst_port == PROLINK_BEAT_PORT || src_port == PROLINK_BEAT_PORT) port_id = 1;
+            else if (dst_port == PROLINK_STATUS_PORT || src_port == PROLINK_STATUS_PORT) port_id = 2;
+            ws_broadcast_packet(port_id, src_ip, payload, payload_len);
+        }
+
         if (dst_port == PROLINK_KEEPALIVE_PORT || src_port == PROLINK_KEEPALIVE_PORT) {
             parse_keepalive(payload, payload_len, src_ip);
         }
