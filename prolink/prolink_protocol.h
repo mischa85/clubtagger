@@ -496,7 +496,7 @@ _Static_assert(sizeof(cdj_position_packet_t) == 52, "cdj_position_packet_t must 
  *
  * Key & Master Tempo (CDJ-3000):
  *   0x158       Mt - Master Tempo: 0x00=off, 0x01=on
- *   0x15c       Key note (0x00-0x0b, C through B)
+ *   0x15c       Key note (0x00-0x0b, A through G#)
  *   0x15d       Key scale: 0x00=minor, 0x01=major
  *   0x15e       Key accidental: 0x00=natural, 0x01=sharp, 0xff=flat
  *   0x164-0x16b Key shift: 64-bit signed, semitones * 100 cents

@@ -193,16 +193,12 @@
     }
 
     // Update CDJ deck status
+    /* CDJ-3000 key byte at 0x15c is A-based: 0=A, 1=Bb, 2=B, 3=C, ... 11=G# */
     function keyName(note, scale, acc) {
         if (note > 11) return '';
-        const notes = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
-        let name = notes[note];
-        if (acc === 1) name = notes[note]; // sharp already in array
-        else if (acc === 255 || acc === 0xff) {
-            // flat: use flat notation
-            const flats = ['C','Db','D','Eb','E','F','Gb','G','Ab','A','Bb','B'];
-            name = flats[note];
-        }
+        const notes = ['A','A#','B','C','C#','D','D#','E','F','F#','G','G#'];
+        const flats = ['A','Bb','B','C','Db','D','Eb','E','F','Gb','G','Ab'];
+        let name = (acc === 255 || acc === 0xff) ? flats[note] : notes[note];
         return name + (scale === 0 ? 'm' : '');
     }
 

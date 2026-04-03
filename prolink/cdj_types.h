@@ -99,7 +99,7 @@ typedef struct {
     uint16_t loop_beats;        /* Loop length in beats (0=unknown, CDJ-3000 only) */
 
     /* Key (CDJ-3000 extended status) */
-    uint8_t  key_note;          /* 0x00=C .. 0x0b=B (0xff=unknown) */
+    uint8_t  key_note;          /* 0x00=A .. 0x0b=G# (0xff=unknown) */
     uint8_t  key_scale;         /* 0x00=minor, 0x01=major */
     uint8_t  key_accidental;    /* 0x00=natural, 0x01=sharp, 0xff=flat */
     uint8_t  master_tempo;      /* 0x00=off, 0x01=on */
