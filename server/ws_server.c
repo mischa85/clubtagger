@@ -67,11 +67,11 @@ static int do_handshake(int fd) {
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n\r\n", b64);
 
-    logmsg("ws", "keylen=%d acceptlen=%zu", ki, strlen(accept));
+    logmsg("ws", "keylen=%d acceptlen=%zu", ki, strlen(b64));
     /* Write to file for debugging since journald mangles base64 */
     FILE *dbg = fopen("/tmp/ws_handshake.log", "w");
     if (dbg) {
-        fprintf(dbg, "key=[%s]\ncat=[%s]\naccept=[%s]\nresp=[%s]\n", key, cat, accept, resp);
+        fprintf(dbg, "key=[%s]\ncat=[%s]\naccept=[%s]\nresp=[%s]\n", key, cat, b64, resp);
         fclose(dbg);
     }
     ssize_t sent = send(fd, resp, rn, 0);
