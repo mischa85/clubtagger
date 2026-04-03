@@ -42,7 +42,11 @@ server {
     }
 
     # WebSocket proxy to clubtagger Unix socket
+    # auth_basic off: WebSocket API doesn't send Basic Auth credentials
+    # reliably. The web page itself is auth-protected, so only
+    # authenticated users can discover the WS endpoint.
     location /ws {
+        auth_basic off;
         proxy_pass http://clubtagger;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
