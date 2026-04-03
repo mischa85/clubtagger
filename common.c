@@ -317,9 +317,62 @@ int str_contains(const char *haystack, const char *needle) {
     char h[256], n[256];
     normalize_for_match(haystack, h, sizeof(h));
     normalize_for_match(needle, n, sizeof(n));
-    
+
     if (n[0] == '\0') return 0;  /* Empty needle */
     return strcasestr(h, n) != NULL;
+}
+
+/* Core title match: compare normalized strings by common prefix.
+ * Handles "Re-Rewind (Original Mix)" vs "Re-Rewind (The Crowd Say Bo Selecta)"
+ * where the base title matches but the remix/version suffix differs. */
+int str_core_match(const char *s1, const char *s2) {
+    char n1[256], n2[256];
+    normalize_for_match(s1, n1, sizeof(n1));
+    normalize_for_match(s2, n2, sizeof(n2));
+
+    size_t len1 = strlen(n1), len2 = strlen(n2);
+    size_t min_len = len1 < len2 ? len1 : len2;
+    if (min_len < 3) return 0;
+
+    /* Count matching prefix */
+    size_t match = 0;
+    for (size_t i = 0; i < min_len; i++) {
+        if (n1[i] == n2[i]) match++;
+        else break;
+    }
+
+    /* Prefix must cover at least 80% of the shorter string and be >= 5 chars */
+    return match >= 5 && (match * 100 / min_len) >= 80;
+}
+
+/* Artist match with separator normalization.
+ * "Artful Dodger ft. Craig David" matches "Artful Dodger & Craig David" */
+int str_artist_match(const char *a1, const char *a2) {
+    if (!a1 || !a2 || !a1[0] || !a2[0]) return 1; /* No artist = match */
+
+    char n1[256], n2[256];
+    normalize_for_match(a1, n1, sizeof(n1));
+    normalize_for_match(a2, n2, sizeof(n2));
+
+    /* Strip "feat", "ft" — already alphanumeric after normalize */
+    char *p;
+    while ((p = strstr(n1, " feat ")) != NULL)
+        memmove(p + 1, p + 6, strlen(p + 6) + 1);
+    while ((p = strstr(n1, " ft ")) != NULL)
+        memmove(p + 1, p + 4, strlen(p + 4) + 1);
+    while ((p = strstr(n2, " feat ")) != NULL)
+        memmove(p + 1, p + 6, strlen(p + 6) + 1);
+    while ((p = strstr(n2, " ft ")) != NULL)
+        memmove(p + 1, p + 4, strlen(p + 4) + 1);
+
+    if (strcasestr(n1, n2) || strcasestr(n2, n1)) return 1;
+
+    size_t len1 = strlen(n1), len2 = strlen(n2);
+    size_t max_len = len1 > len2 ? len1 : len2;
+    if (max_len == 0) return 1;
+
+    int dist = levenshtein_distance(n1, n2);
+    return (100 - (dist * 100 / (int)max_len)) >= 50;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────

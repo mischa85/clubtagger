@@ -593,38 +593,29 @@ int prolink_matches_fingerprint(const char *cdj_title, const char *cdj_artist,
                                  const char *fp_title, const char *fp_artist) {
     if (!cdj_title || !fp_title) return 0;
     if (cdj_title[0] == '\0' || fp_title[0] == '\0') return 0;
-    
-    /* Fast path: substring containment (handles "Song" vs "Song (Original Mix)") */
+
+    /* Title matching — three strategies, any hit counts:
+     * 1. Substring containment ("Song" vs "Song (Original Mix)")
+     * 2. Core prefix match ("Re-Rewind ..." vs "Re-Rewind ...")
+     * 3. Levenshtein similarity (typos like "Tiësto" vs "Tiesto") */
     int title_match = str_contains(cdj_title, fp_title) ||
-                      str_contains(fp_title, cdj_title);
-    
-    /* Slow path: Levenshtein similarity (handles typos like "Tiësto" vs "Tiesto") */
+                      str_contains(fp_title, cdj_title) ||
+                      str_core_match(cdj_title, fp_title);
+
     if (!title_match) {
         int sim = str_similarity(cdj_title, fp_title);
         title_match = (sim >= match_threshold);
         if (title_match) {
-            vlogmsg("cdj", "Fuzzy title match: %d%% (\"%s\" vs \"%s\")", 
+            vlogmsg("cdj", "Fuzzy title match: %d%% (\"%s\" vs \"%s\")",
                    sim, cdj_title, fp_title);
         }
     }
-    
+
     if (!title_match) return 0;
-    
-    /* Check artist match if both have artists */
-    int artist_match = 1;  /* Default to match if no artist info */
-    if (cdj_artist && fp_artist && cdj_artist[0] && fp_artist[0]) {
-        artist_match = str_contains(cdj_artist, fp_artist) ||
-                       str_contains(fp_artist, cdj_artist);
-        if (!artist_match) {
-            int sim = str_similarity(cdj_artist, fp_artist);
-            artist_match = (sim >= match_threshold);
-            if (artist_match) {
-                vlogmsg("cdj", "Fuzzy artist match: %d%% (\"%s\" vs \"%s\")", 
-                       sim, cdj_artist, fp_artist);
-            }
-        }
-    }
-    
+
+    /* Artist matching — handles "ft."/"feat."/"&" separator differences */
+    int artist_match = str_artist_match(cdj_artist, fp_artist);
+
     return title_match && artist_match;
 }
 
