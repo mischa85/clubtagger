@@ -678,7 +678,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         if (bpm > 0 && bpm < 50000) {
             dev->bpm_raw = bpm;
         }
-        
+
+        /* Pitch from status packet: 0x100000 = 0%, 0x000000 = -100%, 0x200000 = +100%
+         * Store as percentage * 100 (e.g. +3.26% = 326) for easy UI display */
+        uint32_t pitch_raw = BE32_TO_HOST(pkt->pitch1_be);
+        dev->pitch_raw = (int32_t)((int64_t)(pitch_raw - 0x100000) * 10000 / 0x100000);
+
         dev->beat_number = BE32_TO_HOST(pkt->beat_num_be);
         dev->beat_in_bar = pkt->beat_in_bar;
 
@@ -950,11 +955,9 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
         dev->bpm_raw = (uint16_t)(raw_bpm * 10);
     }
 
-    /* Store pitch for UI display */
-    int32_t pitch_raw;
-    memcpy(&pitch_raw, pkt->pitch_be, 4);
-    pitch_raw = (int32_t)BE32_TO_HOST((const uint8_t *)&pitch_raw);
-    dev->pitch_raw = pitch_raw;
+    /* Pitch also available from position packet, but status packet pitch
+     * (parsed in parse_cdj_status) uses the well-documented encoding.
+     * Position packet pitch encoding differs — skip here. */
 
     /* Don't set dev->playing from position packets — F bit 6 in status
      * packets is authoritative. Position packets arrive even when paused. */

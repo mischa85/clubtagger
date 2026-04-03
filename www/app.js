@@ -230,13 +230,13 @@
                 [1,2,3,4].map(b => `<span class="beat-dot${d.beat === b ? ' active' : ''}"></span>`).join('') +
                 '</div>' : '';
 
-            // BPM with pitch
+            // BPM with pitch (pitch is percentage * 100, e.g. 326 = +3.26%)
             let bpmText = '';
             if (d.bpm > 0) {
-                const pitchPct = d.pitch / 6400;
+                const pitchPct = d.pitch / 100;
                 const effectiveBpm = (d.bpm * (1 + pitchPct / 100)).toFixed(1);
                 const pitchStr = Math.abs(pitchPct) > 0.05
-                    ? ` <span class="deck-pitch">(${pitchPct >= 0 ? '+' : ''}${pitchPct.toFixed(1)}%)</span>` : '';
+                    ? ` <span class="deck-pitch">(${pitchPct >= 0 ? '+' : ''}${pitchPct.toFixed(2)}%)</span>` : '';
                 bpmText = `<span class="deck-bpm">${effectiveBpm} BPM${pitchStr}</span>`;
             }
 
