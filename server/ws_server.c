@@ -36,17 +36,21 @@ static int do_handshake(int fd) {
     if (n <= 0) return -1;
     buf[n] = '\0';
 
-    /* Find key */
-    char *kp = strstr(buf, "Sec-WebSocket-Key: ");
-    if (!kp) kp = strstr(buf, "sec-websocket-key: ");
+    /* Find key — case-insensitive, handle variable spacing */
+    char *kp = strcasestr(buf, "sec-websocket-key:");
     if (!kp) {
-        logmsg("ws", "no key found in: %.100s", buf);
+        logmsg("ws", "no key found in: %.200s", buf);
         return -1;
     }
-    kp += 19;
+    kp += 18; /* skip "sec-websocket-key:" */
+    while (*kp == ' ' || *kp == '\t') kp++; /* skip whitespace */
     char key[64] = {0};
-    for (int i = 0; i < 60 && kp[i] && kp[i] != '\r' && kp[i] != '\n'; i++)
-        key[i] = kp[i];
+    int ki = 0;
+    while (ki < 60 && kp[ki] && kp[ki] != '\r' && kp[ki] != '\n')
+        { key[ki] = kp[ki]; ki++; }
+    /* Trim trailing whitespace */
+    while (ki > 0 && (key[ki-1] == ' ' || key[ki-1] == '\t')) ki--;
+    key[ki] = '\0';
 
     /* SHA1(key + guid) */
     char cat[256];
@@ -63,6 +67,7 @@ static int do_handshake(int fd) {
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n\r\n", b64);
 
+    logmsg("ws", "key='%s' accept='%s'", key, accept);
     ssize_t sent = send(fd, resp, rn, 0);
     logmsg("ws", "sent 101 response: %zd bytes", sent);
     return (sent == rn) ? 0 : -1;
