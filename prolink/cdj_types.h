@@ -90,8 +90,19 @@ typedef struct {
     uint8_t  track_source_player; /* Source player when using Link */
     uint8_t  track_source_slot;   /* Original slot when using Link */
     uint16_t bpm_raw;           /* BPM * 100 */
-    uint8_t  pitch_percent;
+    int32_t  pitch_raw;         /* Pitch * 6400, signed (from position packets) */
     uint32_t beat_number;
+    uint8_t  beat_in_bar;       /* 1-4 within current bar (0=unknown) */
+
+    /* Loop state */
+    uint8_t  looping;           /* 1 = loop active (play_state or extended fields) */
+    uint16_t loop_beats;        /* Loop length in beats (0=unknown, CDJ-3000 only) */
+
+    /* Key (CDJ-3000 extended status) */
+    uint8_t  key_note;          /* 0x00=C .. 0x0b=B (0xff=unknown) */
+    uint8_t  key_scale;         /* 0x00=minor, 0x01=major */
+    uint8_t  key_accidental;    /* 0x00=natural, 0x01=sharp, 0xff=flat */
+    uint8_t  master_tempo;      /* 0x00=off, 0x01=on */
     uint32_t position_ms;       /* Current position in ms (from position packets) */
     uint32_t track_length_sec;  /* Track length in seconds (from position packets) */
     uint32_t last_position_ms;  /* Previous playhead (for detecting stalls) */
