@@ -338,7 +338,7 @@
             }
         } else {
             const now = new Date();
-            time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+            time = now.toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit' });
         }
         
         const isrcHtml = isrc ? `<div class="track-isrc">${escapeHtml(isrc)}</div>` : '';
@@ -581,7 +581,7 @@
                     if (msg.data) {
                         const logEl = document.getElementById('activity-log');
                         if (!logEl) break;
-                        var now = new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+                        var now = new Date().toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
                         msg.data.forEach(function(m) {
                             const div = document.createElement('div');
                             div.className = 'log-line';
