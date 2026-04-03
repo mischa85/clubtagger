@@ -69,18 +69,22 @@ static int do_handshake(int fd) {
 }
 
 static ssize_t ws_text(int fd, const char *msg, int len) {
-    uint8_t hdr[4];
-    hdr[0] = 0x81; /* FIN + text */
+    /* Build frame in one buffer to send atomically */
+    uint8_t buf[4200];
+    int hlen;
+    buf[0] = 0x81; /* FIN + text */
     if (len < 126) {
-        hdr[1] = (uint8_t)len;
-        send(fd, hdr, 2, MSG_NOSIGNAL | MSG_DONTWAIT);
+        buf[1] = (uint8_t)len;
+        hlen = 2;
     } else {
-        hdr[1] = 126;
-        hdr[2] = (uint8_t)(len >> 8);
-        hdr[3] = (uint8_t)(len & 0xff);
-        send(fd, hdr, 4, MSG_NOSIGNAL | MSG_DONTWAIT);
+        buf[1] = 126;
+        buf[2] = (uint8_t)(len >> 8);
+        buf[3] = (uint8_t)(len & 0xff);
+        hlen = 4;
     }
-    return send(fd, msg, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+    if (hlen + len > (int)sizeof(buf)) return -1;
+    memcpy(buf + hlen, msg, len);
+    return send(fd, buf, hlen + len, MSG_NOSIGNAL);
 }
 
 void *ws_main(void *arg) {
