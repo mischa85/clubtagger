@@ -139,14 +139,29 @@ void *ws_main(void *arg) {
         struct pollfd pfd = { .fd = server_fd, .events = POLLIN };
         int pr = poll(&pfd, 1, 1000); /* 1 second timeout */
         if (pr <= 0) {
-            /* Timeout or error — send pings to existing clients */
-            char ping[64];
-            int plen = snprintf(ping, sizeof(ping), "{\"t\":%ld}", (long)time(NULL));
+            /* Timeout — check clients and send pings */
             for (int i = 0; i < WS_MAX_CLIENTS; i++) {
                 int fd = atomic_load(&ws_fds[i]);
                 if (fd < 0) continue;
-                if (ws_text(fd, ping, plen) < 0) {
-                    logmsg("ws", "slot %d dead", i);
+
+                /* Check if client sent anything (close frame?) */
+                uint8_t peek[16];
+                ssize_t pn = recv(fd, peek, sizeof(peek), MSG_PEEK | MSG_DONTWAIT);
+                if (pn > 0) {
+                    logmsg("ws", "slot %d has %zd bytes from client: %02x %02x %02x %02x",
+                           i, pn, peek[0], pn>1?peek[1]:0, pn>2?peek[2]:0, pn>3?peek[3]:0);
+                } else if (pn == 0) {
+                    logmsg("ws", "slot %d: peer closed (recv=0)", i);
+                    close(fd);
+                    atomic_store(&ws_fds[i], -1);
+                    continue;
+                }
+
+                char ping[64];
+                int plen = snprintf(ping, sizeof(ping), "{\"t\":%ld}", (long)time(NULL));
+                ssize_t sent = ws_text(fd, ping, plen);
+                if (sent < 0) {
+                    logmsg("ws", "slot %d send failed: errno=%d (%s)", i, errno, strerror(errno));
                     close(fd);
                     atomic_store(&ws_fds[i], -1);
                 }
