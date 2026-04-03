@@ -267,7 +267,7 @@ static int do_handshake(int fd, int seq) {
 
     /* SHA1(key + guid) */
     char cat[256];
-    snprintf(cat, sizeof(cat), "%s258EAFA5-E914-47DA-95CA-5AB0141B3CF2", key);
+    snprintf(cat, sizeof(cat), "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
     unsigned char hash[20];
     unsigned char *sha_ret = SHA1((unsigned char*)cat, strlen(cat), hash);
     logmsg("ws", "[#%d] SHA1 returned %p (hash=%p)", seq, (void*)sha_ret, (void*)hash);
