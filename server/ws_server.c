@@ -1,7 +1,7 @@
 /*
  * ws_server.c - WebSocket server for real-time CDJ data and track updates
  *
- * Replaces the former SSE server. Single WebSocket connection per client:
+ * Single WebSocket connection per client:
  * - Binary frames: raw Pro DJ Link packets (forwarded from prolink thread)
  * - Text frames: JSON events (track, history, log, shazam, VU meters)
  */
@@ -24,6 +24,8 @@
 #include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
+#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 #ifdef __APPLE__
 #include <mach/mach.h>
@@ -32,16 +34,253 @@
 #include <sys/sysinfo.h>
 #endif
 
-/* Number of recent tracks to send when a client connects */
-#define SSE_INITIAL_TRACKS 5
+#define WS_MAX_CLIENTS 8
+#define WS_INITIAL_TRACKS 5
+#define WS_MAGIC_GUID "258EAFA5-E914-47DA-95CA-5AB0141B3CF2"
 
-static const char *SSE_HEADERS =
-    "HTTP/1.1 200 OK\r\n"
-    "Content-Type: text/event-stream\r\n"
-    "Cache-Control: no-cache\r\n"
-    "Connection: keep-alive\r\n"
-    "Access-Control-Allow-Origin: *\r\n"
-    "\r\n";
+/* Shared client array — prolink thread sends binary, ws thread sends text.
+ * Writes to ws_clients[i] are only done by ws thread (accept/close).
+ * Reads + send() can happen from any thread (non-blocking, atomic FDs). */
+static _Atomic int ws_clients[WS_MAX_CLIENTS];
+
+static void ws_clients_init(void) {
+    for (int i = 0; i < WS_MAX_CLIENTS; i++)
+        atomic_store(&ws_clients[i], -1);
+}
+
+/*
+ * ============================================================================
+ * WebSocket Frame Encoding (RFC 6455)
+ * ============================================================================
+ */
+
+/* Send a WebSocket frame. Server→client frames are NOT masked.
+ * opcode: 0x01=text, 0x02=binary, 0x09=ping, 0x0A=pong, 0x08=close
+ * Returns bytes sent or -1 on error. */
+static ssize_t ws_send_frame(int fd, uint8_t opcode, const void *data, size_t len) {
+    uint8_t header[10];
+    int hlen = 0;
+
+    header[0] = 0x80 | opcode;  /* FIN + opcode */
+
+    if (len < 126) {
+        header[1] = (uint8_t)len;
+        hlen = 2;
+    } else if (len < 65536) {
+        header[1] = 126;
+        header[2] = (uint8_t)(len >> 8);
+        header[3] = (uint8_t)(len & 0xFF);
+        hlen = 4;
+    } else {
+        header[1] = 127;
+        header[2] = 0; header[3] = 0; header[4] = 0; header[5] = 0;
+        header[6] = (uint8_t)(len >> 24);
+        header[7] = (uint8_t)(len >> 16);
+        header[8] = (uint8_t)(len >> 8);
+        header[9] = (uint8_t)(len & 0xFF);
+        hlen = 10;
+    }
+
+    /* Send header + payload with writev-style gather (or two sends) */
+    struct iovec iov[2] = {
+        { .iov_base = header, .iov_len = hlen },
+        { .iov_base = (void *)data, .iov_len = len }
+    };
+    struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
+    return sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+}
+
+/* Send a text frame (JSON event) */
+static ssize_t ws_send_text(int fd, const char *data, size_t len) {
+    return ws_send_frame(fd, 0x01, data, len);
+}
+
+/* Send a binary frame (raw packet) */
+static ssize_t ws_send_binary(int fd, const void *data, size_t len) {
+    return ws_send_frame(fd, 0x02, data, len);
+}
+
+/* Send text to all connected clients, remove dead ones */
+static void ws_broadcast_text(const char *data, size_t len) {
+    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+        int fd = atomic_load(&ws_clients[i]);
+        if (fd < 0) continue;
+        ssize_t sent = ws_send_text(fd, data, len);
+        if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+            logmsg("ws", "client disconnected (slot %d)", i);
+            close(fd);
+            atomic_store(&ws_clients[i], -1);
+        }
+    }
+}
+
+/*
+ * ============================================================================
+ * WebSocket Handshake (RFC 6455)
+ * ============================================================================
+ */
+
+/* Extract Sec-WebSocket-Key from HTTP request headers */
+static int ws_extract_key(const char *request, char *key_out, size_t key_sz) {
+    const char *needle = "Sec-WebSocket-Key:";
+    const char *p = strcasestr(request, needle);
+    if (!p) return -1;
+    p += strlen(needle);
+    while (*p == ' ') p++;
+    size_t i = 0;
+    while (*p && *p != '\r' && *p != '\n' && i < key_sz - 1)
+        key_out[i++] = *p++;
+    key_out[i] = '\0';
+    return 0;
+}
+
+/* Perform WebSocket handshake on a new connection.
+ * Returns 0 on success (connection upgraded), -1 on failure. */
+static int ws_handshake(int fd) {
+    char request[2048];
+    ssize_t n = recv(fd, request, sizeof(request) - 1, 0);
+    if (n <= 0) return -1;
+    request[n] = '\0';
+
+    /* Check for WebSocket upgrade request */
+    if (!strcasestr(request, "Upgrade: websocket")) {
+        /* Not a WebSocket request — send a simple HTTP response for browsers */
+        const char *http_resp = "HTTP/1.1 426 Upgrade Required\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "Connection: close\r\n\r\n"
+                                "WebSocket connection required\n";
+        send(fd, http_resp, strlen(http_resp), MSG_NOSIGNAL);
+        return -1;
+    }
+
+    /* Extract Sec-WebSocket-Key */
+    char ws_key[128];
+    if (ws_extract_key(request, ws_key, sizeof(ws_key)) != 0) return -1;
+
+    /* Compute accept hash: SHA1(key + GUID), then base64 encode */
+    char concat[256];
+    snprintf(concat, sizeof(concat), "%s%s", ws_key, WS_MAGIC_GUID);
+
+    unsigned char sha1_hash[SHA_DIGEST_LENGTH];
+    SHA1((unsigned char *)concat, strlen(concat), sha1_hash);
+
+    char accept_b64[64];
+    EVP_EncodeBlock((unsigned char *)accept_b64, sha1_hash, SHA_DIGEST_LENGTH);
+
+    /* Send 101 Switching Protocols response */
+    char response[512];
+    int resp_len = snprintf(response, sizeof(response),
+        "HTTP/1.1 101 Switching Protocols\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Accept: %s\r\n"
+        "\r\n", accept_b64);
+
+    if (send(fd, response, resp_len, MSG_NOSIGNAL) != resp_len) return -1;
+
+    return 0;
+}
+
+/*
+ * ============================================================================
+ * Packet Broadcast (called from prolink thread)
+ * ============================================================================
+ */
+
+/* Broadcast raw Pro DJ Link packet to all WebSocket clients.
+ * Thread-safe: uses atomic client FD reads + non-blocking send.
+ * Prepends 7-byte header: [port_id:1][src_ip:4][length:2] */
+void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
+                         const uint8_t *payload, size_t len) {
+    if (len == 0 || len > 4096) return;
+
+    /* Build header + payload in one buffer to send as single binary frame */
+    uint8_t buf[4096 + 7];
+    buf[0] = port_id;
+    memcpy(buf + 1, &src_ip, 4);  /* Network byte order (as received) */
+    buf[5] = (uint8_t)(len >> 8);
+    buf[6] = (uint8_t)(len & 0xFF);
+    memcpy(buf + 7, payload, len);
+
+    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+        int fd = atomic_load(&ws_clients[i]);
+        if (fd < 0) continue;
+        /* Non-blocking send — drop if client can't keep up */
+        ws_send_binary(fd, buf, len + 7);
+    }
+}
+
+/*
+ * ============================================================================
+ * WebSocket Client Management (read incoming frames)
+ * ============================================================================
+ */
+
+/* Read and handle one WebSocket frame from client (ping/pong/close).
+ * Returns 0 on success, -1 if connection should be closed. */
+static int ws_handle_client_frame(int fd) {
+    uint8_t header[2];
+    ssize_t n = recv(fd, header, 2, MSG_DONTWAIT);
+    if (n <= 0) {
+        if (n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK))
+            return -1;
+        return 0;  /* No data ready */
+    }
+    if (n < 2) return -1;
+
+    uint8_t opcode = header[0] & 0x0F;
+    int masked = (header[1] & 0x80) != 0;
+    uint64_t payload_len = header[1] & 0x7F;
+
+    if (payload_len == 126) {
+        uint8_t ext[2];
+        if (recv(fd, ext, 2, 0) != 2) return -1;
+        payload_len = (ext[0] << 8) | ext[1];
+    } else if (payload_len == 127) {
+        uint8_t ext[8];
+        if (recv(fd, ext, 8, 0) != 8) return -1;
+        payload_len = 0;
+        for (int i = 0; i < 8; i++) payload_len = (payload_len << 8) | ext[i];
+    }
+
+    uint8_t mask[4] = {0};
+    if (masked) {
+        if (recv(fd, mask, 4, 0) != 4) return -1;
+    }
+
+    /* Read and unmask payload (limit to 4KB to prevent abuse) */
+    if (payload_len > 4096) return -1;
+    uint8_t payload[4096];
+    size_t total = 0;
+    while (total < payload_len) {
+        n = recv(fd, payload + total, payload_len - total, 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    if (masked) {
+        for (size_t i = 0; i < payload_len; i++)
+            payload[i] ^= mask[i % 4];
+    }
+
+    switch (opcode) {
+    case 0x08: /* Close */
+        ws_send_frame(fd, 0x08, payload, payload_len > 2 ? 2 : payload_len);
+        return -1;
+    case 0x09: /* Ping → Pong */
+        ws_send_frame(fd, 0x0A, payload, payload_len);
+        return 0;
+    case 0x0A: /* Pong — ignore */
+        return 0;
+    default:
+        return 0;  /* Text/binary from client — ignore for now */
+    }
+}
+
+/*
+ * ============================================================================
+ * Main WebSocket Server Thread
+ * ============================================================================
+ */
 
 void *ws_main(void *arg) {
     App *app = (App *)arg;
@@ -54,9 +293,7 @@ void *ws_main(void *arg) {
         return NULL;
     }
 
-    /* Remove existing socket file */
     unlink(socket_path);
-
     struct sockaddr_un addr = {0};
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socket_path);
@@ -66,8 +303,6 @@ void *ws_main(void *arg) {
         close(server_fd);
         return NULL;
     }
-
-    /* Make socket world-readable/writable for nginx */
     chmod(socket_path, 0666);
 
     if (listen(server_fd, 8) < 0) {
@@ -75,21 +310,18 @@ void *ws_main(void *arg) {
         close(server_fd);
         return NULL;
     }
-
-    /* Set non-blocking for accept */
     fcntl(server_fd, F_SETFL, O_NONBLOCK);
 
-    logmsg("ws", "started: socket=%s", socket_path);
+    ws_clients_init();
 
-    /* Simple client tracking - max 8 concurrent clients */
-#define SSE_MAX_CLIENTS 8
-    int clients[SSE_MAX_CLIENTS];
-    int client_needs_init[SSE_MAX_CLIENTS];  /* Flag for sending initial data */
-    uint32_t client_log_seq[SSE_MAX_CLIENTS]; /* Per-client activity log sequence */
-    for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-        clients[i] = -1;
+    int client_needs_init[WS_MAX_CLIENTS];
+    uint32_t client_log_seq[WS_MAX_CLIENTS];
+    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
         client_needs_init[i] = 0;
+        client_log_seq[i] = 0;
     }
+
+    logmsg("ws", "started: socket=%s (WebSocket)", socket_path);
 
     uint32_t last_track_seq = 0;
     int last_shazam_state = -1;
@@ -99,23 +331,17 @@ void *ws_main(void *arg) {
         /* Accept new connections */
         int client_fd = accept(server_fd, NULL, NULL);
         if (client_fd >= 0) {
-            /* Skip HTTP request (nginx proxies clean) */
-            char buf[1024];
-            ssize_t n = recv(client_fd, buf, sizeof(buf), MSG_DONTWAIT);
-            (void)n;
-
-            /* Send SSE headers */
-            if (send(client_fd, SSE_HEADERS, strlen(SSE_HEADERS), MSG_NOSIGNAL) < 0) {
+            /* Perform WebSocket handshake */
+            if (ws_handshake(client_fd) != 0) {
                 close(client_fd);
             } else {
-                /* Find slot for new client */
                 int added = 0;
-                for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-                    if (clients[i] < 0) {
-                        clients[i] = client_fd;
-                        client_needs_init[i] = 1;  /* Mark for initial data send */
-                        client_log_seq[i] = 0;     /* Send full log buffer on connect */
+                for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                    if (atomic_load(&ws_clients[i]) < 0) {
                         fcntl(client_fd, F_SETFL, O_NONBLOCK);
+                        atomic_store(&ws_clients[i], client_fd);
+                        client_needs_init[i] = 1;
+                        client_log_seq[i] = 0;
                         logmsg("ws", "client connected (slot %d)", i);
                         added = 1;
                         break;
@@ -128,85 +354,71 @@ void *ws_main(void *arg) {
             }
         }
 
-        /* Send initial history and shazam state to new clients */
-        for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-            if (clients[i] >= 0 && client_needs_init[i]) {
-                client_needs_init[i] = 0;
-
-                /* Send recent tracks */
-                char timestamps[SSE_INITIAL_TRACKS][32];
-                char artists[SSE_INITIAL_TRACKS][256];
-                char titles[SSE_INITIAL_TRACKS][256];
-                char sources[SSE_INITIAL_TRACKS][16];
-                int confidences[SSE_INITIAL_TRACKS];
-                char isrcs[SSE_INITIAL_TRACKS][64];
-                int count = db_get_recent_tracks(app, SSE_INITIAL_TRACKS, timestamps, artists, titles, sources, confidences, isrcs);
-
-                if (count > 0) {
-                    char history_msg[4096];
-                    int history_len = snprintf(history_msg, sizeof(history_msg), "event: history\ndata: [");
-                    for (int t = 0; t < count; t++) {
-                        char esc_artist[512], esc_title[512], esc_isrc[128];
-                        json_escape(artists[t], esc_artist, sizeof(esc_artist));
-                        json_escape(titles[t], esc_title, sizeof(esc_title));
-                        json_escape(isrcs[t], esc_isrc, sizeof(esc_isrc));
-                        if (t > 0) history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, ",");
-                        history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len,
-                            "{\"ts\":\"%s\",\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d,\"isrc\":\"%s\"}",
-                            timestamps[t], esc_artist, esc_title, sources[t], confidences[t], esc_isrc);
-                    }
-                    history_len += snprintf(history_msg + history_len, sizeof(history_msg) - history_len, "]\n\n");
-                    send(clients[i], history_msg, history_len, MSG_NOSIGNAL);
-                }
-
-                /* Send current shazam state */
-                int state = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
-                char shazam_msg[1024];
-                int shazam_len;
-                if (state == SHAZAM_CONFIRMING) {
-                    pthread_mutex_lock(&app->db_mu);
-                    char esc_cand[1024];
-                    json_escape(app->shazam_candidate, esc_cand, sizeof(esc_cand));
-                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d,\"needed\":%d,\"conf\":%d,\"cdj\":%s}\n\n",
-                        state, esc_cand, app->shazam_confirms, app->shazam_confirms_needed, 
-                        app->shazam_confidence, app->shazam_cdj_confirmed ? "true" : "false");
-                    pthread_mutex_unlock(&app->db_mu);
-                } else {
-                    pthread_mutex_lock(&app->db_mu);
-                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d,\"attempts\":%d}\n\n", state, app->shazam_no_match_count);
-                    pthread_mutex_unlock(&app->db_mu);
-                }
-                send(clients[i], shazam_msg, shazam_len, MSG_NOSIGNAL);
+        /* Handle incoming client frames (ping/pong/close) */
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            int fd = atomic_load(&ws_clients[i]);
+            if (fd < 0) continue;
+            if (ws_handle_client_frame(fd) < 0) {
+                logmsg("ws", "client disconnected (slot %d)", i);
+                close(fd);
+                atomic_store(&ws_clients[i], -1);
             }
         }
 
-        /* Build VU message with audio stats */
+        /* Send initial history to new clients */
+        for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+            int fd = atomic_load(&ws_clients[i]);
+            if (fd < 0 || !client_needs_init[i]) continue;
+            client_needs_init[i] = 0;
+
+            /* Send recent tracks */
+            char timestamps[WS_INITIAL_TRACKS][32];
+            char artists[WS_INITIAL_TRACKS][256];
+            char titles[WS_INITIAL_TRACKS][256];
+            char sources[WS_INITIAL_TRACKS][16];
+            int confidences[WS_INITIAL_TRACKS];
+            char isrcs[WS_INITIAL_TRACKS][64];
+            int count = db_get_recent_tracks(app, WS_INITIAL_TRACKS, timestamps, artists, titles, sources, confidences, isrcs);
+
+            if (count > 0) {
+                char msg[4096];
+                int len = snprintf(msg, sizeof(msg), "{\"event\":\"history\",\"data\":[");
+                for (int t = 0; t < count; t++) {
+                    char ea[512], et[512], ei[128];
+                    json_escape(artists[t], ea, sizeof(ea));
+                    json_escape(titles[t], et, sizeof(et));
+                    json_escape(isrcs[t], ei, sizeof(ei));
+                    if (t > 0) len += snprintf(msg + len, sizeof(msg) - len, ",");
+                    len += snprintf(msg + len, sizeof(msg) - len,
+                        "{\"ts\":\"%s\",\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d,\"isrc\":\"%s\"}",
+                        timestamps[t], ea, et, sources[t], confidences[t], ei);
+                }
+                len += snprintf(msg + len, sizeof(msg) - len, "]}");
+                ws_send_text(fd, msg, len);
+            }
+        }
+
+        /* Build VU/stats message */
         uint16_t vu_l = atomic_load_explicit(&app->vu_left, memory_order_relaxed);
         uint16_t vu_r = atomic_load_explicit(&app->vu_right, memory_order_relaxed);
         uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
         uint64_t frames = atomic_load_explicit(&app->aw.total_written, memory_order_relaxed);
         uint64_t disk_bytes = atomic_load_explicit(&app->aw.bytes_on_disk, memory_order_relaxed);
         int is_rec = atomic_load_explicit(&app->is_recording, memory_order_relaxed);
-        
-        /* Get system load average */
+
         double loadavg[1] = {0};
         getloadavg(loadavg, 1);
-        
-        /* Get memory stats */
+
         uint64_t mem_used = 0, mem_total = 0;
 #ifdef __APPLE__
         struct task_basic_info info;
-        mach_msg_type_number_t count = TASK_BASIC_INFO_COUNT;
-        if (task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&info, &count) == KERN_SUCCESS) {
+        mach_msg_type_number_t mcount = TASK_BASIC_INFO_COUNT;
+        if (task_info(mach_task_self(), TASK_BASIC_INFO, (task_info_t)&info, &mcount) == KERN_SUCCESS)
             mem_used = info.resident_size;
-        }
         int mib[2] = {CTL_HW, HW_MEMSIZE};
-        size_t len = sizeof(mem_total);
-        sysctl(mib, 2, &mem_total, &len, NULL, 0);
+        size_t mlen = sizeof(mem_total);
+        sysctl(mib, 2, &mem_total, &mlen, NULL, 0);
 #else
-        /* Process RSS from /proc/self/status (not system-wide) */
         FILE *sf = fopen("/proc/self/status", "r");
         if (sf) {
             char line[128];
@@ -217,12 +429,10 @@ void *ws_main(void *arg) {
             fclose(sf);
         }
         struct sysinfo si;
-        if (sysinfo(&si) == 0) {
+        if (sysinfo(&si) == 0)
             mem_total = si.totalram * si.mem_unit;
-        }
 #endif
-        
-        /* Get disk space */
+
         uint64_t disk_free = 0, disk_total = 0;
         const char *outdir = app->cfg.outdir ? app->cfg.outdir : ".";
         struct statvfs svfs;
@@ -230,215 +440,152 @@ void *ws_main(void *arg) {
             disk_free = (uint64_t)svfs.f_bavail * svfs.f_frsize;
             disk_total = (uint64_t)svfs.f_blocks * svfs.f_frsize;
         }
-        
+
         char vu_msg[512];
-        int vu_len = snprintf(vu_msg, sizeof(vu_msg), 
-            "data: {\"l\":%u,\"r\":%u,\"lost\":%llu,\"frames\":%llu,\"rate\":%u,\"ch\":%u,"
+        int vu_len = snprintf(vu_msg, sizeof(vu_msg),
+            "{\"event\":\"vu\",\"l\":%u,\"r\":%u,\"lost\":%llu,\"frames\":%llu,\"rate\":%u,\"ch\":%u,"
             "\"rec\":%d,\"load\":%.2f,\"written\":%llu,\"mem\":%llu,\"memtot\":%llu,"
-            "\"diskfree\":%llu,\"disktot\":%llu,\"fmt\":\"%s\"}\n\n", 
+            "\"diskfree\":%llu,\"disktot\":%llu,\"fmt\":\"%s\"}",
             vu_l, vu_r, (unsigned long long)lost, (unsigned long long)frames,
             app->cfg.rate, app->cfg.channels, is_rec, loadavg[0],
             (unsigned long long)disk_bytes, (unsigned long long)mem_used,
             (unsigned long long)mem_total, (unsigned long long)disk_free,
             (unsigned long long)disk_total, app->cfg.format ? app->cfg.format : "wav");
 
+        ws_broadcast_text(vu_msg, vu_len);
+
         /* Check for track change */
         uint32_t track_seq = atomic_load_explicit(&app->track_seq, memory_order_acquire);
-        char track_msg[1536];
-        int track_len = 0;
         if (track_seq != last_track_seq) {
             last_track_seq = track_seq;
             pthread_mutex_lock(&app->db_mu);
-            /* Escape strings for safe JSON output */
-            char escaped_artist[256];
-            char escaped_title[256];
-            char escaped_isrc[128];
-            json_escape(app->last_artist, escaped_artist, sizeof(escaped_artist));
-            json_escape(app->last_title, escaped_title, sizeof(escaped_title));
-            json_escape(app->last_isrc, escaped_isrc, sizeof(escaped_isrc));
-            track_len = snprintf(track_msg, sizeof(track_msg),
-                                 "event: track\ndata: {\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d,\"isrc\":\"%s\"}\n\n",
-                                 escaped_artist, escaped_title, app->last_source, app->last_confidence, escaped_isrc);
+            char ea[256], et[256], ei[128];
+            json_escape(app->last_artist, ea, sizeof(ea));
+            json_escape(app->last_title, et, sizeof(et));
+            json_escape(app->last_isrc, ei, sizeof(ei));
+            char msg[1536];
+            int len = snprintf(msg, sizeof(msg),
+                "{\"event\":\"track\",\"a\":\"%s\",\"t\":\"%s\",\"src\":\"%s\",\"conf\":%d,\"isrc\":\"%s\"}",
+                ea, et, app->last_source, app->last_confidence, ei);
             pthread_mutex_unlock(&app->db_mu);
+            ws_broadcast_text(msg, len);
         }
 
-        /* Send to all connected clients */
-        for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-            if (clients[i] < 0) continue;
-
-            ssize_t sent = send(clients[i], vu_msg, vu_len, MSG_NOSIGNAL);
-            if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                logmsg("ws", "client disconnected (slot %d)", i);
-                close(clients[i]);
-                clients[i] = -1;
-                continue;
-            }
-
-            if (track_len > 0) {
-                send(clients[i], track_msg, track_len, MSG_NOSIGNAL);
-            }
-        }
-
-        /* Build deck status message (every ~500ms) */
+        /* Deck status (every ~500ms) — still needed for confidence/track name data
+         * that requires C-side logic. Raw packets handle display-only fields. */
         static int deck_counter = 0;
-        if (++deck_counter >= 30) {  /* 30 * 16.7ms = ~500ms */
+        if (++deck_counter >= 30) {
             deck_counter = 0;
+
             char deck_msg[4096];
-            int deck_len = 0;
-            deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len,
-                                 "event: decks\ndata: [");
+            int deck_len = snprintf(deck_msg, sizeof(deck_msg), "{\"event\":\"decks\",\"data\":[");
             int first = 1;
             time_t now = time(NULL);
             for (int d = 0; d < MAX_DEVICES; d++) {
                 cdj_device_t *dev = &devices[d];
-                if (!dev->active) continue;
-                if (dev->device_type != DEVICE_TYPE_CDJ) continue;
-                if (now - dev->last_seen > 10) continue;  /* Stale */
-                
-                char escaped_title[256], escaped_artist[256], escaped_name[64], escaped_isrc[128];
-                json_escape(dev->track_title, escaped_title, sizeof(escaped_title));
-                json_escape(dev->track_artist, escaped_artist, sizeof(escaped_artist));
-                json_escape(dev->name, escaped_name, sizeof(escaped_name));
-                json_escape(dev->track_isrc, escaped_isrc, sizeof(escaped_isrc));
-                
+                if (!dev->active || dev->device_type != DEVICE_TYPE_CDJ) continue;
+                if (now - dev->last_seen > 10) continue;
+
+                char et[256], ea[256], en[64], ei[128];
+                json_escape(dev->track_title, et, sizeof(et));
+                json_escape(dev->track_artist, ea, sizeof(ea));
+                json_escape(dev->name, en, sizeof(en));
+                json_escape(dev->track_isrc, ei, sizeof(ei));
+
                 if (!first) deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, ",");
                 first = 0;
-                /* Calculate play duration */
-                int play_secs = 0;
-                if (dev->playing && dev->play_started > 0) {
-                    play_secs = (int)(now - dev->play_started);
-                }
-                /* Database status */
-                const char *db_src = "";
-                if (dev->usb_olib_fetched && find_onelibrary(dev->ip_addr, SLOT_USB))
-                    db_src = "OneLibrary";
-                else if (dev->usb_db_fetched)
-                    db_src = "PDB";
-                else if (dev->sd_olib_fetched && find_onelibrary(dev->ip_addr, SLOT_SD))
-                    db_src = "OneLibrary";
-                else if (dev->sd_db_fetched)
-                    db_src = "PDB";
 
-                /* Get confidence state for this deck */
                 deck_confidence_t dc;
                 confidence_get_deck(d, &dc);
-                int conf_pct = dc.score / 10;
-                int conf_accepted = dc.accepted;
-                const char *conf_src = confidence_source_string(dc.signals_seen);
 
                 deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len,
-                    "{\"n\":%d,\"name\":\"%s\",\"playing\":%d,\"on_air\":%d,"
-                    "\"on_air_known\":%d,"
-                    "\"title\":\"%s\",\"artist\":\"%s\",\"bpm\":%d,\"slot\":%d,"
-                    "\"isrc\":\"%s\",\"play_time\":%d,\"position_ms\":%u,\"track_length\":%u,"
-                    "\"rekordbox_id\":%u,\"db_src\":\"%s\","
-                    "\"usb\":%d,\"sd\":%d,"
-                    "\"beat\":%d,\"pitch\":%d,"
-                    "\"looping\":%d,\"loop_beats\":%d,"
-                    "\"key_note\":%d,\"key_scale\":%d,\"key_acc\":%d,"
-                    "\"master_tempo\":%d,\"src_player\":%d,"
+                    "{\"n\":%d,\"name\":\"%s\","
+                    "\"title\":\"%s\",\"artist\":\"%s\",\"isrc\":\"%s\","
+                    "\"rekordbox_id\":%u,"
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
-                    dev->device_num, escaped_name, dev->playing ? 1 : 0, dev->on_air ? 1 : 0,
-                    dev->on_air_available ? 1 : 0,
-                    escaped_title, escaped_artist, dev->bpm_raw, dev->track_slot,
-                    escaped_isrc, play_secs, dev->position_ms, dev->track_length_sec,
-                    dev->rekordbox_id, db_src,
-                    dev->usb_present ? 1 : 0, dev->sd_present ? 1 : 0,
-                    dev->beat_in_bar, dev->pitch_raw,
-                    dev->looping ? 1 : 0, dev->loop_beats,
-                    dev->key_note, dev->key_scale, dev->key_accidental,
-                    dev->master_tempo, dev->track_source_player,
-                    conf_pct, conf_accepted, conf_src);
+                    dev->device_num, en, et, ea, ei,
+                    dev->rekordbox_id,
+                    dc.score / 10, dc.accepted,
+                    confidence_source_string(dc.signals_seen));
             }
 
-            /* Append audio-only confidence as a lightweight entry for the
-             * identification panel (no deck card, just conf data) */
+            /* Audio-only confidence */
             deck_confidence_t audio_dc;
             confidence_get_audio(&audio_dc);
             if (audio_dc.title[0]) {
-                char esc_at[256], esc_aa[256];
-                json_escape(audio_dc.title, esc_at, sizeof(esc_at));
-                json_escape(audio_dc.artist, esc_aa, sizeof(esc_aa));
+                char at[256], aa[256];
+                json_escape(audio_dc.title, at, sizeof(at));
+                json_escape(audio_dc.artist, aa, sizeof(aa));
                 if (!first) deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, ",");
                 deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len,
                     "{\"n\":0,\"name\":\"Audio\",\"audio_only\":1,"
                     "\"title\":\"%s\",\"artist\":\"%s\","
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
-                    esc_at, esc_aa,
-                    audio_dc.score / 10, audio_dc.accepted,
+                    at, aa, audio_dc.score / 10, audio_dc.accepted,
                     confidence_source_string(audio_dc.signals_seen));
             }
 
-            deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, "]\n\n");
+            deck_len += snprintf(deck_msg + deck_len, sizeof(deck_msg) - deck_len, "]}");
+            ws_broadcast_text(deck_msg, deck_len);
 
-            /* Send deck status to all clients */
-            for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-                if (clients[i] >= 0) {
-                    send(clients[i], deck_msg, deck_len, MSG_NOSIGNAL);
-                }
-            }
-
-            /* Check for shazam state change and send update */
+            /* Shazam state */
             int cur_shazam_state = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
             int cur_confirms = (cur_shazam_state == SHAZAM_CONFIRMING) ? app->shazam_confirms : 0;
-            if (cur_shazam_state != last_shazam_state || 
+            if (cur_shazam_state != last_shazam_state ||
                 (cur_shazam_state == SHAZAM_CONFIRMING && cur_confirms != last_shazam_confirms)) {
                 last_shazam_state = cur_shazam_state;
                 last_shazam_confirms = cur_confirms;
-                char shazam_msg[1024];
-                int shazam_len;
+                char msg[1024];
+                int len;
                 if (cur_shazam_state == SHAZAM_CONFIRMING) {
                     pthread_mutex_lock(&app->db_mu);
-                    char esc_cand[1024];
-                    json_escape(app->shazam_candidate, esc_cand, sizeof(esc_cand));
-                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d,\"candidate\":\"%s\",\"confirms\":%d,\"needed\":%d,\"conf\":%d,\"cdj\":%s}\n\n",
-                        cur_shazam_state, esc_cand, app->shazam_confirms, app->shazam_confirms_needed,
-                        app->shazam_confidence, app->shazam_cdj_confirmed ? "true" : "false");
+                    char ec[1024];
+                    json_escape(app->shazam_candidate, ec, sizeof(ec));
+                    len = snprintf(msg, sizeof(msg),
+                        "{\"event\":\"shazam\",\"state\":%d,\"candidate\":\"%s\","
+                        "\"confirms\":%d,\"needed\":%d,\"conf\":%d,\"cdj\":%s}",
+                        cur_shazam_state, ec, app->shazam_confirms,
+                        app->shazam_confirms_needed, app->shazam_confidence,
+                        app->shazam_cdj_confirmed ? "true" : "false");
                     pthread_mutex_unlock(&app->db_mu);
                 } else {
                     pthread_mutex_lock(&app->db_mu);
-                    shazam_len = snprintf(shazam_msg, sizeof(shazam_msg),
-                        "event: shazam\ndata: {\"state\":%d,\"attempts\":%d}\n\n", cur_shazam_state, app->shazam_no_match_count);
+                    len = snprintf(msg, sizeof(msg),
+                        "{\"event\":\"shazam\",\"state\":%d,\"attempts\":%d}",
+                        cur_shazam_state, app->shazam_no_match_count);
                     pthread_mutex_unlock(&app->db_mu);
                 }
-                for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-                    if (clients[i] >= 0) {
-                        send(clients[i], shazam_msg, shazam_len, MSG_NOSIGNAL);
-                    }
-                }
+                ws_broadcast_text(msg, len);
             }
 
-            /* Send activity log messages to each client (per-client sequence tracking) */
+            /* Activity log */
             uint32_t cur_log_seq = atomic_load(&g_activity_log.sequence);
-            for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-                if (clients[i] < 0) continue;
+            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                int fd = atomic_load(&ws_clients[i]);
+                if (fd < 0) continue;
                 if (client_log_seq[i] >= cur_log_seq) continue;
 
                 char log_data[4096];
                 int log_count = activity_log_since(client_log_seq[i], log_data, sizeof(log_data));
                 client_log_seq[i] = cur_log_seq;
                 if (log_count > 0) {
-                    char log_msg[4200];
-                    int log_len = snprintf(log_msg, sizeof(log_msg),
-                        "event: log\ndata: %s\n\n", log_data);
-                    ssize_t sent = send(clients[i], log_msg, log_len, MSG_NOSIGNAL);
-                    if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                        close(clients[i]);
-                        clients[i] = -1;
-                    }
+                    char msg[4200];
+                    int len = snprintf(msg, sizeof(msg),
+                        "{\"event\":\"log\",\"data\":%s}", log_data);
+                    ws_send_text(fd, msg, len);
                 }
             }
         }
 
         /* 60 Hz update rate */
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 16666666}; /* ~16.7ms */
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 16666666};
         nanosleep(&ts, NULL);
     }
 
     /* Cleanup */
-    for (int i = 0; i < SSE_MAX_CLIENTS; i++) {
-        if (clients[i] >= 0) close(clients[i]);
+    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+        int fd = atomic_load(&ws_clients[i]);
+        if (fd >= 0) close(fd);
     }
     close(server_fd);
     unlink(socket_path);
