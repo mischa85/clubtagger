@@ -284,7 +284,7 @@ static int ws_handle_client_frame(int fd) {
 
 void *ws_main(void *arg) {
     App *app = (App *)arg;
-    const char *socket_path = app->cfg.sse_socket;
+    const char *socket_path = app->cfg.ws_socket;
 
     /* Create Unix socket */
     int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
