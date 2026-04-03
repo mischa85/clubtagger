@@ -682,7 +682,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         /* Pitch from status packet: 0x100000 = 0%, 0x000000 = -100%, 0x200000 = +100%
          * Store as percentage * 100 (e.g. +3.26% = 326) for easy UI display */
         uint32_t pitch_raw = BE32_TO_HOST(pkt->pitch1_be);
-        dev->pitch_raw = (int32_t)((int64_t)(pitch_raw - 0x100000) * 10000 / 0x100000);
+        dev->pitch_raw = (int32_t)(((int64_t)pitch_raw - 0x100000) * 10000 / 0x100000);
 
         dev->beat_number = BE32_TO_HOST(pkt->beat_num_be);
         dev->beat_in_bar = pkt->beat_in_bar;
