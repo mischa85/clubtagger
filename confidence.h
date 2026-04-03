@@ -42,11 +42,11 @@ typedef enum {
  * ============================================================================
  */
 
-#define W_CDJ_LOADED        150
+#define W_CDJ_LOADED        100   /* Track name resolved — hint, not proof */
 #define W_CDJ_PLAYING        50
 #define W_CDJ_DURATION       50   /* Per 10s tick — the clock that proves commitment */
 #define W_CDJ_ON_AIR        100
-#define W_CDJ_ON_AIR_EDGE   150   /* Fader up — strong boost but needs duration too */
+#define W_CDJ_ON_AIR_EDGE   100   /* Fader up — important but needs duration to confirm */
 #define W_SHAZAM_MATCH      100   /* Single hit is just a hint (may be false positive) */
 #define W_SHAZAM_CONFIRM    200   /* Consistency is the real signal */
 #define W_ISRC_MATCH        300   /* CDJ + Shazam ISRC agree — very strong */
