@@ -24,7 +24,7 @@ SRC      := main.c \
             shazam/id_thread.c \
             writer/async_writer.c \
             writer/writer_thread.c \
-            server/sse_server.c \
+            server/ws_server.c \
             db/database.c
 
 # Pro DJ Link CDJ integration (optional, enabled with --prolink-interface)

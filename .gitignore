@@ -28,3 +28,4 @@ core.*
 # audio captures (already above but ensure coverage)
 *.flac
 *.wav
+log*.txt

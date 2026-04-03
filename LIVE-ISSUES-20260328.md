@@ -194,6 +194,18 @@ plus CDJ_LOADED exceeds threshold immediately.
 7. **Issue 2** (OneLibrary retry after PDB success) — Easy fix, reduces noise.
 8. **Issue 4** (PDB/OneLibrary ID mismatch) — Needs investigation.
 
+## Future: Raw packet forwarding to Web UI
+
+Consider adding a WebSocket alongside SSE that forwards raw Pro DJ Link
+packets (binary) to the browser. JS parses with DataView using known offsets.
+
+Benefits: real-time beat animation (per-beat, not 500ms poll), 30ms position
+updates (CDJ-3000), protocol changes only need JS updates. SSE remains for
+curated track/confidence data. ~10KB/s bandwidth on LAN is fine.
+
+Requires SSE→WebSocket migration for the real-time channel. Keep SSE for
+track events/history/log.
+
 ## Additional observations from full log analysis
 
 - **2-hour total blackout** (00:10–02:05): zero tracks tagged. Issue 5 + Issue 3 cascade.

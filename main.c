@@ -6,7 +6,7 @@
 #include "common.h"
 #include "db/database.h"
 #include "shazam/id_thread.h"
-#include "server/sse_server.h"
+#include "server/ws_server.h"
 #include "types.h"
 #include "confidence.h"
 #include "writer/writer_thread.h"
@@ -505,7 +505,7 @@ int main(int argc, char **argv) {
     
     /* Start SSE server thread (if configured) */
     if (app.cfg.sse_socket) {
-        if (pthread_create(&app.th_sse, NULL, sse_main, &app) != 0) {
+        if (pthread_create(&app.th_sse, NULL, ws_main, &app) != 0) {
             logmsg("main", "pthread sse failed");
             g_running = 0;
             goto cleanup;
