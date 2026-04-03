@@ -210,7 +210,7 @@ void *id_main(void *arg) {
                             if (prolink_matches_fingerprint(dd->track_title, dd->track_artist,
                                                             title, artist)) {
                                 confidence_signal(di, SIG_FUZZY_MATCH, 0,
-                                                  NULL, NULL, NULL, 0);
+                                                  artist, title, isrc, 0);
                                 matched_deck = di;
                                 break;
                             }
