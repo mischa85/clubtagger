@@ -510,12 +510,25 @@
 
     let ws = null;
     let reconnectTimeout = null;
+    let wsToken = null;
+
+    /* Fetch auth token (served as static file, behind basic auth) */
+    async function fetchToken() {
+        try {
+            const resp = await fetch('/ws-token.json');
+            if (resp.ok) {
+                const data = await resp.json();
+                wsToken = data.token;
+            }
+        } catch (e) { /* Token fetch failed — connect without */ }
+    }
 
     function connect() {
         if (ws) ws.close();
 
         const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-        ws = new WebSocket(proto + '//' + location.host + '/ws');
+        const tokenParam = wsToken ? '?token=' + wsToken : '';
+        ws = new WebSocket(proto + '//' + location.host + '/ws' + tokenParam);
         ws.binaryType = 'arraybuffer';
 
         ws.onopen = function() {
@@ -594,6 +607,6 @@
         };
     }
 
-    // Start
-    connect();
+    // Start: fetch token then connect
+    fetchToken().then(connect);
 })();

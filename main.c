@@ -98,6 +98,7 @@ static void usage(const char *argv0) {
             "  --db tracks.db         SQLite database for track logging\n"
             "  --timezone TZ          Override timezone (default Europe/Amsterdam)\n"
             "  --ws-socket PATH       Unix socket path for WebSocket server (VU meter/tracks)\n"
+            "  --ws-token TOKEN       WebSocket auth token (auto-generated if not set)\n"
 #ifdef HAVE_PCAP
             "  --pcap-buffer-mb N     Pcap kernel buffer size in MB (default: OS default)\n"
 #endif
@@ -168,6 +169,8 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             cfg->pcap_buffer_mb = (unsigned)strtoul(argv[++i], NULL, 10);
         else if (!strcmp(a, "--ws-socket") && i + 1 < argc)
             cfg->ws_socket = argv[++i];
+        else if (!strcmp(a, "--ws-token") && i + 1 < argc)
+            cfg->ws_token = argv[++i];
         else if (!strcmp(a, "--prolink-interface") && i + 1 < argc)
             cfg->prolink_interface = argv[++i];
         else if (!strcmp(a, "--prolink-passive"))
@@ -505,6 +508,28 @@ int main(int argc, char **argv) {
     
     /* Start WebSocket server thread (if configured) */
     if (app.cfg.ws_socket) {
+        /* Auto-generate token if not set */
+        if (!app.cfg.ws_token) {
+            static char auto_token[33];
+            uint8_t rnd[16];
+            random_bytes(rnd, sizeof(rnd));
+            for (int i = 0; i < 16; i++)
+                snprintf(auto_token + i * 2, 3, "%02x", rnd[i]);
+            app.cfg.ws_token = auto_token;
+        }
+        logmsg("main", "WebSocket token: %s", app.cfg.ws_token);
+        /* Write token to file for nginx to serve (auth-protected) */
+        {
+            const char *webroot = getenv("WEB_ROOT");
+            if (!webroot) webroot = "/var/www/clubtagger";
+            char token_path[256];
+            snprintf(token_path, sizeof(token_path), "%s/ws-token.json", webroot);
+            FILE *tf = fopen(token_path, "w");
+            if (tf) {
+                fprintf(tf, "{\"token\":\"%s\"}\n", app.cfg.ws_token);
+                fclose(tf);
+            }
+        }
         if (pthread_create(&app.th_ws, NULL, ws_main, &app) != 0) {
             logmsg("main", "pthread ws failed");
             g_running = 0;

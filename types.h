@@ -99,6 +99,7 @@ typedef struct {
     unsigned    pcap_buffer_mb;    /* pcap kernel buffer size in MB (0 = default) */
     const char *slink_backend;     /* "pcap" or "afxdp" */
     const char *ws_socket;         /* Unix socket path for WebSocket server (NULL = disabled) */
+    const char *ws_token;          /* WebSocket auth token (NULL = no auth) */
     const char *prolink_interface; /* Network interface for CDJ sniffing (NULL = disabled) */
     int         prolink_passive;   /* SPAN port mode: no registration, eavesdrop only */
     const char *olib_key;          /* OneLibrary decryption passphrase (NULL = disabled) */
