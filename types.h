@@ -98,7 +98,7 @@ typedef struct {
     const char *format;            /* output format: "wav" or "flac" */
     unsigned    pcap_buffer_mb;    /* pcap kernel buffer size in MB (0 = default) */
     const char *slink_backend;     /* "pcap" or "afxdp" */
-    const char *sse_socket;        /* Unix socket path for SSE server (NULL = disabled) */
+    const char *ws_socket;         /* Unix socket path for WebSocket server (NULL = disabled) */
     const char *prolink_interface; /* Network interface for CDJ sniffing (NULL = disabled) */
     int         prolink_passive;   /* SPAN port mode: no registration, eavesdrop only */
     const char *olib_key;          /* OneLibrary decryption passphrase (NULL = disabled) */
@@ -192,8 +192,8 @@ typedef struct {
     uint8_t    *id_buf;            /* pre-allocated id_main audio window */
     int16_t    *id_buf_s16;        /* pre-allocated id_main s16 conversion buffer */
     size_t      id_buf_frames;     /* size of id_buf in frames */
-    /* SSE server state */
-    pthread_t   th_sse;
+    /* WebSocket server state */
+    pthread_t   th_ws;
     _Atomic uint16_t vu_left;      /* current VU level left channel (0-32767) */
     _Atomic uint16_t vu_right;     /* current VU level right channel (0-32767) */
     _Atomic uint32_t track_seq;    /* monotonic counter, bumps on new track */

@@ -97,7 +97,7 @@ static void usage(const char *argv0) {
             "Database and output:\n"
             "  --db tracks.db         SQLite database for track logging\n"
             "  --timezone TZ          Override timezone (default Europe/Amsterdam)\n"
-            "  --sse-socket PATH      Unix socket path for SSE server (VU meter/tracks)\n"
+            "  --ws-socket PATH       Unix socket path for WebSocket server (VU meter/tracks)\n"
 #ifdef HAVE_PCAP
             "  --pcap-buffer-mb N     Pcap kernel buffer size in MB (default: OS default)\n"
 #endif
@@ -166,8 +166,10 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             cfg->db_path = argv[++i];
         else if (!strcmp(a, "--pcap-buffer-mb") && i + 1 < argc)
             cfg->pcap_buffer_mb = (unsigned)strtoul(argv[++i], NULL, 10);
-        else if (!strcmp(a, "--sse-socket") && i + 1 < argc)
-            cfg->sse_socket = argv[++i];
+        else if (!strcmp(a, "--ws-socket") && i + 1 < argc)
+            cfg->ws_socket = argv[++i];
+        else if (!strcmp(a, "--sse-socket") && i + 1 < argc)  /* Legacy alias */
+            cfg->ws_socket = argv[++i];
         else if (!strcmp(a, "--prolink-interface") && i + 1 < argc)
             cfg->prolink_interface = argv[++i];
         else if (!strcmp(a, "--prolink-passive"))
@@ -472,7 +474,7 @@ int main(int argc, char **argv) {
     }
 
     /* Track which threads are running */
-    int cap_running = 0, id_running = 0, wrt_running = 0, sse_running = 0;
+    int cap_running = 0, id_running = 0, wrt_running = 0, ws_running = 0;
 
     /* Start capture thread (only if audio needed) */
     if (need_audio) {
@@ -503,14 +505,14 @@ int main(int argc, char **argv) {
         wrt_running = 1;
     }
     
-    /* Start SSE server thread (if configured) */
-    if (app.cfg.sse_socket) {
-        if (pthread_create(&app.th_sse, NULL, ws_main, &app) != 0) {
-            logmsg("main", "pthread sse failed");
+    /* Start WebSocket server thread (if configured) */
+    if (app.cfg.ws_socket) {
+        if (pthread_create(&app.th_ws, NULL, ws_main, &app) != 0) {
+            logmsg("main", "pthread ws failed");
             g_running = 0;
             goto cleanup;
         }
-        sse_running = 1;
+        ws_running = 1;
     }
 
     /* Start Pro DJ Link CDJ sniffer thread (if CDJ tagging enabled) */
@@ -581,7 +583,7 @@ cleanup:
     if (cap_running) pthread_join(app.th_cap, NULL);
     if (id_running) pthread_join(app.th_id, NULL);
     if (wrt_running) pthread_join(app.th_wrt, NULL);
-    if (sse_running) pthread_join(app.th_sse, NULL);
+    if (ws_running) pthread_join(app.th_ws, NULL);
     
     if (app.prolink) {
         prolink_shutdown(app.prolink);
