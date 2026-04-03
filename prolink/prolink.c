@@ -281,16 +281,43 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             if (dev2) {
                 dev2->last_seen = time(NULL);
                 dev2->ip_addr = src_ip;
-                /* USB/SD presence — valid at fixed offsets in all variants */
+
+                /* DEBUG: dump media bytes from zero-data variant too */
+                {
+                    static time_t last_zd_dump[MAX_DEVICES] = {0};
+                    static uint8_t prev_zd[MAX_DEVICES][16] = {{0}};
+                    int zidx = (int)(dev2 - devices);
+                    time_t now_zd = time(NULL);
+                    uint8_t zc[16] = {0};
+                    if (len > 0xb9) {
+                        zc[0] = data[0x6a]; zc[1] = data[0x6b];
+                        zc[2] = data[0x6f]; zc[3] = data[0x73];
+                        zc[4] = data[0x75]; zc[5] = data[0xb7];
+                        zc[6] = data[0xb8]; zc[7] = data[0xb9];
+                        zc[8] = data[0x37]; zc[9] = data[0x29]; zc[10] = data[0x28];
+                    }
+                    int zchanged = memcmp(zc, prev_zd[zidx], sizeof(zc)) != 0;
+                    if (zchanged || (now_zd - last_zd_dump[zidx] >= 5)) {
+                        logmsg("cdj", "Dev%d [media-zd] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
+                               "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
+                               device_num, zc[0], zc[1], zc[2], zc[3], zc[4],
+                               zc[5], zc[6], zc[7], zc[8], zc[10], zc[9],
+                               zchanged ? " *** CHANGED" : "");
+                        memcpy(prev_zd[zidx], zc, sizeof(zc));
+                        last_zd_dump[zidx] = now_zd;
+                    }
+                }
+
+                /* USB/SD presence — read from usb_state at 0x6f */
                 uint8_t old_usb2 = dev2->usb_present;
                 uint8_t old_sd2 = dev2->sd_present;
                 dev2->usb_present = (pkt->usb_state != MEDIA_STATE_NONE);
                 dev2->sd_present = (pkt->sd_state != MEDIA_STATE_NONE);
                 dev2->usb_local_raw = pkt->usb_state;
                 dev2->sd_local_raw = pkt->sd_state;
-                /* Media byte logging (verbose only) */
-                if ((dev2->usb_present != old_usb2 || dev2->sd_present != old_sd2) && verbose) {
-                    logmsg("cdj", "Dev%d media: Ul=0x%02x Sl=0x%02x L=0x%02x Mp=0x%02x "
+                /* Log on change */
+                if ((dev2->usb_present != old_usb2 || dev2->sd_present != old_sd2)) {
+                    logmsg("cdj", "Dev%d media change: Ul=0x%02x Sl=0x%02x L=0x%02x Mp=0x%02x "
                            "Dr=%d Sr=0x%02x tsrc=0x%02x",
                            device_num,
                            pkt->usb_state, pkt->sd_state, pkt->link_available,
@@ -382,6 +409,40 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
         
+        /* DEBUG: dump media-relevant bytes on change or every 5 seconds.
+         * This helps us find which fields actually indicate USB insert/remove. */
+        {
+            static time_t last_media_dump[MAX_DEVICES] = {0};
+            static uint8_t prev_bytes[MAX_DEVICES][16] = {{0}};
+            int didx = (int)(dev - devices);
+            time_t now_dbg = time(NULL);
+
+            /* Collect key bytes: 0x6a-0x6b (activity), 0x6f (Ul), 0x73 (Sl),
+             * 0x75 (L), 0xb7 (Mp), 0xb8-0xb9 (unsafe eject) */
+            uint8_t cur[16] = {0};
+            if (len > 0xb9) {
+                cur[0] = data[0x6a]; cur[1] = data[0x6b];  /* Ua, Sa */
+                cur[2] = data[0x6f]; cur[3] = data[0x73];  /* Ul, Sl */
+                cur[4] = data[0x75];                         /* L */
+                cur[5] = data[0xb7];                         /* Mp */
+                cur[6] = data[0xb8]; cur[7] = data[0xb9];  /* Ue, Se */
+                cur[8] = data[0x37];                         /* tsrc */
+                cur[9] = data[0x29];                         /* Sr */
+                cur[10] = data[0x28];                        /* Dr */
+            }
+
+            int changed = memcmp(cur, prev_bytes[didx], sizeof(cur)) != 0;
+            if (changed || (now_dbg - last_media_dump[didx] >= 5)) {
+                logmsg("cdj", "Dev%d [media] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
+                       "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
+                       device_num, cur[0], cur[1], cur[2], cur[3], cur[4],
+                       cur[5], cur[6], cur[7], cur[8], cur[10], cur[9],
+                       changed ? " *** CHANGED" : "");
+                memcpy(prev_bytes[didx], cur, sizeof(cur));
+                last_media_dump[didx] = now_dbg;
+            }
+        }
+
         /* Detect media insertion and proactively fetch databases */
         uint8_t old_usb = dev->usb_present;
         uint8_t old_sd = dev->sd_present;
@@ -389,16 +450,6 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         dev->sd_present = (pkt->sd_state != MEDIA_STATE_NONE);
         dev->usb_local_raw = pkt->usb_state;
         dev->sd_local_raw = pkt->sd_state;
-
-        /* Media byte logging (verbose only) */
-        if ((dev->usb_present != old_usb || dev->sd_present != old_sd) && verbose) {
-            logmsg("cdj", "Dev%d media: Ul=0x%02x Sl=0x%02x L=0x%02x Mp=0x%02x "
-                   "Dr=%d Sr=0x%02x tsrc=0x%02x",
-                    device_num,
-                    pkt->usb_state, pkt->sd_state, pkt->link_available,
-                    pkt->media_presence,
-                    dev->track_source_player, pkt->track_slot, pkt->track_menu);
-        }
         
         /* USB inserted */
         if (dev->usb_present && !old_usb) {
