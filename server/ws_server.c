@@ -1,7 +1,11 @@
 /*
- * sse_server.c - Server-Sent Events for VU meter and track updates
+ * ws_server.c - WebSocket server for real-time CDJ data and track updates
+ *
+ * Replaces the former SSE server. Single WebSocket connection per client:
+ * - Binary frames: raw Pro DJ Link packets (forwarded from prolink thread)
+ * - Text frames: JSON events (track, history, log, shazam, VU meters)
  */
-#include "sse_server.h"
+#include "ws_server.h"
 #include "../common.h"
 #include "../prolink/cdj_types.h"
 #include "../prolink/onelibrary.h"
@@ -39,14 +43,14 @@ static const char *SSE_HEADERS =
     "Access-Control-Allow-Origin: *\r\n"
     "\r\n";
 
-void *sse_main(void *arg) {
+void *ws_main(void *arg) {
     App *app = (App *)arg;
     const char *socket_path = app->cfg.sse_socket;
 
     /* Create Unix socket */
     int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (server_fd < 0) {
-        logmsg("sse", "socket() failed: %s", strerror(errno));
+        logmsg("ws", "socket() failed: %s", strerror(errno));
         return NULL;
     }
 
@@ -58,7 +62,7 @@ void *sse_main(void *arg) {
     snprintf(addr.sun_path, sizeof(addr.sun_path), "%s", socket_path);
 
     if (bind(server_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        logmsg("sse", "bind() failed: %s", strerror(errno));
+        logmsg("ws", "bind() failed: %s", strerror(errno));
         close(server_fd);
         return NULL;
     }
@@ -67,7 +71,7 @@ void *sse_main(void *arg) {
     chmod(socket_path, 0666);
 
     if (listen(server_fd, 8) < 0) {
-        logmsg("sse", "listen() failed: %s", strerror(errno));
+        logmsg("ws", "listen() failed: %s", strerror(errno));
         close(server_fd);
         return NULL;
     }
@@ -75,7 +79,7 @@ void *sse_main(void *arg) {
     /* Set non-blocking for accept */
     fcntl(server_fd, F_SETFL, O_NONBLOCK);
 
-    logmsg("sse", "started: socket=%s", socket_path);
+    logmsg("ws", "started: socket=%s", socket_path);
 
     /* Simple client tracking - max 8 concurrent clients */
 #define SSE_MAX_CLIENTS 8
@@ -112,13 +116,13 @@ void *sse_main(void *arg) {
                         client_needs_init[i] = 1;  /* Mark for initial data send */
                         client_log_seq[i] = 0;     /* Send full log buffer on connect */
                         fcntl(client_fd, F_SETFL, O_NONBLOCK);
-                        logmsg("sse", "client connected (slot %d)", i);
+                        logmsg("ws", "client connected (slot %d)", i);
                         added = 1;
                         break;
                     }
                 }
                 if (!added) {
-                    logmsg("sse", "max clients reached, rejecting");
+                    logmsg("ws", "max clients reached, rejecting");
                     close(client_fd);
                 }
             }
@@ -264,7 +268,7 @@ void *sse_main(void *arg) {
 
             ssize_t sent = send(clients[i], vu_msg, vu_len, MSG_NOSIGNAL);
             if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-                logmsg("sse", "client disconnected (slot %d)", i);
+                logmsg("ws", "client disconnected (slot %d)", i);
                 close(clients[i]);
                 clients[i] = -1;
                 continue;
@@ -438,6 +442,6 @@ void *sse_main(void *arg) {
     }
     close(server_fd);
     unlink(socket_path);
-    logmsg("sse", "exit");
+    logmsg("ws", "exit");
     return NULL;
 }
