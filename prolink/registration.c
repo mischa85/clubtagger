@@ -248,13 +248,18 @@ void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_nam
     logmsg("cdj", "⚠️ Slot %d conflict with %s — yielding",
            our_device_num, device_name ? device_name : "unknown");
 
-    /* Clear our device entry so the real CDJ is logged as new */
-    cdj_device_t *old = find_device(conflicting_device_num);
-    if (old) {
-        memset(old, 0, sizeof(*old));
+    /* Update device entry to reflect the real CDJ (not CLUBTAGGER).
+     * This ensures find_free_slot sees the slot as occupied. */
+    cdj_device_t *dev = find_device(conflicting_device_num);
+    if (dev && device_name) {
+        strncpy(dev->name, device_name, sizeof(dev->name) - 1);
+        dev->device_type = DEVICE_TYPE_CDJ;
+        dev->last_seen = time(NULL);
+        logmsg("cdj", "🔗 Device %d: %s connected @ %s",
+               conflicting_device_num, device_name, ip_to_str(dev->ip_addr));
     }
 
-    /* Release our slot so find_free_slot won't skip it */
+    /* Release our slot so find_free_slot won't return it */
     our_device_num = 0;
 
     /* Pick a new slot from what we already know about the network */
