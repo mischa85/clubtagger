@@ -238,39 +238,36 @@ void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_nam
     if (our_device_num == 0 || conflicting_device_num != our_device_num) {
         return;
     }
-    
+
     /* Ignore our own keepalives */
     if (device_name && (strstr(device_name, "CLUBTAGGER") != NULL ||
                         strstr(device_name, "rekordbox") != NULL)) {
         return;
     }
-    
-    log_message("[REG] ⚠️  Slot %d conflict with %s - finding new slot...",
-                our_device_num, device_name ? device_name : "unknown device");
-    
-    /* Mark our old slot as occupied (so find_free_slot won't pick it) */
-    /* The device table should already be updated from the keepalive */
-    
-    /* Find a new free slot */
+
+    logmsg("cdj", "⚠️ Slot %d conflict with %s — yielding",
+           our_device_num, device_name ? device_name : "unknown");
+
+    /* Release our slot so find_free_slot won't skip it */
+    our_device_num = 0;
+
+    /* Pick a new slot from what we already know about the network */
     uint8_t new_slot = find_free_slot();
     if (new_slot == 0) {
-        log_message("[REG] No free slots available (even slot 7 taken!), going passive");
-        our_device_num = 0;
+        logmsg("cdj", "No free slots — going passive");
         registration_state = REG_PASSIVE;
+        auto_passive = 1;
         return;
     }
-    
-    if (new_slot > get_max_players()) {
-        log_message("[REG] ✅ Switched from slot %d to passive slot %d (NFS only, no dbserver)",
-                    our_device_num, new_slot);
-    } else {
-        log_message("[REG] ✅ Switched from slot %d to slot %d",
-                    our_device_num, new_slot);
-    }
+
     our_device_num = new_slot;
-    keepalives_sent_active = 0;  /* Reset keepalive counter for new slot */
-    
-    /* Send immediate keepalive on new slot */
+    keepalives_sent_active = 0; /* Trigger burst of 3 rapid keepalives */
+
+    logmsg("cdj", "✅ Re-registered on slot %d%s",
+           new_slot,
+           new_slot > get_max_players() ? " (NFS only, no dbserver)" : "");
+
+    /* Send first keepalive immediately to announce new slot */
     if (capture_interface) {
         send_prolink_keepalive(capture_interface);
     }
