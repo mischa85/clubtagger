@@ -42,7 +42,7 @@ typedef enum {
  * ============================================================================
  */
 
-#define W_CDJ_LOADED        100   /* Track name resolved — hint, not proof */
+#define W_CDJ_LOADED        200   /* Database-confirmed track — authoritative source */
 #define W_CDJ_PLAYING        50
 #define W_CDJ_DURATION       50   /* Per 10s tick — the clock that proves commitment */
 #define W_CDJ_ON_AIR        100
@@ -51,7 +51,7 @@ typedef enum {
 #define W_SHAZAM_CONFIRM    200   /* Consistency is the real signal */
 #define W_ISRC_MATCH        300   /* CDJ + Shazam ISRC agree — very strong */
 #define W_FUZZY_MATCH       200   /* CDJ + Shazam title/artist match */
-#define W_SHAZAM_DISAGREE  -150   /* Scaled by confidence — consistent disagreement outpaces duration */
+#define W_SHAZAM_DISAGREE   -75   /* Mild penalty — Shazam often hears the other deck during transitions */
 #define W_SHAZAM_NO_MATCH   -10   /* Very mild — Shazam often misses niche tracks */
 #define W_CDJ_OFF_AIR      -150   /* Fader down — no longer audible */
 

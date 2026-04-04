@@ -39,7 +39,7 @@ Each deck accumulates a score (0-1000) from weighted signals:
 
 | Signal | Weight | When |
 |--------|--------|------|
-| CDJ_LOADED | +150 | Track metadata resolved from database |
+| CDJ_LOADED | +200 | Track metadata resolved from database |
 | CDJ_PLAYING | +50 | Deck started playing (fires once per track, not per cue) |
 | CDJ_DURATION | +50/10s | Continuous playback (cap 15 ticks). Only counts from name resolve. |
 | CDJ_ON_AIR | +100 | DJM reports deck on-air |
@@ -48,7 +48,7 @@ Each deck accumulates a score (0-1000) from weighted signals:
 | SHAZAM_CONFIRM | +200 | Consecutive Shazam match (scaled by confidence) |
 | ISRC_MATCH | +300 | ISRC match CDJ+Shazam |
 | FUZZY_MATCH | +200 | Title+artist match CDJ+Shazam |
-| SHAZAM_DISAGREE | -150 | Different track returned (scaled by confidence) |
+| SHAZAM_DISAGREE | -75 | Different track returned — mild, Shazam often hears the other deck |
 | SHAZAM_NO_MATCH | -10 | Shazam found nothing |
 | CDJ_OFF_AIR | -150 | Fader down |
 
