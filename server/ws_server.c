@@ -364,11 +364,63 @@ void *ws_main(void *arg) {
             }
         }
 
-        /* ── Slow updates (~1 Hz): decks, shazam, log, system stats ────── */
+        /* ── Event-driven updates (cheap atomic checks, send on change) ── */
+
+        /* Shazam state */
+        {
+            int ss = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
+            int sc = (ss == SHAZAM_CONFIRMING) ? app->shazam_confirms : 0;
+            if (ss != last_shazam_state ||
+                (ss == SHAZAM_CONFIRMING && sc != last_shazam_confirms)) {
+                last_shazam_state = ss;
+                last_shazam_confirms = sc;
+                char msg[1024];
+                int len;
+                pthread_mutex_lock(&app->db_mu);
+                if (ss == SHAZAM_CONFIRMING) {
+                    char ec[1024];
+                    json_escape(app->shazam_candidate, ec, sizeof(ec));
+                    len = snprintf(msg, sizeof(msg),
+                        "{\"event\":\"shazam\",\"state\":%d,\"candidate\":\"%s\","
+                        "\"confirms\":%d,\"needed\":%d,\"conf\":%d,\"cdj\":%s}",
+                        ss, ec, app->shazam_confirms,
+                        app->shazam_confirms_needed, app->shazam_confidence,
+                        app->shazam_cdj_confirmed ? "true" : "false");
+                } else {
+                    len = snprintf(msg, sizeof(msg),
+                        "{\"event\":\"shazam\",\"state\":%d,\"attempts\":%d}",
+                        ss, app->shazam_no_match_count);
+                }
+                pthread_mutex_unlock(&app->db_mu);
+                ws_broadcast_text(msg, len);
+            }
+        }
+
+        /* Activity log — send immediately on new messages */
+        {
+            uint32_t cur_log_seq = atomic_load(&g_activity_log.sequence);
+            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+                int fd = atomic_load(&ws_fds[i]);
+                if (fd < 0 || client_log_seq[i] >= cur_log_seq) continue;
+
+                char log_data[4096];
+                int log_count = activity_log_since(client_log_seq[i],
+                                                   log_data, sizeof(log_data));
+                client_log_seq[i] = cur_log_seq;
+                if (log_count > 0) {
+                    char msg[4200];
+                    int len = snprintf(msg, sizeof(msg),
+                        "{\"event\":\"log\",\"data\":%s}", log_data);
+                    ws_text(fd, msg, len);
+                }
+            }
+        }
+
+        /* ── Slow updates (~1 Hz): decks metadata, system stats ─────────── */
         if (++tick >= 60) {
             tick = 0;
 
-            /* Deck status with confidence */
+            /* Deck metadata + confidence */
             char dmsg[4096];
             int dlen = snprintf(dmsg, sizeof(dmsg), "{\"event\":\"decks\",\"data\":[");
             int first = 1;
@@ -424,52 +476,6 @@ void *ws_main(void *arg) {
 
             dlen += snprintf(dmsg + dlen, sizeof(dmsg) - dlen, "]}");
             ws_broadcast_text(dmsg, dlen);
-
-            /* Shazam state */
-            int ss = atomic_load_explicit(&app->shazam_state, memory_order_relaxed);
-            int sc = (ss == SHAZAM_CONFIRMING) ? app->shazam_confirms : 0;
-            if (ss != last_shazam_state ||
-                (ss == SHAZAM_CONFIRMING && sc != last_shazam_confirms)) {
-                last_shazam_state = ss;
-                last_shazam_confirms = sc;
-                char msg[1024];
-                int len;
-                pthread_mutex_lock(&app->db_mu);
-                if (ss == SHAZAM_CONFIRMING) {
-                    char ec[1024];
-                    json_escape(app->shazam_candidate, ec, sizeof(ec));
-                    len = snprintf(msg, sizeof(msg),
-                        "{\"event\":\"shazam\",\"state\":%d,\"candidate\":\"%s\","
-                        "\"confirms\":%d,\"needed\":%d,\"conf\":%d,\"cdj\":%s}",
-                        ss, ec, app->shazam_confirms,
-                        app->shazam_confirms_needed, app->shazam_confidence,
-                        app->shazam_cdj_confirmed ? "true" : "false");
-                } else {
-                    len = snprintf(msg, sizeof(msg),
-                        "{\"event\":\"shazam\",\"state\":%d,\"attempts\":%d}",
-                        ss, app->shazam_no_match_count);
-                }
-                pthread_mutex_unlock(&app->db_mu);
-                ws_broadcast_text(msg, len);
-            }
-
-            /* Activity log (per-client sequence tracking) */
-            uint32_t cur_log_seq = atomic_load(&g_activity_log.sequence);
-            for (int i = 0; i < WS_MAX_CLIENTS; i++) {
-                int fd = atomic_load(&ws_fds[i]);
-                if (fd < 0 || client_log_seq[i] >= cur_log_seq) continue;
-
-                char log_data[4096];
-                int log_count = activity_log_since(client_log_seq[i],
-                                                   log_data, sizeof(log_data));
-                client_log_seq[i] = cur_log_seq;
-                if (log_count > 0) {
-                    char msg[4200];
-                    int len = snprintf(msg, sizeof(msg),
-                        "{\"event\":\"log\",\"data\":%s}", log_data);
-                    ws_text(fd, msg, len);
-                }
-            }
 
             /* System stats (load, mem, disk) */
             {
