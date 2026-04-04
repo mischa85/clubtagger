@@ -97,6 +97,21 @@ Key design decisions (2026-03-29):
 **Problem:** Shazam API returns error 6 when called too frequently.
 **Solution:** Exponential backoff (30/60/120/300s) on API errors. Default gap increased to 20s.
 
+### 7. WebSocket Server
+**Architecture:** Single thread (`ws_main`) serves up to 8 clients. Binary + text frames.
+
+**Data flow:**
+- **Binary push (prolink thread → browser):** `ws_broadcast_packet()` forwards raw Pro DJ Link packets with 7-byte header `[port_id:1][src_ip:4][len:2][payload]`. JS parses BPM, pitch, beat, key, loop, position directly from packet bytes.
+- **VU meter (60Hz):** Atomic reads of `vu_left`/`vu_right`, sent as JSON text frames.
+- **Event-driven (instant):** Track changes (`track_seq` atomic), Shazam state, activity log — checked every cycle, sent only on change.
+- **Metadata (1Hz):** Deck confidence/title/artist/db_src, system stats — requires mutex/snprintf.
+
+**Key discovery:** CDJ-3000 key note byte at 0x15c is **A-based** (0=A, not C). Was displaying 3 semitones sharp until fixed.
+
+**Database source tracking:** `cdj_db_source_t` enum (`DB_SRC_ONELIBRARY`, `DB_SRC_PDB`, `DB_SRC_DBSERVER`) set during track resolution, displayed in web UI.
+
+**WebSocket GUID:** Must be exactly `258EAFA5-E914-47DA-95CA-C5AB0DC85B11` (RFC 6455).
+
 ## Protocol Corrections (from alphatheta-connect)
 
 - Port names: 50001=beat, 50002=status (were swapped)
