@@ -95,30 +95,8 @@ void *id_main(void *arg) {
         if (got > 0 && r >= cfg->threshold && got >= (size_t)(cfg->rate * cfg->fingerprint_sec * 3 / 4)) {
             time_t nowt = time(NULL);
 
-            /* Skip Shazam only if ALL playing decks are already accepted.
-             * Always query if no CDJ is playing (vinyl/analog source). */
-            {
-                int any_playing = 0;
-                int all_accepted = 1;
-                for (int di = 0; di < MAX_DEVICES; di++) {
-                    cdj_device_t *dd = &devices[di];
-                    if (!dd->active || !dd->playing) continue;
-                    any_playing = 1;
-                    deck_confidence_t ds;
-                    confidence_get_deck(di, &ds);
-                    if (!ds.accepted) { all_accepted = 0; break; }
-                }
-                if (any_playing && all_accepted) {
-                    /* Also check audio-only slot */
-                    deck_confidence_t audio_s;
-                    confidence_get_audio(&audio_s);
-                    if (!audio_s.title[0] || audio_s.accepted) {
-                        vlogmsg("id", "hold: all playing decks accepted, skipping Shazam");
-                        goto sleep_loop;
-                    }
-                }
-                /* If no CDJ is playing, always query (vinyl/analog mode) */
-            }
+            /* Shazam always queries when audio is above threshold.
+             * The gap timer and backoff handle rate limiting. */
             unsigned effective_gap = cfg->shazam_gap_sec + shazam_backoff;
             if (last_lookup && (unsigned)(nowt - last_lookup) < effective_gap) {
                 vlogmsg("id", "throttle: waiting %us between lookups%s",
