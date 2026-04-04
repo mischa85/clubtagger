@@ -271,11 +271,6 @@ uint32_t confidence_tick(time_t now)
             if (!dev->on_air && (d->signals_active & SIG_CDJ_ON_AIR)) {
                 d->signals_active &= ~SIG_CDJ_ON_AIR;
             }
-            /* Accelerated decay when deck is idle (not playing or off-air) */
-            if (!dev->playing && !dev->on_air && d->score > 0) {
-                d->score -= 10;  /* Extra -10/s on top of normal decay */
-                if (d->score < 0) d->score = 0;
-            }
         }
 
         /* Check acceptance threshold — score alone decides */
