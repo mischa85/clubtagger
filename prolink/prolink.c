@@ -783,13 +783,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             utf8_safe_copy(dev->track_isrc, ol_isrc, sizeof(dev->track_isrc));
                         }
                         found = 1;
+                        dev->track_db_src = DB_SRC_ONELIBRARY;
                         log_message("🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
                     }
 
                     /* Try PDB database by rekordbox_id */
                     if (!found) {
                     TrackID *pdb = lookup_pdb_track(dev->rekordbox_id, src_ip, src_slot);
-                    
+
                     if (pdb && pdb->title[0]) {
                         utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
                         if (pdb->has_isrc && pdb->isrc[0]) {
@@ -798,9 +799,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         if (pdb->artist[0]) {
                             utf8_safe_copy(dev->track_artist, pdb->artist, sizeof(dev->track_artist));
                             found = 1;  /* Only consider "found" if we have artist too */
+                            dev->track_db_src = DB_SRC_PDB;
                         } else {
                             /* PDB has title but no artist - try dbserver for better metadata */
-                            log_message("[PDB] Track %u has title but no artist, trying dbserver", 
+                            log_message("[PDB] Track %u has title but no artist, trying dbserver",
                                        dev->rekordbox_id);
                             retry_later = try_resolve_track_name(dev);
                             /* If dbserver also fails, use PDB title at least */
@@ -808,11 +810,13 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                 utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
                             }
                             found = (dev->track_title[0] != '\0');
+                            if (found) dev->track_db_src = DB_SRC_DBSERVER;
                         }
                     } else {
                         /* Fall back to DBServer query */
                         retry_later = try_resolve_track_name(dev);
                         found = (dev->track_title[0] != '\0');
+                        if (found) dev->track_db_src = DB_SRC_DBSERVER;
                     }
                     } /* end if (!found) - OneLibrary/PDB/DBServer chain */
                 }

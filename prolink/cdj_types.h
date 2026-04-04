@@ -37,6 +37,13 @@ typedef enum {
     DEVICE_TYPE_REKORDBOX = 3
 } cdj_device_type_t;
 
+typedef enum {
+    DB_SRC_NONE      = 0,
+    DB_SRC_ONELIBRARY,
+    DB_SRC_PDB,
+    DB_SRC_DBSERVER
+} cdj_db_source_t;
+
 /*
  * ============================================================================
  * Media Slots
@@ -114,6 +121,7 @@ typedef struct {
     char     track_title[128];
     char     track_artist[128];
     char     track_isrc[64];    /* ISRC from PDB (if available) */
+    uint8_t  track_db_src;     /* cdj_db_source_t: how track was resolved */
     uint32_t lookup_failed_id;  /* rekordbox_id of last failed lookup (prevent retry spam) */
     time_t   last_lookup_time;  /* Rate-limit lookups (don't retry more than once per 5s) */
     
