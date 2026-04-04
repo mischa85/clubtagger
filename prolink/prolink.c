@@ -1101,15 +1101,14 @@ int try_resolve_track_name(cdj_device_t *dev) {
         if (result != 0) {
             query_fail_count++;
             if (result == CDJ_ERR_CONNECT) {
-                /* Connection failure is temporary — retry later.
-                 * Only log first 3 failures to avoid spamming. */
                 if (query_fail_count <= 3) {
                     logmsg("cdj", "DBServer connection failed for track %u (will retry)",
                            dev->rekordbox_id);
-                } else if (query_fail_count == 4) {
-                    logmsg("cdj", "DBServer still failing — suppressing until success");
+                } else if (query_fail_count == 5) {
+                    logmsg("cdj", "DBServer giving up after %d failures", query_fail_count);
+                    return 0;  /* Stop retrying */
                 }
-                return 1;  /* Temporary — don't mark as permanently failed */
+                return 1;  /* Temporary — retry later */
             }
             if (query_fail_count <= 3) {
                 logmsg("cdj", "DBServer query failed for track %u (attempt %d)",
