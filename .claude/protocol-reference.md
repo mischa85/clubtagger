@@ -100,6 +100,29 @@ Offset  Size  Field
 0xcd    1     t - Touch Audio support (bit 5)
 ```
 
+### FLAGS byte (0x89) bit definitions
+| Bit | Mask | Field |
+|-----|------|-------|
+| 6 | 0x40 | Playing |
+| 5 | 0x20 | Master |
+| 4 | 0x10 | Sync |
+| 3 | 0x08 | On-air |
+
+### CDJ-3000 Extended Fields (requires len ≥ 0x15f)
+```
+0x158   1     Mt - Master Tempo: 0x00=off, 0x01=on
+0x15c   1     Key note (0x00=A, 0x01=Bb, ... 0x0b=G#) — NOTE: A-based, not C-based
+0x15d   1     Key scale: 0x00=minor, 0x01=major
+0x15e   1     Key accidental: 0x00=natural, 0x01=sharp, 0xff=flat
+```
+
+### CDJ-3000 Loop Fields (requires len ≥ 0x1ca)
+```
+0x1b6   4     Loop start position (big-endian, 0=no loop)
+0x1be   4     Loop end position (big-endian)
+0x1c8   2     Loop length in beats (big-endian)
+```
+
 **CDJ-3000X note:** Sends 1152-byte status packets with alternating subtype2 values. Only subtype2=0x03 has track data at standard offsets. Other variants (0x05, 0x06) have different layouts — skip track fields if rekordbox_id=0 and slot=0 to avoid flipping.
 
 ## CDJ-3000 Position Packet (Port 50001, subtype2 0x00, ~52 bytes)
