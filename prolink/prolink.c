@@ -789,6 +789,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
                     /* Try PDB database by rekordbox_id */
                     if (!found) {
+                    logmsg("cdj", "PDB lookup: rbid=%u dev=%d src=%s slot=%d",
+                           dev->rekordbox_id, dev->device_num,
+                           ip_to_str(src_ip), src_slot);
                     TrackID *pdb = lookup_pdb_track(dev->rekordbox_id, src_ip, src_slot);
 
                     if (pdb && pdb->title[0]) {
