@@ -11,12 +11,12 @@ identifies songs via Shazam-compatible lookup, and integrates with Pioneer CDJ/X
 - 🔎 **Local fingerprinting** via `libvibra` (no audio leaves the system)
 - 🎛️ **Pro DJ Link integration** — reads track metadata directly from Pioneer CDJs/XDJs
 - 📚 **OneLibrary support** — decrypts and queries Rekordbox 6+ exportLibrary.db (CDJ-3000X)
-- 🧠 **Smart matching** — requires 3 consecutive confirmations to reduce false positives
+- 🧠 **Confidence model** — weighted signal accumulation from CDJ + Shazam + on-air status
 - 🔤 **Fuzzy matching** — Levenshtein distance handles typos and encoding differences
 - 🎵 **Vinyl-friendly** — tolerates pitch variations from turntables
 - 💾 **WAV/FLAC recording** with seamless file splitting
 - 🗄️ **SQLite logging** — track plays with timestamps, ISRC codes
-- 🌐 **Web UI** — real-time VU meters and CDJ deck status via SSE
+- 🌐 **Web UI** — real-time VU meters, deck status, beat/BPM/key via WebSocket
 - ⚙️ Lightweight C implementation with modular architecture
 
 ---
@@ -84,7 +84,7 @@ clubtagger has three main modes that can be combined:
 ./clubtagger --record --audio-tag --cdj-tag \
   --source slink --device en7 \
   --prolink-interface en7 \
-  --db tracks.db --sse-socket /tmp/clubtagger.sock
+  --db tracks.db --ws-socket /run/clubtagger.sock
 ```
 
 ### Passive CDJ tagging (SPAN port, no slot consumed)
@@ -152,7 +152,8 @@ The `--threshold` value is used for both recording triggers and Shazam fingerpri
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--db` | SQLite database path | (none) |
-| `--sse-socket` | Unix socket for web UI SSE | (none) |
+| `--ws-socket` | WebSocket server: Unix socket path or TCP port number | (none) |
+| `--timezone` | Override timezone | Europe/Amsterdam |
 | `--verbose` | Enable detailed logging | Off |
 
 ---
@@ -239,33 +240,64 @@ Configure with `--match-threshold` (default 60%).
 
 ## Web UI
 
-Enable the SSE server to get a real-time web interface:
+Enable the WebSocket server for a real-time web interface:
 
 ```bash
 ./clubtagger --cdj-tag --prolink-interface en7 \
-  --sse-socket /tmp/clubtagger.sock
+  --ws-socket /run/clubtagger.sock
 ```
 
-### nginx proxy (recommended)
+For development/testing, use a TCP port instead of a Unix socket:
+
+```bash
+./clubtagger --cdj-tag --prolink-interface en7 \
+  --ws-socket 9090
+```
+
+### nginx proxy (recommended for production)
+
+See `nginx.conf.example` for a full configuration with HTTPS and basic auth.
+
 ```nginx
-location /sse {
-    proxy_pass http://unix:/tmp/clubtagger.sock;
+upstream clubtagger {
+    server unix:/run/clubtagger.sock;
+}
+
+location = /ws {
+    auth_basic off;
+    proxy_pass http://clubtagger;
     proxy_http_version 1.1;
-    proxy_set_header Connection '';
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
     proxy_buffering off;
-    proxy_cache off;
+    proxy_read_timeout 24h;
 }
 
 location / {
-    root /path/to/clubtagger/www;
+    root /var/www/clubtagger;
 }
 ```
 
 ### Features
-- **VU meters** — real-time audio levels with peak hold
-- **CDJ deck status** — playing/paused, ON AIR, BPM, slot (USB/SD/CD)
-- **Now playing** — current identified track
-- **Track history** — recent plays with timestamps
+- **VU meters** — 60 Hz audio levels with peak hold and decay
+- **CDJ deck status** — real-time from raw Pro DJ Link packets:
+  - Playing/paused, ON AIR, BPM with pitch offset
+  - Musical key (A-based mapping from CDJ-3000)
+  - Beat position (4-dot indicator updated per-beat)
+  - Loop state and beat count
+  - Master, Sync, Master Tempo badges
+  - Track position / duration (CDJ-3000: 30ms updates)
+  - Media source (USB/SD/Link) and database source (OneLibrary/PDB/DBServer)
+- **Track identification** — confidence bars with CDJ + Shazam signals
+- **Track history** — recent plays from database
+- **Activity log** — live system messages
+- **System stats** — CPU load, memory, disk space
+
+### Architecture
+
+Raw Pro DJ Link packets are forwarded as **binary WebSocket frames** directly to the browser. JavaScript parses packet bytes using known offsets (BPM, pitch, beat, key, loop, position). This provides sub-millisecond UI updates without C-side JSON serialization overhead.
+
+Metadata that requires C-side logic (track title, artist, confidence, ISRC, database source) is sent as **JSON text frames** at 1 Hz.
 
 ---
 
@@ -311,7 +343,7 @@ clubtagger/
 │   └── track_cache.c # In-memory metadata cache
 ├── shazam/           # Audio fingerprinting
 ├── writer/           # Async WAV/FLAC writing
-├── server/           # SSE server for web UI
+├── server/           # WebSocket server (binary packet relay + JSON events)
 ├── db/               # SQLite integration
 └── www/              # Web UI (HTML/JS)
 ```
