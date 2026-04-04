@@ -368,6 +368,7 @@ int main(int argc, char **argv) {
 
     App app = {0};
     app.cfg = cfg;
+    app.start_time = time(NULL);
 
     /* Initialize ring buffer (only if recording or audio tagging) */
     if (need_audio) {

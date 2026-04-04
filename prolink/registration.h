@@ -34,6 +34,7 @@ extern int databases_pending;
 extern int keepalives_sent_active;
 extern uint32_t our_ip;
 extern time_t last_cdj_packet_time;  /* Watchdog: last time a CDJ packet arrived */
+extern uint64_t prolink_packet_count; /* Total Pro DJ Link packets received */
 
 /*
  * ============================================================================

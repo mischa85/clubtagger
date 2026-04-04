@@ -513,14 +513,59 @@ void *ws_main(void *arg) {
                     disk_total = (uint64_t)svfs.f_blocks * svfs.f_frsize;
                 }
 
-                char msg[256];
+                /* Count active CDJs */
+                int cdj_count = 0;
+                for (int d = 0; d < MAX_DEVICES; d++)
+                    if (devices[d].active && devices[d].device_type == DEVICE_TYPE_CDJ
+                        && now - devices[d].last_seen < 10)
+                        cdj_count++;
+
+                /* Count WS clients */
+                int ws_clients = 0;
+                for (int c = 0; c < WS_MAX_CLIENTS; c++)
+                    if (atomic_load(&ws_fds[c]) >= 0) ws_clients++;
+
+                /* Packets/sec (delta since last tick) */
+                static uint64_t prev_pkt_count = 0;
+                extern uint64_t prolink_packet_count;
+                uint64_t cur_pkt = prolink_packet_count;
+                uint64_t pkt_sec = cur_pkt - prev_pkt_count;
+                prev_pkt_count = cur_pkt;
+
+                /* DB track count (cheap: just use track_seq) */
+                uint32_t tracks_tagged = atomic_load(&app->track_seq);
+
+                /* Shazam stats */
+                uint32_t sz_queries = atomic_load(&app->shazam_queries);
+                uint32_t sz_matches = atomic_load(&app->shazam_matches);
+
+                /* Uptime */
+                int uptime = (int)(now - app->start_time);
+
+                /* Ring buffer usage (seconds buffered) */
+                uint64_t ring_written = atomic_load_explicit(&app->aw.total_written, memory_order_relaxed);
+                unsigned ring_cap = app->aw.capacity;
+                unsigned ring_rate = app->aw.rate;
+                int ring_sec = ring_rate > 0 ? (int)(ring_cap / ring_rate) : 0;
+                int ring_filled = (ring_rate > 0 && ring_cap > 0)
+                    ? (int)((ring_written % ring_cap) * 100 / ring_cap) : 0;
+
+                char msg[512];
                 int len = snprintf(msg, sizeof(msg),
                     "{\"event\":\"stats\",\"load\":%.2f,"
                     "\"mem\":%llu,\"memtot\":%llu,"
-                    "\"diskfree\":%llu,\"disktot\":%llu}",
+                    "\"diskfree\":%llu,\"disktot\":%llu,"
+                    "\"uptime\":%d,\"cdjs\":%d,\"ws_clients\":%d,"
+                    "\"tracks_tagged\":%u,\"pkt_sec\":%llu,"
+                    "\"sz_queries\":%u,\"sz_matches\":%u,"
+                    "\"ring_sec\":%d,\"ring_pct\":%d}",
                     loadavg[0],
                     (unsigned long long)mem_used, (unsigned long long)mem_total,
-                    (unsigned long long)disk_free, (unsigned long long)disk_total);
+                    (unsigned long long)disk_free, (unsigned long long)disk_total,
+                    uptime, cdj_count, ws_clients,
+                    tracks_tagged, (unsigned long long)pkt_sec,
+                    sz_queries, sz_matches,
+                    ring_sec, ring_filled);
                 ws_broadcast_text(msg, len);
             }
         }

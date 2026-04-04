@@ -159,6 +159,7 @@ void *id_main(void *arg) {
                 gettimeofday(&t_start, NULL);
                 logmsg("id", "Querying Shazam...%s",
                        have_cdj ? " (CDJ has track, will compare)" : "");
+                atomic_fetch_add(&app->shazam_queries, 1);
                 int post_ok = shazam_post(url, ua, body, json, sizeof(json));
                 gettimeofday(&t_end, NULL);
                 int query_ms = (int)((t_end.tv_sec - t_start.tv_sec) * 1000 +
@@ -192,6 +193,7 @@ void *id_main(void *arg) {
                     if (title[0] || artist[0]) {
                         logmsg("id", "Shazam result (%dms): %s — %s (%d%%)",
                                query_ms, artist, title, shazam_confidence);
+                        atomic_fetch_add(&app->shazam_matches, 1);
                         shazam_backoff = 0;
 
                         /* Find the best matching CDJ deck for this Shazam result */

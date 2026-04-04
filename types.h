@@ -219,6 +219,11 @@ typedef struct {
     _Atomic uint64_t audio_lost;   /* total lost samples (sequence discontinuities) */
     _Atomic uint64_t audio_frames; /* total frames captured */
     _Atomic int is_recording;      /* 1 if actively writing to file */
+    /* Session counters */
+    time_t start_time;             /* set once in main() */
+    _Atomic uint32_t shazam_queries;  /* total Shazam API calls */
+    _Atomic uint32_t shazam_matches;  /* successful matches */
+    _Atomic uint64_t prolink_packets; /* total Pro DJ Link packets received */
 } App;
 
 #endif /* CLUBTAGGER_TYPES_H */
