@@ -10,15 +10,23 @@
     const tracksEl = document.getElementById('tracks');
     const statusEl = document.getElementById('status');
     const decksEl = document.getElementById('decks');
-    // Stats elements
+    // Recording panel elements
     const statFormat = document.getElementById('stat-format');
     const statRuntime = document.getElementById('stat-runtime');
     const statLost = document.getElementById('stat-lost');
+    const statWritten = document.getElementById('stat-written');
+    const recStatus = document.getElementById('rec-status');
+    // Nerd stats elements
+    const statUptime = document.getElementById('stat-uptime');
+    const statCdjs = document.getElementById('stat-cdjs');
+    const statWs = document.getElementById('stat-ws');
+    const statTagged = document.getElementById('stat-tagged');
+    const statPkts = document.getElementById('stat-pkts');
+    const statShazam = document.getElementById('stat-shazam');
+    const statRing = document.getElementById('stat-ring');
     const statLoad = document.getElementById('stat-load');
     const statMem = document.getElementById('stat-mem');
     const statDisk = document.getElementById('stat-disk');
-    const statWritten = document.getElementById('stat-written');
-    const recStatus = document.getElementById('rec-status');
     
     // Slot names
     const SLOTS = { 0: '', 1: 'CD', 2: 'SD', 3: 'USB', 4: 'Link', 6: 'Stream', 9: 'Beatport' };
@@ -95,8 +103,8 @@
         return (bytes / 1073741824).toFixed(2) + ' GB';
     }
     
-    // Update audio stats display
-    function updateAudioStats(data) {
+    // Update recording panel (from 'vu' event at 60Hz)
+    function updateRecPanel(data) {
         if (statFormat && data.rate) {
             const fmt = data.fmt ? data.fmt.toUpperCase() : 'WAV';
             statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch ' + fmt;
@@ -107,19 +115,38 @@
         if (recStatus) {
             if (data.rec) {
                 recStatus.textContent = '● REC';
-                recStatus.className = 'rec-status recording';
+                recStatus.className = 'rec-indicator recording';
             } else {
                 recStatus.textContent = 'Standby';
-                recStatus.className = 'rec-status standby';
+                recStatus.className = 'rec-indicator standby';
             }
         }
         if (statLost) {
             statLost.textContent = data.lost || 0;
-            statLost.className = 'value' + (data.lost > 0 ? ' warn' : ' ok');
         }
-        if (statLoad && data.load !== undefined) {
+    }
+
+    // Update nerd stats (from 'stats' event at 1Hz)
+    function updateNerdStats(data) {
+        if (statUptime && data.uptime !== undefined)
+            statUptime.textContent = formatRuntime(data.uptime);
+        if (statCdjs && data.cdjs !== undefined)
+            statCdjs.textContent = data.cdjs;
+        if (statWs && data.ws_clients !== undefined)
+            statWs.textContent = data.ws_clients;
+        if (statTagged && data.tracks_tagged !== undefined)
+            statTagged.textContent = data.tracks_tagged;
+        if (statPkts && data.pkt_sec !== undefined)
+            statPkts.textContent = data.pkt_sec;
+        if (statShazam && data.sz_queries !== undefined) {
+            const rate = data.sz_queries > 0
+                ? Math.round(data.sz_matches / data.sz_queries * 100) : 0;
+            statShazam.textContent = data.sz_matches + '/' + data.sz_queries + ' (' + rate + '%)';
+        }
+        if (statRing && data.ring_sec !== undefined)
+            statRing.textContent = data.ring_sec + 's (' + data.ring_pct + '%)';
+        if (statLoad && data.load !== undefined)
             statLoad.textContent = data.load.toFixed(2);
-        }
         if (statMem && data.mem !== undefined && data.memtot !== undefined) {
             const pct = ((data.mem / data.memtot) * 100).toFixed(0);
             statMem.textContent = formatBytes(data.mem) + ' (' + pct + '%)';
@@ -128,9 +155,6 @@
             const pct = ((data.diskfree / data.disktot) * 100).toFixed(0);
             statDisk.textContent = formatBytes(data.diskfree) + ' free';
             statDisk.className = 'value' + (pct < 10 ? ' warn' : '');
-        }
-        if (statWritten && data.written !== undefined) {
-            statWritten.textContent = formatBytes(data.written);
         }
     }
     
@@ -559,7 +583,7 @@
                 switch (msg.event) {
                 case 'vu':
                     updateVU(msg.l, msg.r);
-                    updateAudioStats(msg);
+                    updateRecPanel(msg);
                     break;
                 case 'track':
                     if (msg.a || msg.t)
@@ -594,7 +618,7 @@
                     }
                     break;
                 case 'stats':
-                    updateAudioStats(msg);
+                    updateNerdStats(msg);
                     break;
                 case 'shazam':
                     /* Shazam state updates — could add UI for this */
