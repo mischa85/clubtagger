@@ -8,6 +8,7 @@
 #include "ws_server.h"
 #include "../common.h"
 #include "../prolink/cdj_types.h"
+#include "../prolink/onelibrary.h"
 #include "../confidence.h"
 #include "../db/database.h"
 
@@ -388,13 +389,19 @@ void *ws_main(void *arg) {
 
                 if (!first) dlen += snprintf(dmsg + dlen, sizeof(dmsg) - dlen, ",");
                 first = 0;
+                static const char *db_src_names[] = {
+                    "", "OneLibrary", "PDB", "DBServer"
+                };
+                const char *db_src = dev->track_db_src < 4
+                    ? db_src_names[dev->track_db_src] : "";
+
                 dlen += snprintf(dmsg + dlen, sizeof(dmsg) - dlen,
                     "{\"n\":%d,\"name\":\"%s\","
                     "\"title\":\"%s\",\"artist\":\"%s\",\"isrc\":\"%s\","
-                    "\"rekordbox_id\":%u,"
+                    "\"rekordbox_id\":%u,\"db_src\":\"%s\","
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
                     dev->device_num, en, et, ea, ei,
-                    dev->rekordbox_id,
+                    dev->rekordbox_id, db_src,
                     dc.score / 10, dc.accepted,
                     confidence_source_string(dc.signals_seen));
             }
