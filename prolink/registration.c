@@ -248,6 +248,12 @@ void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_nam
     logmsg("cdj", "⚠️ Slot %d conflict with %s — yielding",
            our_device_num, device_name ? device_name : "unknown");
 
+    /* Clear our device entry so the real CDJ is logged as new */
+    cdj_device_t *old = find_device(conflicting_device_num);
+    if (old) {
+        memset(old, 0, sizeof(*old));
+    }
+
     /* Release our slot so find_free_slot won't skip it */
     our_device_num = 0;
 
