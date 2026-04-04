@@ -96,29 +96,28 @@ void *id_main(void *arg) {
             time_t nowt = time(NULL);
 
             /* Skip Shazam only if ALL playing decks are already accepted.
-             * Unnamed decks count as unaccepted — Shazam is the only
-             * identification path when CDJ metadata is unavailable. */
+             * Always query if no CDJ is playing (vinyl/analog source). */
             {
-                int any_unaccepted = 0;
+                int any_playing = 0;
+                int all_accepted = 1;
                 for (int di = 0; di < MAX_DEVICES; di++) {
                     cdj_device_t *dd = &devices[di];
                     if (!dd->active || !dd->playing) continue;
-                    if (dd->track_title[0] == '\0') { any_unaccepted = 1; break; }
+                    any_playing = 1;
                     deck_confidence_t ds;
                     confidence_get_deck(di, &ds);
-                    if (!ds.accepted) { any_unaccepted = 1; break; }
+                    if (!ds.accepted) { all_accepted = 0; break; }
                 }
-                /* Also check audio-only slot */
-                if (!any_unaccepted) {
+                if (any_playing && all_accepted) {
+                    /* Also check audio-only slot */
                     deck_confidence_t audio_s;
                     confidence_get_audio(&audio_s);
-                    if (audio_s.title[0] && !audio_s.accepted)
-                        any_unaccepted = 1;
+                    if (!audio_s.title[0] || audio_s.accepted) {
+                        vlogmsg("id", "hold: all playing decks accepted, skipping Shazam");
+                        goto sleep_loop;
+                    }
                 }
-                if (!any_unaccepted) {
-                    vlogmsg("id", "hold: all playing decks accepted, skipping Shazam");
-                    goto sleep_loop;
-                }
+                /* If no CDJ is playing, always query (vinyl/analog mode) */
             }
             unsigned effective_gap = cfg->shazam_gap_sec + shazam_backoff;
             if (last_lookup && (unsigned)(nowt - last_lookup) < effective_gap) {
