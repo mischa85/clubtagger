@@ -123,13 +123,42 @@
         .nerd-stat .value.warn { color: #ff9800; }
         .nerd-stat .value.ok { color: #4caf50; }
         
-        /* Now Playing */
+        /* Recording panel */
+        .rec-panel {
+            background: #0f0f1a;
+            border-radius: 8px;
+            padding: 10px 15px;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            font-size: 11px;
+        }
+        .rec-panel .rec-indicator {
+            font-size: 14px;
+            font-weight: bold;
+            padding: 4px 10px;
+            border-radius: 4px;
+            background: #222;
+        }
+        .rec-panel .rec-indicator.recording {
+            background: #4d1a1a;
+            color: #f44336;
+            animation: blink 1s infinite;
+        }
+        .rec-panel .rec-indicator.standby { color: #666; }
+        .rec-panel .rec-detail { color: #666; }
+        .rec-panel .rec-detail span { color: #aaa; }
+
         /* CDJ Decks */
         .decks-container {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+            grid-template-columns: repeat(2, 1fr);
             gap: 10px;
             margin-bottom: 20px;
+        }
+        @media (max-width: 600px) {
+            .decks-container { grid-template-columns: 1fr; }
         }
         .deck {
             background: #0f0f1a;
@@ -329,7 +358,13 @@
                     <span class="vu-label">R</span>
                 </div>
             </div>
-            <div class="rec-status standby" id="rec-status">Standby</div>
+        </div>
+
+        <div class="rec-panel">
+            <div class="rec-indicator standby" id="rec-status">Standby</div>
+            <div class="rec-detail"><span id="stat-format">—</span></div>
+            <div class="rec-detail">Runtime: <span id="stat-runtime">0s</span></div>
+            <div class="rec-detail">Written: <span id="stat-written">0</span></div>
         </div>
         
         <div class="nerd-stats">
