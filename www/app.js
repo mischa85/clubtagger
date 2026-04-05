@@ -328,16 +328,17 @@
             const masterBadge = d.master ? '<span class="deck-badge master">MASTER</span>' : '';
             const syncBadge = d.sync ? '<span class="deck-badge sync">SYNC</span>' : '';
 
-            let playTimeText = '';
             const posMs = d.playhead_ms || 0;
             const trackLen = d.track_length || 0;
+            const pct = (trackLen > 0 && posMs > 0) ? Math.min(100, posMs / (trackLen * 1000) * 100) : 0;
+            const remainMs = (trackLen > 0 && posMs > 0) ? Math.max(0, trackLen * 1000 - posMs) : 0;
+            let progressBar = '';
             if (posMs > 0) {
-                const posStr = formatPosMs(posMs);
-                if (trackLen > 0) {
-                    playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr} / ${formatPosSec(trackLen)}</span>`;
-                } else {
-                    playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr}</span>`;
-                }
+                progressBar = `<div class="deck-progress" id="progress-${d.n}">` +
+                    `<div class="deck-progress-bar" style="width:${pct.toFixed(1)}%"></div>` +
+                    `<span class="deck-progress-time deck-progress-elapsed">${formatPosMs(posMs)}</span>` +
+                    (trackLen > 0 ? `<span class="deck-progress-time deck-progress-remain">-${formatPosMs(remainMs)}</span>` : '') +
+                    `</div>`;
             }
 
             let fmtBadge = '';
@@ -358,13 +359,13 @@
                             ${d.playing ? (d.play_state === 0x05 ? '<span class="deck-badge cueing">▶ Cue</span>' : '<span class="deck-badge playing">▶ Playing</span>') : '<span class="deck-badge paused">❚❚ Paused</span>'}
                             ${d.on_air_known && d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : ''}
                             ${masterBadge}${syncBadge}${loopBadge}${mtBadge}
-                            ${playTimeText}
                         </div>
                     </div>
                     <div class="deck-track">
                         <div class="deck-artist">${escapeHtml(d.artist) || '—'} ${fmtBadge}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}${d.isrc ? ' <span class="deck-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}</div>
                     </div>
+                    ${progressBar}
                     <div class="deck-meta">
                         ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}${dbText ? ' · ' + dbText : ''}
                     </div>
@@ -506,11 +507,19 @@
         rawDecks[devNum].track_length = dv.getUint32(POS_PKT.TRACK_LEN);
         /* Position updates are fast (30ms) — don't rebuild DOM every time,
          * just update the position display if it exists */
-        const posEl = document.getElementById('pos-' + devNum);
-        if (posEl && rawDecks[devNum].playhead_ms > 0) {
+        const progEl = document.getElementById('progress-' + devNum);
+        if (progEl && rawDecks[devNum].playhead_ms > 0) {
+            const ms = rawDecks[devNum].playhead_ms;
             const tl = rawDecks[devNum].track_length || 0;
-            posEl.textContent = formatPosMs(rawDecks[devNum].playhead_ms) +
-                (tl > 0 ? ' / ' + formatPosSec(tl) : '');
+            /* Update bar width */
+            const bar = progEl.firstElementChild;
+            if (bar && tl > 0) bar.style.width = Math.min(100, ms / (tl * 1000) * 100).toFixed(1) + '%';
+            /* Update elapsed text */
+            const elapsedEl = progEl.querySelector('.deck-progress-elapsed');
+            if (elapsedEl) elapsedEl.textContent = formatPosMs(ms);
+            /* Update remaining text */
+            const remainEl = progEl.querySelector('.deck-progress-remain');
+            if (remainEl && tl > 0) remainEl.textContent = '-' + formatPosMs(Math.max(0, tl * 1000 - ms));
         }
     }
 
