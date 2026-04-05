@@ -240,14 +240,9 @@ static int find_artist_name(const uint8_t *data, size_t len, uint32_t page_size,
             uint16_t num_rows = PDB_NUM_ROWS(page->row_counts);
             uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
 
-            /* Parse rows using offset table at end of page */
             for (uint16_t ri = 0; ri < num_rows && ri < num_row_offsets; ri++) {
-                size_t offset_pos = page_offset + page_size - (ri + 1) * 2;
-                if (offset_pos + 2 > len) continue;
-                uint16_t row_offset = data[offset_pos] | (data[offset_pos + 1] << 8);
-
-                size_t pos = page_offset + PDB_HEAP_OFFSET + row_offset;
-                if (pos + 10 > page_offset + page_size) continue;
+                size_t pos = pdb_row_offset(data, len, page_offset, page_size, ri);
+                if (!pos || pos + 10 > page_offset + page_size) continue;
 
                 uint16_t subtype = data[pos] | (data[pos+1] << 8);
 
@@ -350,21 +345,12 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
             log_message("[PDB] Page %u: flags=0x%02x rows=%u", page_idx, page->page_flags, num_rows);
         }
         
-        /* Parse rows using the row offset table at end of page.
-         * Row offsets are 16-bit values stored backwards from the end of the page.
-         * Each offset points to the start of a row within the heap. */
+        /* Parse rows using the row offset table at end of page */
         uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
 
         for (uint16_t ri = 0; ri < num_rows && ri < num_row_offsets; ri++) {
-            /* Row offset table: 16-bit entries at end of page, growing backwards.
-             * First entry at page_end - 2, second at page_end - 4, etc. */
-            size_t offset_pos = page_offset + page_size - (ri + 1) * 2;
-            if (offset_pos + 2 > len || offset_pos < page_offset + PDB_HEAP_OFFSET)
-                continue;
-            uint16_t row_offset = data[offset_pos] | (data[offset_pos + 1] << 8);
-
-            size_t pos = page_offset + PDB_HEAP_OFFSET + row_offset;
-            if (pos + sizeof(pdb_track_row_t) > page_offset + page_size)
+            size_t pos = pdb_row_offset(data, len, page_offset, page_size, ri);
+            if (!pos || pos + sizeof(pdb_track_row_t) > page_offset + page_size)
                 continue;
 
             const pdb_track_row_t *row = (const pdb_track_row_t *)(data + pos);
