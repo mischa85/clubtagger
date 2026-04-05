@@ -238,14 +238,19 @@ static int find_artist_name(const uint8_t *data, size_t len, uint32_t page_size,
             }
             
             uint16_t num_rows = PDB_NUM_ROWS(page->row_counts);
-            
-            /* Scan heap for artist rows */
-            size_t heap_start = page_offset + PDB_HEAP_OFFSET;
-            size_t heap_end = page_offset + page_size - 2;  /* Leave room for end marker */
-            
-            for (size_t pos = heap_start; pos + 10 < heap_end; ) {
+            uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
+
+            /* Parse rows using offset table at end of page */
+            for (uint16_t ri = 0; ri < num_rows && ri < num_row_offsets; ri++) {
+                size_t offset_pos = page_offset + page_size - (ri + 1) * 2;
+                if (offset_pos + 2 > len) continue;
+                uint16_t row_offset = data[offset_pos] | (data[offset_pos + 1] << 8);
+
+                size_t pos = page_offset + PDB_HEAP_OFFSET + row_offset;
+                if (pos + 10 > page_offset + page_size) continue;
+
                 uint16_t subtype = data[pos] | (data[pos+1] << 8);
-                
+
                 if (subtype == PDB_ARTIST_SUBTYPE_NEAR || subtype == PDB_ARTIST_SUBTYPE_FAR) {
                     const pdb_artist_row_header_t *artist = (const pdb_artist_row_header_t *)(data + pos);
                     
@@ -265,14 +270,8 @@ static int find_artist_name(const uint8_t *data, size_t len, uint32_t page_size,
                         return parse_devicesql_string(data, len, name_offset, out, out_len);
                     }
                     
-                    /* Skip this row */
-                    pos += (subtype == PDB_ARTIST_SUBTYPE_NEAR) ? 10 : 12;
-                } else {
-                    pos++;
                 }
             }
-            
-            (void)num_rows;  /* Suppress unused warning */
             page_idx = page->next_page;
         }
         break;
@@ -351,33 +350,32 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
             log_message("[PDB] Page %u: flags=0x%02x rows=%u", page_idx, page->page_flags, num_rows);
         }
         
-        /* Parse rows from heap
-         * Row index is at end of page, but we'll scan heap for track row magic */
-        size_t heap_start = page_offset + PDB_HEAP_OFFSET;
-        size_t heap_end = page_offset + page_size - 4;  /* Leave room for row index */
-        
-        for (size_t pos = heap_start; pos + sizeof(pdb_track_row_t) <= heap_end; ) {
-            /* Check for track row subtype magic */
-            uint16_t subtype = data[pos] | (data[pos+1] << 8);
-            
-            if (subtype != PDB_TRACK_SUBTYPE) {
-                pos++;
+        /* Parse rows using the row offset table at end of page.
+         * Row offsets are 16-bit values stored backwards from the end of the page.
+         * Each offset points to the start of a row within the heap. */
+        uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
+
+        for (uint16_t ri = 0; ri < num_rows && ri < num_row_offsets; ri++) {
+            /* Row offset table: 16-bit entries at end of page, growing backwards.
+             * First entry at page_end - 2, second at page_end - 4, etc. */
+            size_t offset_pos = page_offset + page_size - (ri + 1) * 2;
+            if (offset_pos + 2 > len || offset_pos < page_offset + PDB_HEAP_OFFSET)
                 continue;
-            }
-            
+            uint16_t row_offset = data[offset_pos] | (data[offset_pos + 1] << 8);
+
+            size_t pos = page_offset + PDB_HEAP_OFFSET + row_offset;
+            if (pos + sizeof(pdb_track_row_t) > page_offset + page_size)
+                continue;
+
             const pdb_track_row_t *row = (const pdb_track_row_t *)(data + pos);
-            
-            /* Validate row */
-            if (row->index_shift > 0x200) {
-                pos++;
+
+            /* Verify this is a track row */
+            if (row->subtype != PDB_TRACK_SUBTYPE)
                 continue;
-            }
-            
+
             /* Sanity check: track ID should be reasonable */
-            if (row->id == 0 || row->id > 999999) {
-                pos++;
+            if (row->id == 0 || row->id > 999999)
                 continue;
-            }
             
             /* Check for duplicate */
             int duplicate = 0;
@@ -440,7 +438,6 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
                        track->has_isrc ? " ISRC=" : "", track->has_isrc ? track->isrc : "");
             
             db->track_count++;
-            pos += sizeof(pdb_track_row_t);
         }
         
         page_idx = page->next_page;
