@@ -206,6 +206,30 @@
         .deck-meta { margin-top: 6px; font-size: 10px; color: #666; }
         .deck-bpm { color: #00d4ff; font-weight: bold; }
         .deck-playtime { color: #aaa; font-size: 11px; font-variant-numeric: tabular-nums; margin-left: 8px; }
+        .deck-progress {
+            position: relative;
+            height: 16px;
+            background: #1a1a2e;
+            border-radius: 3px;
+            margin-top: 6px;
+            overflow: hidden;
+        }
+        .deck-progress-bar {
+            height: 100%;
+            background: #1a3a1a;
+            transition: width 0.15s linear;
+        }
+        .deck.on-air .deck-progress-bar { background: #2a3a1a; }
+        .deck-progress-time {
+            position: absolute;
+            top: 0;
+            line-height: 16px;
+            font-size: 10px;
+            font-variant-numeric: tabular-nums;
+            padding: 0 4px;
+        }
+        .deck-progress-elapsed { left: 0; color: #ccc; }
+        .deck-progress-remain { right: 0; color: #888; }
         .deck-position { color: #888; font-variant-numeric: tabular-nums; }
         .deck-media { color: #5a5; }
         .deck-db { color: #a5a; font-style: italic; }
