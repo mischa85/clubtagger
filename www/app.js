@@ -352,13 +352,11 @@
                         </div>
                     </div>
                     <div class="deck-track">
-                        <div class="deck-artist">${escapeHtml(d.artist) || '—'}</div>
+                        <div class="deck-artist">${escapeHtml(d.artist) || '—'} ${fmtBadge}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}</div>
                     </div>
                     <div class="deck-meta">
                         ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}
-                        ${fmtBadge}
-                        ${isrcText ? ' · ' + isrcText : ''}
                         ${dbText ? ' · ' + dbText : ''}
                     </div>
                 </div>
