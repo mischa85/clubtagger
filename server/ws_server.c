@@ -328,7 +328,7 @@ void *ws_main(void *arg) {
             uint16_t vu_l = atomic_load_explicit(&app->vu_left, memory_order_relaxed);
             uint16_t vu_r = atomic_load_explicit(&app->vu_right, memory_order_relaxed);
             uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
-            uint64_t frames = atomic_load_explicit(&app->audio_frames, memory_order_relaxed);
+            uint64_t frames = atomic_load_explicit(&app->aw.total_written, memory_order_relaxed);
             int is_rec = atomic_load_explicit(&app->is_recording, memory_order_relaxed);
 
             char msg[512];
@@ -336,11 +336,12 @@ void *ws_main(void *arg) {
                 "{\"event\":\"vu\",\"l\":%u,\"r\":%u,"
                 "\"lost\":%llu,\"frames\":%llu,"
                 "\"rate\":%u,\"ch\":%u,\"rec\":%d,"
-                "\"fmt\":\"%s\"}",
+                "\"fmt\":\"%s\",\"src\":\"%s\"}",
                 vu_l, vu_r,
                 (unsigned long long)lost, (unsigned long long)frames,
                 app->aw.rate, app->aw.channels, is_rec,
-                app->cfg.format ? app->cfg.format : "wav");
+                app->cfg.format ? app->cfg.format : "wav",
+                app->cfg.source ? app->cfg.source : "unknown");
             ws_broadcast_text(msg, len);
         }
 

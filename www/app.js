@@ -107,10 +107,12 @@
     function updateRecPanel(data) {
         if (statFormat && data.rate) {
             const fmt = data.fmt ? data.fmt.toUpperCase() : 'WAV';
-            statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch ' + fmt;
+            const src = data.src ? data.src.toUpperCase() : '';
+            statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch ' + fmt + (src ? ' (' + src + ')' : '');
         }
-        if (statRuntime && data.frames && data.rate) {
-            statRuntime.textContent = formatRuntime(Math.floor(data.frames/data.rate));
+        if (statRuntime && data.rate) {
+            const frames = data.frames || 0;
+            statRuntime.textContent = formatRuntime(Math.floor(frames / data.rate));
         }
         if (recStatus) {
             if (data.rec) {
@@ -123,6 +125,10 @@
         }
         if (statLost) {
             statLost.textContent = data.lost || 0;
+        }
+        if (statWritten && data.frames && data.rate) {
+            const bytes = data.frames * data.ch * 3; /* 24-bit = 3 bytes/sample */
+            statWritten.textContent = formatBytes(bytes);
         }
     }
 
