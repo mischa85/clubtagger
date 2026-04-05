@@ -69,7 +69,7 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *byt
             size_t payload_len = h->caplen - offset;
             
             if (verbose) {
-                log_message("[TCP] DBserver: %s:%d -> %s:%d, %zu bytes",
+                vlogmsg("cdj", "[TCP] DBserver: %s:%d -> %s:%d, %zu bytes",
                            ip_to_str(src_ip), src_port, 
                            ip_to_str(dst_ip), dst_port, payload_len);
             }
@@ -108,7 +108,7 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *byt
         uint8_t pkt_type = get_prolink_packet_type(payload);
         
         if (verbose > 1) {
-            log_message("[PROLINK] %s:%d -> %s:%d type=0x%02x len=%zu",
+            vlogmsg("cdj", "[PROLINK] %s:%d -> %s:%d type=0x%02x len=%zu",
                        ip_to_str(src_ip), src_port, 
                        ip_to_str(dst_ip), dst_port,
                        pkt_type, payload_len);
@@ -148,7 +148,7 @@ void packet_handler(u_char *user, const struct pcap_pkthdr *h, const u_char *byt
                 /* CDJ-3000X sends position packets as type 0x0b (60 bytes) */
                 parse_position(payload, payload_len, src_ip);
             } else if (verbose) {
-                log_message("[BEAT-PORT] unhandled type=0x%02x len=%zu from %s",
+                vlogmsg("cdj", "[BEAT-PORT] unhandled type=0x%02x len=%zu from %s",
                            pkt_type, payload_len, ip_to_str(src_ip));
             }
         }

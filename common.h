@@ -50,9 +50,6 @@ void logmsg(const char *tag, const char *fmt, ...);
 /* Log a message with tag (only if verbose enabled) */
 void vlogmsg(const char *tag, const char *fmt, ...);
 
-/* Log a CDJ message (shorthand for vlogmsg("cdj", ...)) */
-#define log_message(...) vlogmsg("cdj", __VA_ARGS__)
-
 /* Format current time to a buffer */
 void now_timestamp(char *out, size_t out_sz);
 
