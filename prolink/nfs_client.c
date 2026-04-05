@@ -45,7 +45,7 @@ void nfs_init_socket(void) {
     
     nfs_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (nfs_sock < 0) {
-        log_message("[NFS] Failed to create socket");
+        vlogmsg("cdj", "[NFS] Failed to create socket");
         return;
     }
     
@@ -53,7 +53,7 @@ void nfs_init_socket(void) {
     if (capture_interface) {
         if (setsockopt(nfs_sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface,
                        strlen(capture_interface) + 1) < 0) {
-            log_message("[NFS] SO_BINDTODEVICE failed: %s", strerror(errno));
+            vlogmsg("cdj", "[NFS] SO_BINDTODEVICE failed: %s", strerror(errno));
             /* Continue anyway */
         }
     }
@@ -65,7 +65,7 @@ void nfs_init_socket(void) {
     bind_addr.sin_port = 0;  /* Let OS assign port */
     bind_addr.sin_addr.s_addr = our_ip;
     if (bind(nfs_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-        log_message("[NFS] Warning: Failed to bind to our IP");
+        vlogmsg("cdj", "[NFS] Warning: Failed to bind to our IP");
     }
     
     /* Set socket timeout */
@@ -190,7 +190,7 @@ int rpc_portmap_getport(uint32_t server_ip, uint32_t program, uint32_t version) 
     
     if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(portmap_getport_reply_t))) {
         if (verbose) {
-            log_message("[PORTMAP] No response from %s:111", ip_to_str(server_ip));
+            vlogmsg("cdj", "[PORTMAP] No response from %s:111", ip_to_str(server_ip));
         }
         return -1;
     }
@@ -205,7 +205,7 @@ int rpc_portmap_getport(uint32_t server_ip, uint32_t program, uint32_t version) 
     int port = (int)RPC_GET_U32((uint8_t *)&result->port);
     
     if (verbose) {
-        log_message("[PORTMAP] Program %u @ %s -> port %d", program, ip_to_str(server_ip), port);
+        vlogmsg("cdj", "[PORTMAP] Program %u @ %s -> port %d", program, ip_to_str(server_ip), port);
     }
     
     return port;
@@ -241,14 +241,14 @@ int nfs_mount_to_port(uint32_t server_ip, uint16_t mount_port, const char *expor
     while (pos % 4 != 0) request[pos++] = 0;
     
     if (verbose) {
-        log_message("[NFS] Mount %s:%d export=%s", ip_to_str(server_ip), mount_port, export_path);
+        vlogmsg("cdj", "[NFS] Mount %s:%d export=%s", ip_to_str(server_ip), mount_port, export_path);
     }
     
     int received = nfs_rpc_call(server_ip, mount_port, request, pos, response, sizeof(response));
     
     if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(mount_mnt_reply_t))) {
         if (verbose) {
-            log_message("[NFS] Mount failed - no response");
+            vlogmsg("cdj", "[NFS] Mount failed - no response");
         }
         return -1;
     }
@@ -258,7 +258,7 @@ int nfs_mount_to_port(uint32_t server_ip, uint16_t mount_port, const char *expor
     uint32_t mount_stat = RPC_GET_U32((uint8_t *)&reply->status);
     
     if (verbose) {
-        log_message("[NFS] Mount status: %u", mount_stat);
+        vlogmsg("cdj", "[NFS] Mount status: %u", mount_stat);
     }
     
     if (mount_stat != 0) return -1;
@@ -283,7 +283,7 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     uint8_t response[1024];
     
     if (verbose) {
-        log_message("[NFS] LOOKUP '%s' in dir fh[0..3]=%02x%02x%02x%02x (port %u)", 
+        vlogmsg("cdj", "[NFS] LOOKUP '%s' in dir fh[0..3]=%02x%02x%02x%02x (port %u)", 
                     name, dir_fh[0], dir_fh[1], dir_fh[2], dir_fh[3], nfs_port);
     }
     
@@ -308,14 +308,14 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     
     int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, sizeof(response));
     if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(nfs_lookup_reply_t))) {
-        if (verbose) log_message("[NFS] LOOKUP '%s' failed: short response (%d bytes)", name, received);
+        if (verbose) vlogmsg("cdj", "[NFS] LOOKUP '%s' failed: short response (%d bytes)", name, received);
         return -1;
     }
     
     /* Check RPC reply status */
     rpc_reply_header_t *rpc = (rpc_reply_header_t *)response;
     if (RPC_GET_U32((uint8_t *)&rpc->reply_stat) != RPC_MSG_ACCEPTED) {
-        if (verbose) log_message("[NFS] LOOKUP '%s' failed: RPC rejected", name);
+        if (verbose) vlogmsg("cdj", "[NFS] LOOKUP '%s' failed: RPC rejected", name);
         return -1;
     }
     
@@ -323,7 +323,7 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     nfs_lookup_reply_t *reply = (nfs_lookup_reply_t *)(response + sizeof(rpc_reply_header_t));
     uint32_t lookup_stat = RPC_GET_U32((uint8_t *)&reply->status);
     if (lookup_stat != NFS_OK) {
-        if (verbose) log_message("[NFS] LOOKUP '%s' failed: nfs_stat=%u", name, lookup_stat);
+        if (verbose) vlogmsg("cdj", "[NFS] LOOKUP '%s' failed: nfs_stat=%u", name, lookup_stat);
         return -1;
     }
     
@@ -331,7 +331,7 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     memcpy(file_fh, reply->fh, NFS_FHSIZE);
     
     if (verbose) {
-        log_message("[NFS] LOOKUP '%s' OK -> fh[0..3]=%02x%02x%02x%02x", 
+        vlogmsg("cdj", "[NFS] LOOKUP '%s' OK -> fh[0..3]=%02x%02x%02x%02x", 
                     name, file_fh[0], file_fh[1], file_fh[2], file_fh[3]);
     }
     
@@ -342,7 +342,7 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
 int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                   uint8_t *buf, size_t buf_len, size_t *bytes_read) {
     if (verbose) {
-        log_message("[NFS] READ file fh[0..3]=%02x%02x%02x%02x (port %u)", 
+        vlogmsg("cdj", "[NFS] READ file fh[0..3]=%02x%02x%02x%02x (port %u)", 
                     file_fh[0], file_fh[1], file_fh[2], file_fh[3], nfs_port);
     }
     
@@ -354,7 +354,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
 
     while (!eof && total_read < buf_len) {
         if (time(NULL) > deadline) {
-            log_message("[NFS] READ timeout after %zu bytes (10s limit)", total_read);
+            vlogmsg("cdj", "[NFS] READ timeout after %zu bytes (10s limit)", total_read);
             *bytes_read = total_read;
             return -1;
         }
@@ -375,7 +375,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         
         int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, NFS_READ_CHUNK + 256);
         if (received < (int)sizeof(rpc_reply_header_t)) {
-            if (verbose) log_message("[NFS] Read failed: only received %d bytes", received);
+            if (verbose) vlogmsg("cdj", "[NFS] Read failed: only received %d bytes", received);
             free(response);
             return -1;
         }
@@ -383,7 +383,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         /* Check RPC reply status */
         rpc_reply_header_t *rpc = (rpc_reply_header_t *)response;
         if (RPC_GET_U32((uint8_t *)&rpc->reply_stat) != RPC_MSG_ACCEPTED) {
-            if (verbose) log_message("[NFS] Read failed: RPC rejected");
+            if (verbose) vlogmsg("cdj", "[NFS] Read failed: RPC rejected");
             free(response);
             return -1;
         }
@@ -394,7 +394,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         uint32_t nfs_stat = RPC_GET_U32((uint8_t *)&nfs_reply->status);
         
         if (nfs_stat != NFS_OK) {
-            if (verbose) log_message("[NFS] Read failed: nfs_stat=%u (NFSERR)", nfs_stat);
+            if (verbose) vlogmsg("cdj", "[NFS] Read failed: nfs_stat=%u (NFSERR)", nfs_stat);
             free(response);
             return -1;
         }
@@ -407,7 +407,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         rpos += 4;
         
         if (data_size > NFS_READ_CHUNK || rpos + (int)data_size > received) {
-            if (verbose) log_message("[NFS] Read failed: data_size=%u rpos=%d received=%d", 
+            if (verbose) vlogmsg("cdj", "[NFS] Read failed: data_size=%u rpos=%d received=%d", 
                                     data_size, rpos, received);
             free(response);
             return -1;
@@ -683,7 +683,7 @@ static void start_pdb_reassembly(uint32_t server_ip, uint32_t client_ip,
     slot->received = 0;
     slot->last_activity = time(NULL);
     
-    log_message("[NFS-SNIFF] Started passive PDB capture from %s (%u bytes)",
+    vlogmsg("cdj", "[NFS-SNIFF] Started passive PDB capture from %s (%u bytes)",
                ip_to_str(server_ip), file_size);
 }
 
@@ -703,13 +703,13 @@ static void add_pdb_data(pdb_reassembly_t *r, uint32_t offset, const uint8_t *da
 
 static void complete_pdb_reassembly(pdb_reassembly_t *r) {
     if (r->is_onelibrary) {
-        log_message("[NFS-SNIFF] Passive OneLibrary capture complete from %s (%u bytes)",
+        vlogmsg("cdj", "[NFS-SNIFF] Passive OneLibrary capture complete from %s (%u bytes)",
                    ip_to_str(r->server_ip), r->received);
         /* Determine slot from file size heuristic (both USB and SD go through same path) */
         uint8_t slot = SLOT_USB;  /* Default to USB */
         onelibrary_process_passive(r->buffer, r->received, r->server_ip, slot);
     } else {
-        log_message("[NFS-SNIFF] Passive PDB capture complete from %s (%u bytes)",
+        vlogmsg("cdj", "[NFS-SNIFF] Passive PDB capture complete from %s (%u bytes)",
                    ip_to_str(r->server_ip), r->received);
         parse_pdb_buffer(r->buffer, r->received, r->server_ip);
     }
@@ -776,7 +776,7 @@ void parse_nfs_request(const uint8_t *data, size_t len,
         if (name[0] == '\0' || (name[0] == '.' && name[1] == '\0')) return;
         
         if (verbose > 1) {
-            log_message("[NFS-SNIFF] LOOKUP from %s -> %s: '%s'",
+            vlogmsg("cdj", "[NFS-SNIFF] LOOKUP from %s -> %s: '%s'",
                        ip_to_str(src_ip), ip_to_str(dst_ip), name);
         }
         
@@ -798,7 +798,7 @@ void parse_nfs_request(const uint8_t *data, size_t len,
         fh_cache_entry_t *fh_entry = find_fh_cache(args->fh, dst_ip);
         
         if (verbose > 1 && fh_entry) {
-            log_message("[NFS-SNIFF] READ from %s: '%s' offset=%u count=%u",
+            vlogmsg("cdj", "[NFS-SNIFF] READ from %s: '%s' offset=%u count=%u",
                        ip_to_str(dst_ip), fh_entry->path, offset, count);
         }
     }
@@ -848,7 +848,7 @@ void parse_nfs_response(const uint8_t *data, size_t len,
             add_fh_cache(reply->fh, src_ip, full_path);
             
             if (verbose) {
-                log_message("[NFS-SNIFF] LOOKUP OK: %s -> '%s'",
+                vlogmsg("cdj", "[NFS-SNIFF] LOOKUP OK: %s -> '%s'",
                            ip_to_str(src_ip), full_path);
             }
             
@@ -859,7 +859,7 @@ void parse_nfs_response(const uint8_t *data, size_t len,
                           strstr(pending->name, "EXPORTLIBRARY.DB"));
 
             if (is_pdb || is_olib) {
-                log_message("[NFS-SNIFF] Detected %s access: %s requesting '%s' from %s",
+                vlogmsg("cdj", "[NFS-SNIFF] Detected %s access: %s requesting '%s' from %s",
                            is_olib ? "OneLibrary" : "PDB",
                            ip_to_str(pending->client_ip), full_path, ip_to_str(src_ip));
 
@@ -939,7 +939,7 @@ void scan_nfs_data_for_metadata(const uint8_t *data, size_t len,
         data[2] == 0x00 && data[3] == 0x00) {
         /* Might be start of PDB - would need full reassembly */
         if (verbose) {
-            log_message("[NFS-SNIFF] Possible PDB data from %s (%zu bytes)",
+            vlogmsg("cdj", "[NFS-SNIFF] Possible PDB data from %s (%zu bytes)",
                        ip_to_str(server_ip), len);
         }
     }
@@ -967,7 +967,7 @@ void scan_nfs_data_for_metadata(const uint8_t *data, size_t len,
             
             /* Only log if substantial (likely a title/artist) */
             if (j >= 4 && verbose > 1) {
-                log_message("[NFS-SNIFF] Possible metadata string: '%s'", text);
+                vlogmsg("cdj", "[NFS-SNIFF] Possible metadata string: '%s'", text);
             }
             
             /* Skip past this string */

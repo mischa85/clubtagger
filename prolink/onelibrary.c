@@ -99,7 +99,7 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
 {
     if (!encrypted || encrypted_len < OLIB_PAGE_SIZE ||
         encrypted_len % OLIB_PAGE_SIZE != 0) {
-        log_message("[OLIB] Invalid file size %zu (must be multiple of %d)",
+        vlogmsg("cdj", "[OLIB] Invalid file size %zu (must be multiple of %d)",
                     encrypted_len, OLIB_PAGE_SIZE);
         return NULL;
     }
@@ -112,25 +112,25 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
 
     /* Derive encryption key: PBKDF2-HMAC-SHA512 */
     unsigned char enc_key[OLIB_KEY_SIZE];
-    log_message("[OLIB] Deriving key (PBKDF2-HMAC-SHA512, %d iterations)...",
+    vlogmsg("cdj", "[OLIB] Deriving key (PBKDF2-HMAC-SHA512, %d iterations)...",
                 OLIB_KDF_ITER);
 
     if (!olib_passphrase || !olib_passphrase[0]) {
-        log_message("[OLIB] No decryption key set (use --olib-key)");
+        vlogmsg("cdj", "[OLIB] No decryption key set (use --olib-key)");
         return NULL;
     }
 
     if (!PKCS5_PBKDF2_HMAC(olib_passphrase, strlen(olib_passphrase),
                             salt, OLIB_SALT_SIZE, OLIB_KDF_ITER,
                             EVP_sha512(), OLIB_KEY_SIZE, enc_key)) {
-        log_message("[OLIB] PBKDF2 key derivation failed");
+        vlogmsg("cdj", "[OLIB] PBKDF2 key derivation failed");
         return NULL;
     }
 
     /* Allocate output buffer (same size as input) */
     uint8_t *output = malloc(encrypted_len);
     if (!output) {
-        log_message("[OLIB] Failed to allocate %zu bytes for decryption", encrypted_len);
+        vlogmsg("cdj", "[OLIB] Failed to allocate %zu bytes for decryption", encrypted_len);
         return NULL;
     }
 
@@ -160,7 +160,7 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
 
     /* Verify output has valid SQLite header */
     if (memcmp(output, SQLITE_MAGIC, 15) != 0) {
-        log_message("[OLIB] Decryption failed - invalid SQLite header (wrong key?)");
+        vlogmsg("cdj", "[OLIB] Decryption failed - invalid SQLite header (wrong key?)");
         free(output);
         return NULL;
     }
@@ -170,7 +170,7 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
     output[20] = OLIB_RESERVE_SIZE;
 
     *out_len = encrypted_len;
-    log_message("[OLIB] Decrypted %d pages (%zu bytes), valid SQLite header",
+    vlogmsg("cdj", "[OLIB] Decrypted %d pages (%zu bytes), valid SQLite header",
                 num_pages, encrypted_len);
     return output;
 }
@@ -194,7 +194,7 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
     /* Open in-memory database and deserialize the decrypted data into it */
     int rc = sqlite3_open(":memory:", &db);
     if (rc != SQLITE_OK) {
-        log_message("[OLIB] sqlite3_open failed: %s", sqlite3_errmsg(db));
+        vlogmsg("cdj", "[OLIB] sqlite3_open failed: %s", sqlite3_errmsg(db));
         sqlite3_close(db);
         free(decrypted_data);
         return -1;
@@ -206,7 +206,7 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
     rc = sqlite3_deserialize(db, "main", decrypted_data, (sqlite3_int64)data_len,
                              (sqlite3_int64)data_len, 0);
     if (rc != SQLITE_OK) {
-        log_message("[OLIB] sqlite3_deserialize failed: %s", sqlite3_errmsg(db));
+        vlogmsg("cdj", "[OLIB] sqlite3_deserialize failed: %s", sqlite3_errmsg(db));
         sqlite3_close(db);
         free(decrypted_data);
         return -1;
@@ -295,7 +295,7 @@ void remove_onelibrary(uint32_t device_ip, uint8_t slot)
             memset(&olib_databases[olib_count - 1], 0, sizeof(onelibrary_t));
             olib_count--;
 
-            log_message("🗑️ Removed OneLibrary: %s @ %s (%d tracks)",
+            vlogmsg("cdj", "🗑️ Removed OneLibrary: %s @ %s (%d tracks)",
                        slot == 3 ? "USB" : (slot == 2 ? "SD" : "?"),
                        ip_to_str(device_ip), track_count);
             return;
@@ -359,7 +359,7 @@ int onelibrary_lookup(uint32_t content_id,
             sqlite3_finalize(stmt);
 
             if (verbose) {
-                log_message("[OLIB] Found track %u: \"%s\" by \"%s\"",
+                vlogmsg("cdj", "[OLIB] Found track %u: \"%s\" by \"%s\"",
                            content_id, title ? title : "", artist ? artist : "");
             }
             return 0;
@@ -402,17 +402,17 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
         case 2: export_path = "/B/"; break;  /* SD card */
         case 3: export_path = "/C/"; break;  /* USB */
         default:
-            log_message("[OLIB] Unknown slot type %d", slot);
+            vlogmsg("cdj", "[OLIB] Unknown slot type %d", slot);
             return -1;
     }
 
-    log_message("📥 Fetching OneLibrary from %s (slot %s, export %s)...",
+    vlogmsg("cdj", "📥 Fetching OneLibrary from %s (slot %s, export %s)...",
                 ip_to_str(device_ip), cdj_slot_name(slot), export_path);
 
     /* Step 1: Query portmapper for mount port */
     int mount_port = rpc_portmap_getport(device_ip, MOUNT_PROGRAM, MOUNT_VERSION);
     if (mount_port <= 0) {
-        log_message("[OLIB] Portmapper query failed");
+        vlogmsg("cdj", "[OLIB] Portmapper query failed");
         return -1;
     }
 
@@ -426,21 +426,21 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     /* Step 2: Mount the export */
     if (nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path,
                           root_fh, &root_fh_len) != 0) {
-        log_message("[OLIB] Mount failed");
+        vlogmsg("cdj", "[OLIB] Mount failed");
         return -1;
     }
 
     /* Step 3: Lookup PIONEER/rekordbox/exportLibrary.db */
     if (olib_nfs_lookup(device_ip, root_fh, "PIONEER", pioneer_fh) != 0) {
-        log_message("[OLIB] PIONEER dir not found");
+        vlogmsg("cdj", "[OLIB] PIONEER dir not found");
         return -1;
     }
     if (olib_nfs_lookup(device_ip, pioneer_fh, "rekordbox", rb_fh) != 0) {
-        log_message("[OLIB] rekordbox dir not found");
+        vlogmsg("cdj", "[OLIB] rekordbox dir not found");
         return -1;
     }
     if (olib_nfs_lookup(device_ip, rb_fh, "exportLibrary.db", olib_fh) != 0) {
-        log_message("[OLIB] exportLibrary.db not found (no OneLibrary on media)");
+        vlogmsg("cdj", "[OLIB] exportLibrary.db not found (no OneLibrary on media)");
         return -1;
     }
 
@@ -448,18 +448,18 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     uint8_t *encrypted = malloc(OLIB_MAX_FILE_SIZE);
     if (!encrypted) return -1;
 
-    log_message("📖 Reading exportLibrary.db...");
+    vlogmsg("cdj", "📖 Reading exportLibrary.db...");
 
     size_t total_read = 0;
     if (nfs_read_file(device_ip, g_nfs_port, olib_fh, encrypted,
                       OLIB_MAX_FILE_SIZE, &total_read) != 0) {
-        log_message("[OLIB] Read error");
+        vlogmsg("cdj", "[OLIB] Read error");
         nfs_close_socket();
         free(encrypted);
         return -1;
     }
 
-    log_message("📄 Downloaded %zu bytes", total_read);
+    vlogmsg("cdj", "📄 Downloaded %zu bytes", total_read);
     nfs_close_socket();
 
     /* Step 5: Decrypt */
@@ -468,7 +468,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     free(encrypted);
 
     if (!decrypted) {
-        log_message("[OLIB] Decryption failed");
+        vlogmsg("cdj", "[OLIB] Decryption failed");
         return -1;
     }
 
@@ -497,7 +497,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     memset(olib, 0, sizeof(onelibrary_t));
 
     if (onelibrary_open(olib, decrypted, decrypted_len, device_ip, slot) != 0) {
-        log_message("[OLIB] Failed to open decrypted database");
+        vlogmsg("cdj", "[OLIB] Failed to open decrypted database");
         return -1;
     }
 
@@ -513,14 +513,14 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
 void onelibrary_process_passive(const uint8_t *data, size_t len,
                                 uint32_t server_ip, uint8_t slot)
 {
-    log_message("[OLIB] Processing passively captured OneLibrary (%zu bytes) from %s",
+    vlogmsg("cdj", "[OLIB] Processing passively captured OneLibrary (%zu bytes) from %s",
                len, ip_to_str(server_ip));
 
     /* Decrypt */
     size_t decrypted_len = 0;
     uint8_t *decrypted = onelibrary_decrypt(data, len, &decrypted_len);
     if (!decrypted) {
-        log_message("[OLIB] Passive decryption failed");
+        vlogmsg("cdj", "[OLIB] Passive decryption failed");
         return;
     }
 
@@ -548,6 +548,6 @@ void onelibrary_process_passive(const uint8_t *data, size_t len,
     memset(olib, 0, sizeof(onelibrary_t));
 
     if (onelibrary_open(olib, decrypted, decrypted_len, server_ip, slot) != 0) {
-        log_message("[OLIB] Failed to open passively captured database");
+        vlogmsg("cdj", "[OLIB] Failed to open passively captured database");
     }
 }

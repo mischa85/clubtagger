@@ -77,7 +77,7 @@ static void log_detected_devices(void) {
         }
     }
     
-    log_message("[REG] Network scan complete. Detected devices:");
+    vlogmsg("cdj", "[REG] Network scan complete. Detected devices:");
     
     for (int i = 0; i < MAX_DEVICES; i++) {
         if (devices[i].active && (now - devices[i].last_seen) < DEVICE_TIMEOUT_SEC) {
@@ -88,7 +88,7 @@ static void log_detected_devices(void) {
                 case DEVICE_TYPE_REKORDBOX: type_str = "rekordbox"; break;
                 default:                    type_str = "Unknown"; break;
             }
-            log_message("[REG]   #%d: %s (%s) @ %s", 
+            vlogmsg("cdj", "[REG]   #%d: %s (%s) @ %s", 
                         devices[i].device_num,
                         devices[i].name[0] ? devices[i].name : "unnamed",
                         type_str,
@@ -96,9 +96,9 @@ static void log_detected_devices(void) {
         }
     }
     if (device_count == 0) {
-        log_message("[REG]   (none)");
+        vlogmsg("cdj", "[REG]   (none)");
     }
-    log_message("[REG] Max players for this network: %d", get_max_players());
+    vlogmsg("cdj", "[REG] Max players for this network: %d", get_max_players());
 }
 
 /* Detect max players: 6 for CDJ-3000 only networks, 4 if any older model present */
@@ -150,7 +150,7 @@ uint8_t find_free_slot(void) {
     for (int slot = 1; slot <= MAX_DEVICE_NUM; slot++) {
         if (!occupied[slot]) {
             if (slot > get_max_players()) {
-                log_message("[REG] Using slot %d (no dbserver, NFS only)", slot);
+                vlogmsg("cdj", "[REG] Using slot %d (no dbserver, NFS only)", slot);
             }
             return slot;
         }
@@ -214,7 +214,7 @@ void try_optimize_slot(void) {
         }
         
         if (!slot_in_use) {
-            log_message("[REG] ✅ Slot %d now free - switching from %d (dbserver enabled)",
+            vlogmsg("cdj", "[REG] ✅ Slot %d now free - switching from %d (dbserver enabled)",
                         slot, our_device_num);
             our_device_num = slot;
             keepalives_sent_active = 0;
@@ -333,7 +333,7 @@ int send_prolink_keepalive(const char *interface) {
     if (announce_socket < 0) {
         announce_socket = socket(AF_INET, SOCK_DGRAM, 0);
         if (announce_socket < 0) {
-            log_message("[ANNOUNCE] Socket creation failed: %s", strerror(errno));
+            vlogmsg("cdj", "[ANNOUNCE] Socket creation failed: %s", strerror(errno));
             return -1;
         }
         
@@ -342,7 +342,7 @@ int send_prolink_keepalive(const char *interface) {
         
         our_ip = get_link_local_ip(interface);
         if (our_ip == 0) {
-            log_message("[ANNOUNCE] No IP address on interface %s", interface);
+            vlogmsg("cdj", "[ANNOUNCE] No IP address on interface %s", interface);
             close(announce_socket);
             announce_socket = -1;
             return -2;
@@ -355,13 +355,13 @@ int send_prolink_keepalive(const char *interface) {
         bind_addr.sin_addr.s_addr = our_ip;
         
         if (bind(announce_socket, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-            log_message("[ANNOUNCE] Bind failed: %s", strerror(errno));
+            vlogmsg("cdj", "[ANNOUNCE] Bind failed: %s", strerror(errno));
             close(announce_socket);
             announce_socket = -1;
             return -3;
         }
         
-        log_message("[ANNOUNCE] Socket bound to %s:%d", ip_to_str(our_ip), PROLINK_KEEPALIVE_PORT);
+        vlogmsg("cdj", "[ANNOUNCE] Socket bound to %s:%d", ip_to_str(our_ip), PROLINK_KEEPALIVE_PORT);
         
         /* Also create status socket (port 50002) */
         status_socket = socket(AF_INET, SOCK_DGRAM, 0);
@@ -389,7 +389,7 @@ int send_prolink_keepalive(const char *interface) {
     
     /* Must have a valid device number */
     if (our_device_num == 0) {
-        if (verbose) log_message("[ANNOUNCE] No device slot assigned, cannot send keepalive");
+        if (verbose) vlogmsg("cdj", "[ANNOUNCE] No device slot assigned, cannot send keepalive");
         return -4;
     }
     
@@ -433,12 +433,12 @@ int send_prolink_keepalive(const char *interface) {
                           (struct sockaddr *)&dest, sizeof(dest));
     
     if (sent != sizeof(pkt)) {
-        if (verbose) log_message("[ANNOUNCE] Send failed: %s", strerror(errno));
+        if (verbose) vlogmsg("cdj", "[ANNOUNCE] Send failed: %s", strerror(errno));
         return -1;
     }
     
     if (verbose) {
-        log_message("[ANNOUNCE] Sent keepalive from %s", ip_to_str(our_ip));
+        vlogmsg("cdj", "[ANNOUNCE] Sent keepalive from %s", ip_to_str(our_ip));
     }
     
     return 0;
@@ -492,7 +492,7 @@ int do_full_registration(const char *interface) {
             observation_start = now;
             status_packets_seen = 0;
             registration_state = REG_OBSERVING;
-            log_message("[REG] Observing network for %d seconds before joining...", OBSERVATION_PERIOD_SEC);
+            vlogmsg("cdj", "[REG] Observing network for %d seconds before joining...", OBSERVATION_PERIOD_SEC);
             return 0;  /* Don't send anything yet */
 
         case REG_OBSERVING:
@@ -528,7 +528,7 @@ int do_full_registration(const char *interface) {
             /* Now claim a slot */
             our_device_num = find_free_slot();
             if (our_device_num == 0) {
-                log_message("[REG] No free slot available (max %d players), staying passive", get_max_players());
+                vlogmsg("cdj", "[REG] No free slot available (max %d players), staying passive", get_max_players());
                 registration_state = REG_PASSIVE;
                 return -1;
             }
@@ -538,7 +538,7 @@ int do_full_registration(const char *interface) {
             auto_passive = 0;
             keepalives_sent_active = 0;
             registration_start = now;
-            log_message("[REG] Acquired slot %d, starting keepalives...", our_device_num);
+            vlogmsg("cdj", "[REG] Acquired slot %d, starting keepalives...", our_device_num);
             /* Fall through */
             
         case REG_STAGE_0:
@@ -551,7 +551,7 @@ int do_full_registration(const char *interface) {
         case REG_ACTIVE:
             /* Check if we should release the slot */
             if (should_release_slot()) {
-                log_message("[REG] Releasing slot %d (network full or queries done)", our_device_num);
+                vlogmsg("cdj", "[REG] Releasing slot %d (network full or queries done)", our_device_num);
                 our_device_num = 0;
                 registration_state = REG_PASSIVE;
                 if (announce_socket >= 0) {
@@ -564,7 +564,7 @@ int do_full_registration(const char *interface) {
             send_prolink_keepalive(interface);
             keepalives_sent_active++;
             if (keepalives_sent_active == MIN_KEEPALIVES_BEFORE_NFS) {
-                log_message("[REG] Ready for DBServer queries after %d keepalives", keepalives_sent_active);
+                vlogmsg("cdj", "[REG] Ready for DBServer queries after %d keepalives", keepalives_sent_active);
             }
             break;
         
@@ -604,18 +604,18 @@ int ensure_registration_active(void) {
         if (our_device_num == 0) {
             our_device_num = find_free_slot();
             if (our_device_num == 0) {
-                log_message("[REG] No free slot for re-activation (max %d players)", get_max_players());
+                vlogmsg("cdj", "[REG] No free slot for re-activation (max %d players)", get_max_players());
                 return 0;  /* Network full, fall back to NFS-only */
             }
-            log_message("[REG] Activating with slot %d for DBServer query...", our_device_num);
+            vlogmsg("cdj", "[REG] Activating with slot %d for DBServer query...", our_device_num);
         } else {
-            log_message("[REG] Re-activating slot %d for DBServer query...", our_device_num);
+            vlogmsg("cdj", "[REG] Re-activating slot %d for DBServer query...", our_device_num);
         }
         
         /* Send a burst of keepalives to re-establish presence */
         for (int i = 0; i < REACTIVATION_BURST_COUNT; i++) {
             if (send_prolink_keepalive(capture_interface) < 0) {
-                log_message("[REG] Re-activation keepalive failed");
+                vlogmsg("cdj", "[REG] Re-activation keepalive failed");
                 our_device_num = 0;
                 return 0;
             }
@@ -624,7 +624,7 @@ int ensure_registration_active(void) {
         
         registration_state = REG_ACTIVE;
         keepalives_sent_active = REACTIVATION_BURST_COUNT;
-        log_message("[REG] Re-activated on slot %d", our_device_num);
+        vlogmsg("cdj", "[REG] Re-activated on slot %d", our_device_num);
         return 1;
     }
     

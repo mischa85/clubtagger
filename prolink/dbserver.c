@@ -110,7 +110,7 @@ int dbserver_transact(int sock, const uint8_t *msg, size_t msg_len,
                       uint8_t *resp, size_t resp_max) {
     ssize_t sent = send(sock, msg, msg_len, 0);
     if (sent != (ssize_t)msg_len) {
-        if (verbose) log_message("[DBSERVER] Send failed: sent=%zd errno=%d", sent, errno);
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Send failed: sent=%zd errno=%d", sent, errno);
         return -1;
     }
     
@@ -125,7 +125,7 @@ int dbserver_transact(int sock, const uint8_t *msg, size_t msg_len,
                 usleep(100000);  /* 100ms wait */
                 continue;
             }
-            if (verbose) log_message("[DBSERVER] recv error errno=%d", errno);
+            if (verbose) vlogmsg("cdj", "[DBSERVER] recv error errno=%d", errno);
             break;
         }
         if (received == 0) break;
@@ -153,7 +153,7 @@ int dbserver_transact(int sock, const uint8_t *msg, size_t msg_len,
     
 done_recv:
     if (verbose) {
-        log_message("[DBSERVER] Received %zd bytes", total);
+        vlogmsg("cdj", "[DBSERVER] Received %zd bytes", total);
     }
     
     return (int)total;
@@ -169,19 +169,19 @@ int dbserver_connect(uint32_t server_ip) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return -1;
     
-    log_message("[DBSERVER] our_ip=0x%08x (%s)", our_ip, ip_to_str(our_ip));
+    vlogmsg("cdj", "[DBSERVER] our_ip=0x%08x (%s)", our_ip, ip_to_str(our_ip));
     
     /* Bind to our Pro DJ Link interface for link-local routing */
     if (capture_interface) {
         if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface, 
                        strlen(capture_interface) + 1) < 0) {
-            log_message("[DBSERVER] SO_BINDTODEVICE(%s) failed: %s", capture_interface, strerror(errno));
+            vlogmsg("cdj", "[DBSERVER] SO_BINDTODEVICE(%s) failed: %s", capture_interface, strerror(errno));
             /* Continue anyway - might work without it */
         } else {
-            if (verbose) log_message("[DBSERVER] Bound to interface %s", capture_interface);
+            if (verbose) vlogmsg("cdj", "[DBSERVER] Bound to interface %s", capture_interface);
         }
     } else {
-        log_message("[DBSERVER] Warning: capture_interface not set");
+        vlogmsg("cdj", "[DBSERVER] Warning: capture_interface not set");
     }
     
     /* Bind to our Pro DJ Link IP */
@@ -191,7 +191,7 @@ int dbserver_connect(uint32_t server_ip) {
     bind_addr.sin_addr.s_addr = our_ip;
     bind_addr.sin_port = 0;
     if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-        log_message("[DBSERVER] Failed to bind to our IP: %s", strerror(errno));
+        vlogmsg("cdj", "[DBSERVER] Failed to bind to our IP: %s", strerror(errno));
         close(sock);
         return -1;
     }
@@ -218,7 +218,7 @@ int dbserver_connect(uint32_t server_ip) {
     pfd.events = POLLOUT;
     
     if (poll(&pfd, 1, 3000) <= 0) {
-        if (verbose) log_message("[DBSERVER] Connect timeout to %s", ip_to_str(server_ip));
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Connect timeout to %s", ip_to_str(server_ip));
         close(sock);
         return -1;
     }
@@ -226,7 +226,7 @@ int dbserver_connect(uint32_t server_ip) {
     int error = 0;
     socklen_t len = sizeof(error);
     if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len) != 0 || error != 0) {
-        log_message("[DBSERVER] Connect error to %s: %s (errno=%d)", 
+        vlogmsg("cdj", "[DBSERVER] Connect error to %s: %s (errno=%d)", 
                     ip_to_str(server_ip), strerror(error), error);
         close(sock);
         return -1;
@@ -237,7 +237,7 @@ int dbserver_connect(uint32_t server_ip) {
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     
-    if (verbose) log_message("[DBSERVER] Connected to %s", ip_to_str(server_ip));
+    if (verbose) vlogmsg("cdj", "[DBSERVER] Connected to %s", ip_to_str(server_ip));
     
     return sock;
 }
@@ -251,13 +251,13 @@ int dbserver_setup(int sock, uint8_t device_num) {
     pos = add_int32_field(msg, 1);
     
     if (send(sock, msg, pos, 0) != pos) {
-        if (verbose) log_message("[DBSERVER] Setup step 1 send failed");
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 1 send failed");
         return -1;
     }
     
     ssize_t received = recv(sock, resp, sizeof(resp), 0);
     if (received < 5) {
-        if (verbose) log_message("[DBSERVER] Setup step 1 recv failed (%zd bytes)", received);
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 1 recv failed (%zd bytes)", received);
         return -1;
     }
     
@@ -267,13 +267,13 @@ int dbserver_setup(int sock, uint8_t device_num) {
     pos += add_int32_field(msg + pos, device_num);
     
     if (send(sock, msg, pos, 0) != pos) {
-        if (verbose) log_message("[DBSERVER] Setup step 2 send failed");
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 2 send failed");
         return -1;
     }
     
     received = recv(sock, resp, sizeof(resp), 0);
     if (received < 12) {
-        if (verbose) log_message("[DBSERVER] Setup step 2 recv failed (%zd bytes)", received);
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 2 recv failed (%zd bytes)", received);
         return -1;
     }
     
@@ -283,7 +283,7 @@ int dbserver_setup(int sock, uint8_t device_num) {
         resp[2] != ((DBSERVER_MAGIC >> 16) & 0xFF) ||
         resp[3] != ((DBSERVER_MAGIC >> 8) & 0xFF) ||
         resp[4] != (DBSERVER_MAGIC & 0xFF)) {
-        if (verbose) log_message("[DBSERVER] Setup bad magic");
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup bad magic");
         return -1;
     }
     
@@ -297,7 +297,7 @@ int dbserver_disconnect(int sock) {
     
     send(sock, msg, pos, 0);
     
-    if (verbose) log_message("[DBSERVER] Sent disconnect");
+    if (verbose) vlogmsg("cdj", "[DBSERVER] Sent disconnect");
     return 0;
 }
 
@@ -330,11 +330,11 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
         for (int i = 0; i < pos && i < 60; i++) {
             hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", msg[i]);
         }
-        log_message("[DBSERVER] Query msg (%d bytes): %s", pos, hex);
+        vlogmsg("cdj", "[DBSERVER] Query msg (%d bytes): %s", pos, hex);
     }
     
     if (verbose) {
-        log_message("[DBSERVER] Request: device=%d slot=%d rekordbox_id=%u DMST=0x%08x", 
+        vlogmsg("cdj", "[DBSERVER] Request: device=%d slot=%d rekordbox_id=%u DMST=0x%08x", 
                    device, slot, rekordbox_id, dmst);
     }
     
@@ -347,11 +347,11 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
         for (int i = 0; i < received && i < 50; i++) {
             hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", resp[i]);
         }
-        log_message("[DBSERVER] Resp (%d bytes): %s", received, hex);
+        vlogmsg("cdj", "[DBSERVER] Resp (%d bytes): %s", received, hex);
     }
     
     if (received < 20) {
-        log_message("[DBSERVER] Response too short (%d < 20)", received);
+        vlogmsg("cdj", "[DBSERVER] Response too short (%d < 20)", received);
         return -1;
     }
     
@@ -361,7 +361,7 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
         if (is_dbserver_magic(&resp[i])) {
             if (i + 13 <= received) {
                 uint16_t rtype = get_msg_type(resp, i);
-                if (verbose > 1) log_message("[DBSERVER] Found msg at %d, type=0x%04x", i, rtype);
+                if (verbose > 1) vlogmsg("cdj", "[DBSERVER] Found msg at %d, type=0x%04x", i, rtype);
                 if (rtype == DBMSG_SUCCESS) {
                     /* Header is 32 bytes: 5(magic)+5(txid)+3(msgtype)+2(argcnt)+17(argtags) */
                     /* Arg1 at +32 (5 bytes), Arg2 (num_items) at +37 (5 bytes) */
@@ -376,9 +376,9 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
         }
     }
     
-    if (verbose) log_message("[DBSERVER] num_items=%d", num_items);
+    if (verbose) vlogmsg("cdj", "[DBSERVER] num_items=%d", num_items);
     if (num_items == 0 || num_items == (int)0xffffffff) {
-        log_message("[DBSERVER] No items (num_items=%d)", num_items);
+        vlogmsg("cdj", "[DBSERVER] No items (num_items=%d)", num_items);
         return -1;
     }
     
@@ -438,9 +438,9 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
     }
     
     if (verbose) {
-        log_message("[DBSERVER] Parse result: found_title=%d found_artist=%d", found_title, found_artist);
-        if (found_title) log_message("[DBSERVER] Title: %s", title);
-        if (found_artist) log_message("[DBSERVER] Artist: %s", artist);
+        vlogmsg("cdj", "[DBSERVER] Parse result: found_title=%d found_artist=%d", found_title, found_artist);
+        if (found_title) vlogmsg("cdj", "[DBSERVER] Title: %s", title);
+        if (found_artist) vlogmsg("cdj", "[DBSERVER] Artist: %s", artist);
     }
     
     return (found_title || found_artist) ? 0 : -1;
@@ -470,7 +470,7 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
         for (int i = 0; i < received && i < 60; i++) {
             hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", resp[i]);
         }
-        log_message("[DBSERVER] Unanalyzed resp (%d bytes): %s", received, hex);
+        vlogmsg("cdj", "[DBSERVER] Unanalyzed resp (%d bytes): %s", received, hex);
     }
     
     if (received < 20) {
@@ -495,7 +495,7 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
             }
         }
     }
-    log_message("[DBSERVER] Unanalyzed: %d items available", num_items);
+    vlogmsg("cdj", "[DBSERVER] Unanalyzed: %d items available", num_items);
     
     if (num_items == 0 || num_items == (int)0xffffffff || num_items == DBMSG_UNANALYZED_REQ) {
         return -1;
@@ -571,7 +571,7 @@ int dbserver_query_metadata(uint32_t device_ip, uint8_t our_device_param, uint8_
                             char *artist, size_t artist_len) {
     /* Ensure we're registered on the network before querying */
     if (!ensure_registration_active()) {
-        log_message("[DBSERVER] Cannot query - no network slot available");
+        vlogmsg("cdj", "[DBSERVER] Cannot query - no network slot available");
         return CDJ_ERR_CONNECT;
     }
     
@@ -587,20 +587,20 @@ int dbserver_query_metadata(uint32_t device_ip, uint8_t our_device_param, uint8_
         return CDJ_ERR_CONNECT;
     }
     
-    log_message("[DBSERVER] Connecting to %s...", ip_to_str(device_ip));
+    vlogmsg("cdj", "[DBSERVER] Connecting to %s...", ip_to_str(device_ip));
     int sock = dbserver_connect(device_ip);
     if (sock < 0) {
-        log_message("[DBSERVER] Connect failed to %s", ip_to_str(device_ip));
+        vlogmsg("cdj", "[DBSERVER] Connect failed to %s", ip_to_str(device_ip));
         return CDJ_ERR_CONNECT;
     }
-    log_message("[DBSERVER] Connected, setting up as device %d...", our_device);
+    vlogmsg("cdj", "[DBSERVER] Connected, setting up as device %d...", our_device);
     
     if (dbserver_setup(sock, our_device) != 0) {
-        log_message("[DBSERVER] Setup failed");
+        vlogmsg("cdj", "[DBSERVER] Setup failed");
         close(sock);
         return CDJ_ERR_CONNECT;
     }
-    log_message("[DBSERVER] Setup OK, querying target=%d slot=%d id=%u type=%d", 
+    vlogmsg("cdj", "[DBSERVER] Setup OK, querying target=%d slot=%d id=%u type=%d", 
                target_device, slot, track_id, track_type);
     
     int result;
@@ -649,7 +649,7 @@ int dbserver_query_port(uint32_t server_ip) {
     int ret = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
     if (ret < 0 && errno != EINPROGRESS) {
         close(sock);
-        log_message("[DBSERVER] RemoteDB 12523 connect failed, using port %d", DBSERVER_PORT);
+        vlogmsg("cdj", "[DBSERVER] RemoteDB 12523 connect failed, using port %d", DBSERVER_PORT);
         return DBSERVER_PORT;
     }
 
@@ -824,7 +824,7 @@ void parse_dbserver_traffic(const uint8_t *data, size_t len,
         uint16_t msg_type = get_msg_type(data, msg_start);
         
         if (verbose > 1) {
-            log_message("[DBSNIFF] msg_type=0x%04x txid=%u from %s -> %s",
+            vlogmsg("cdj", "[DBSNIFF] msg_type=0x%04x txid=%u from %s -> %s",
                        msg_type, txid, ip_to_str(src_ip), ip_to_str(dst_ip));
         }
         
@@ -857,7 +857,7 @@ void parse_dbserver_traffic(const uint8_t *data, size_t len,
                                     (data[pos + 3] << 8) | data[pos + 4];
             
             if (verbose) {
-                log_message("[DBSNIFF] Metadata query: %s -> %s device=%d slot=%d id=%u type=%s",
+                vlogmsg("cdj", "[DBSNIFF] Metadata query: %s -> %s device=%d slot=%d id=%u type=%s",
                            ip_to_str(src_ip), ip_to_str(dst_ip),
                            device, slot, rekordbox_id,
                            track_type == TRACK_REKORDBOX ? "rekordbox" : "unanalyzed");
@@ -913,7 +913,7 @@ void parse_dbserver_traffic(const uint8_t *data, size_t len,
                 pending_db_query_t *query = find_pending_db_query(dst_ip, src_ip);
                 
                 if (query && query->rekordbox_id != 0) {
-                    log_message("[DBSNIFF] Learned: id=%u title='%s' artist='%s'",
+                    vlogmsg("cdj", "[DBSNIFF] Learned: id=%u title='%s' artist='%s'",
                                query->rekordbox_id, title, artist);
                     
                     /* Add to track cache */
@@ -929,7 +929,7 @@ void parse_dbserver_traffic(const uint8_t *data, size_t len,
                         entry->last_seen = time(NULL);
                     }
                 } else if (verbose) {
-                    log_message("[DBSNIFF] Menu item: title='%s' artist='%s' (no pending query)",
+                    vlogmsg("cdj", "[DBSNIFF] Menu item: title='%s' artist='%s' (no pending query)",
                                title, artist);
                 }
             }
@@ -938,7 +938,7 @@ void parse_dbserver_traffic(const uint8_t *data, size_t len,
         /* Handle SUCCESS response (indicates query completed) */
         else if (msg_type == DBMSG_SUCCESS) {
             if (verbose > 1) {
-                log_message("[DBSNIFF] SUCCESS response from %s", ip_to_str(src_ip));
+                vlogmsg("cdj", "[DBSNIFF] SUCCESS response from %s", ip_to_str(src_ip));
             }
         }
     }

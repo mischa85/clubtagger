@@ -102,14 +102,14 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
                 if (dev->device_type == DEVICE_TYPE_CDJ && 
                     capture_interface && 
                     registration_state == REG_IDLE) {
-                    log_message("[REG] Starting registration (CDJ detected)...");
+                    vlogmsg("cdj", "[REG] Starting registration (CDJ detected)...");
                     do_full_registration(capture_interface);
                     last_keepalive_sent = time(NULL);
                 }
             }
             
             if (verbose) {
-                log_message("[ANNOUNCE] Device %d: %s (%s) at %s",
+                vlogmsg("cdj", "[ANNOUNCE] Device %d: %s (%s) at %s",
                            device_num, name, device_type_name(dev->device_type),
                            ip_to_str(src_ip));
             }
@@ -133,7 +133,7 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
                 capture_interface && 
                 registration_state == REG_IDLE &&
                 dev->track_title[0] == '\0') {
-                log_message("[REG] Starting registration (CDJ keepalive, no track info)...");
+                vlogmsg("cdj", "[REG] Starting registration (CDJ keepalive, no track info)...");
                 do_full_registration(capture_interface);
                 last_keepalive_sent = time(NULL);
             }
@@ -171,7 +171,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
     uint8_t subtype = hdr->subtype;
     
     if (verbose) {
-        log_message("[STATUS] Packet from %s: subtype=0x%02x len=%zu",
+        vlogmsg("cdj", "[STATUS] Packet from %s: subtype=0x%02x len=%zu",
                    ip_to_str(src_ip), subtype, len);
     }
     
@@ -237,12 +237,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         status_packets_seen++;
 
         if (verbose) {
-            log_message("[STATUS] Got subtype 0x0a packet, len=%zu (need %zu)", len, sizeof(cdj_status_packet_t));
+            vlogmsg("cdj", "[STATUS] Got subtype 0x0a packet, len=%zu (need %zu)", len, sizeof(cdj_status_packet_t));
         }
 
         if (len < sizeof(cdj_status_packet_t)) {
             if (verbose) {
-                log_message("[STATUS] Short status packet (%zu < %zu bytes)", 
+                vlogmsg("cdj", "[STATUS] Short status packet (%zu < %zu bytes)", 
                            len, sizeof(cdj_status_packet_t));
             }
             return;
@@ -259,11 +259,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 int hlen = 0;
                 for (size_t i = 0x70; i < 0xa0 && i < len && hlen < 240; i++)
                     hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", data[i]);
-                log_message("[STATUS] Dev%d: sub2=0x%02x rbid=%u slot=0x%02x [70-9f]: %s",
+                vlogmsg("cdj", "[STATUS] Dev%d: sub2=0x%02x rbid=%u slot=0x%02x [70-9f]: %s",
                            device_num, subtype2,
                            BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot, hex);
             } else {
-                log_message("[STATUS] Dev%d: subtype2=0x%02x len=%zu rekordbox_id=%u slot=0x%02x play_state=0x%02x",
+                vlogmsg("cdj", "[STATUS] Dev%d: subtype2=0x%02x len=%zu rekordbox_id=%u slot=0x%02x play_state=0x%02x",
                            device_num, subtype2, len,
                            BE32_TO_HOST(pkt->rekordbox_id_be), pkt->track_slot,
                            pkt->play_state);
@@ -602,7 +602,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         if (pkt->track_type == TRACK_CD_AUDIO || dev->track_slot == SLOT_CD) {
             dev->track_type = TRACK_UNANALYZED;
             if (verbose > 1) {
-                log_message("[STATUS] CD/audio track detected, using UNANALYZED type");
+                vlogmsg("cdj", "[STATUS] CD/audio track detected, using UNANALYZED type");
             }
         } else if (pkt->track_type == TRACK_REKORDBOX) {
             dev->track_type = TRACK_REKORDBOX;
@@ -613,7 +613,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_type = TRACK_REKORDBOX;
         }
         if (verbose > 1) {
-            log_message("[STATUS] Dev%d: Tr=%d slot=%d rekordbox_id=%u track_type=%s", 
+            vlogmsg("cdj", "[STATUS] Dev%d: Tr=%d slot=%d rekordbox_id=%u track_type=%s", 
                        device_num, pkt->track_type, dev->track_slot, 
                        BE32_TO_HOST(pkt->rekordbox_id_be),
                        dev->track_type == TRACK_REKORDBOX ? "REKORDBOX" : "UNANALYZED");
@@ -624,7 +624,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         dev->track_id = (uint16_t)dev->track_number;
         
         if (verbose) {
-            log_message("[STATUS] Parsed CDJ%d: rekordbox_id=%u track_num=%u slot=%s",
+            vlogmsg("cdj", "[STATUS] Parsed CDJ%d: rekordbox_id=%u track_num=%u slot=%s",
                        device_num, dev->rekordbox_id, dev->track_number, cdj_slot_name(dev->track_slot));
         }
         
@@ -735,7 +735,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->last_lookup_time = now_lookup;
             /* Only log on track change to avoid spam during retry attempts */
             if (verbose && track_changed) {
-                log_message("[LOOKUP] CDJ %d: Looking up rekordbox_id=%u (track_id=%d, slot=%s)",
+                vlogmsg("cdj", "[LOOKUP] CDJ %d: Looking up rekordbox_id=%u (track_id=%d, slot=%s)",
                            device_num, dev->rekordbox_id, dev->track_id, cdj_slot_name(dev->track_slot));
             }
             
@@ -784,7 +784,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         }
                         found = 1;
                         dev->track_db_src = DB_SRC_ONELIBRARY;
-                        log_message("🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
+                        vlogmsg("cdj", "🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
                     }
 
                     /* Try DBServer (authoritative — queries CDJ's own database) */
@@ -851,7 +851,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         }
         
         if (verbose > 1) {
-            log_message("[STATUS] CDJ #%d: track=%d slot=%s type=%d playing=%d bpm=%.2f",
+            vlogmsg("cdj", "[STATUS] CDJ #%d: track=%d slot=%s type=%d playing=%d bpm=%.2f",
                        device_num, dev->track_id, cdj_slot_name(dev->track_slot),
                        dev->track_type, dev->playing, dev->bpm_raw / 100.0f);
         }
@@ -873,7 +873,7 @@ void parse_beat(const uint8_t *data, size_t len, uint32_t src_ip) {
     uint8_t subtype = pkt->header.subtype;
     
     if (subtype != PKT_TYPE_BEAT && verbose) {
-        log_message("[BEAT-PORT] type=0x%02x len=%zu from CDJ#%d", subtype, len, device_num);
+        vlogmsg("cdj", "[BEAT-PORT] type=0x%02x len=%zu from CDJ#%d", subtype, len, device_num);
     }
     
     /* Store beat position for UI visualization */
@@ -887,7 +887,7 @@ void parse_beat(const uint8_t *data, size_t len, uint32_t src_ip) {
     if (verbose > 2) {
         uint32_t next_beat_ms = BE32_TO_HOST(pkt->next_beat_be);
         uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
-        log_message("[BEAT] CDJ #%d next_beat=%u ms bpm=%.2f beat=%u/4",
+        vlogmsg("cdj", "[BEAT] CDJ #%d next_beat=%u ms bpm=%.2f beat=%u/4",
                    device_num, next_beat_ms, bpm / 100.0f, pkt->beat_in_bar);
     }
 }
@@ -914,7 +914,7 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
             int hlen = 0;
             for (size_t i = 0; i < len && i < 64 && hlen < 240; i++)
                 hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", data[i]);
-            log_message("[POS] First position pkt (len=%zu) from %s: %s",
+            vlogmsg("cdj", "[POS] First position pkt (len=%zu) from %s: %s",
                        len, ip_to_str(src_ip), hex);
         }
     }
@@ -959,7 +959,7 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
         int32_t pitch_raw;
         memcpy(&pitch_raw, pkt->pitch_be, 4);
         pitch_raw = (int32_t)BE32_TO_HOST((const uint8_t *)&pitch_raw);
-        log_message("[POSITION] CDJ #%d pos=%u ms len=%u s bpm=%.1f pitch=%.2f%%",
+        vlogmsg("cdj", "[POSITION] CDJ #%d pos=%u ms len=%u s bpm=%.1f pitch=%.2f%%",
                    device_num, playhead, track_len,
                    raw_bpm == 0xffffffff ? 0.0f : raw_bpm / 10.0f,
                    pitch_raw / 6400.0f);
@@ -1013,7 +1013,7 @@ int try_resolve_track_name(cdj_device_t *dev) {
         char title[128] = {0};
         char artist[128] = {0};
         
-        log_message("[CD] Querying CD-text for track %d on %s (target=%d)",
+        vlogmsg("cdj", "[CD] Querying CD-text for track %d on %s (target=%d)",
                    dev->track_id, ip_to_str(dev->ip_addr), target_device);
         
         int dbresult = dbserver_query_metadata(dev->ip_addr, 0, target_device,
@@ -1027,12 +1027,12 @@ int try_resolve_track_name(cdj_device_t *dev) {
             if (artist[0] != '\0') {
                 utf8_safe_copy(dev->track_artist, artist, sizeof(dev->track_artist));
             }
-            log_message("[CD] Got CD-text: %s - %s", artist, title);
+            vlogmsg("cdj", "[CD] Got CD-text: %s - %s", artist, title);
         } else {
             snprintf(dev->track_title, sizeof(dev->track_title), 
                     "CD Track %d", dev->track_id);
             if (dbresult != 0) {
-                log_message("[CD] CD-text query failed (result=%d)", dbresult);
+                vlogmsg("cdj", "[CD] CD-text query failed (result=%d)", dbresult);
             }
         }
         return 0;  /* CD done */
@@ -1062,20 +1062,20 @@ int try_resolve_track_name(cdj_device_t *dev) {
                      * Rate-limit these retries to avoid spamming and causing emergency loop. */
                     last_query_time = now;  /* Prevent retry flood */
                     last_query_id = dev->rekordbox_id;
-                    log_message("[DBSERVER] Link track src_player=%d shows our IP - slot conflict, will retry",
+                    vlogmsg("cdj", "[DBSERVER] Link track src_player=%d shows our IP - slot conflict, will retry",
                                dev->track_source_player);
                     return 1;  /* Temporary - retry after slot conflict resolves */
                 }
                 query_ip = src_dev->ip_addr;
                 query_slot = dev->track_slot;  /* Use track_slot which has the actual media type */
                 query_target = dev->track_source_player;  /* DMST target = source player */
-                log_message("[DBSERVER] Link track: src_player=%d src_slot=%s src_ip=%s",
+                vlogmsg("cdj", "[DBSERVER] Link track: src_player=%d src_slot=%s src_ip=%s",
                            dev->track_source_player, cdj_slot_name(query_slot), ip_to_str(query_ip));
             } else {
                 /* Source device not discovered yet - rate-limit retries */
                 last_query_time = now;  /* Prevent retry flood */
                 last_query_id = dev->rekordbox_id;
-                log_message("[DBSERVER] Link track src_player=%d not found yet, will retry", 
+                vlogmsg("cdj", "[DBSERVER] Link track src_player=%d not found yet, will retry", 
                            dev->track_source_player);
                 return 1;  /* Temporary - retry later */
             }
@@ -1085,7 +1085,7 @@ int try_resolve_track_name(cdj_device_t *dev) {
         last_query_time = now;
         last_query_id = dev->rekordbox_id;
         
-        log_message("[DBSERVER] Query for slot=%s id=%u (target=%d)",
+        vlogmsg("cdj", "[DBSERVER] Query for slot=%s id=%u (target=%d)",
                    cdj_slot_name(query_slot), dev->rekordbox_id, query_target);
         
         /* Strategy 1: Try with detected track type first */
@@ -1095,7 +1095,7 @@ int try_resolve_track_name(cdj_device_t *dev) {
                                             title, sizeof(title),
                                             artist, sizeof(artist));
         
-        log_message("[DBSERVER] Result=%d title='%s'", result, title);
+        vlogmsg("cdj", "[DBSERVER] Result=%d title='%s'", result, title);
         
         /* Track failures for backoff */
         if (result != 0) {
@@ -1170,7 +1170,7 @@ int try_resolve_track_name(cdj_device_t *dev) {
     }
     else if (dev->track_slot > 0) {
         /* No rekordbox_id available */
-        log_message("[DBSERVER] Skip query - rekordbox_id=%u slot=%s", 
+        vlogmsg("cdj", "[DBSERVER] Skip query - rekordbox_id=%u slot=%s", 
                    dev->rekordbox_id, cdj_slot_name(dev->track_slot));
     }
     return 0;
@@ -1186,7 +1186,7 @@ void check_media_change(cdj_device_t *dev) {
     if (!dev) return;
     
     if (dev->track_slot != dev->last_slot && dev->last_slot != 0) {
-        log_message("[MEDIA] Device %d changed from %s to %s",
+        vlogmsg("cdj", "[MEDIA] Device %d changed from %s to %s",
                    dev->device_num, cdj_slot_name(dev->last_slot), 
                    cdj_slot_name(dev->track_slot));
         
