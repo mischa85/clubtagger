@@ -10,6 +10,7 @@
 #ifndef PDB_PROTOCOL_H
 #define PDB_PROTOCOL_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 /*
@@ -126,6 +127,28 @@ _Static_assert(sizeof(pdb_page_header_t) == 40, "pdb_page_header_t must be 40 by
  * num_rows: bits 13-23 (last 11 bits) */
 #define PDB_NUM_ROW_OFFSETS(rc) (((rc)[0] | ((rc)[1] << 8)) & 0x1FFF)
 #define PDB_NUM_ROWS(rc) ((((rc)[1] >> 5) | ((rc)[2] << 3)) & 0x7FF)
+
+/*
+ * ============================================================================
+ * Row Offset Table (at end of each data page, grows backwards)
+ * ============================================================================
+ * Reference: Row Offsets section
+ *
+ * 16-bit offsets relative to the heap start (page + PDB_HEAP_OFFSET).
+ * Entry 0 is at page_end - 2, entry 1 at page_end - 4, etc.
+ * Use pdb_row_offset() to get the absolute file offset for a row.
+ */
+
+static inline size_t pdb_row_offset(const uint8_t *file, size_t file_len,
+                                     size_t page_offset, uint32_t page_size,
+                                     uint16_t row_index) {
+    size_t entry = page_offset + page_size - (row_index + 1) * 2;
+    if (entry + 2 > file_len || entry < page_offset + PDB_HEAP_OFFSET)
+        return 0;
+    uint16_t off = file[entry] | (file[entry + 1] << 8);
+    size_t abs = page_offset + PDB_HEAP_OFFSET + off;
+    return (abs + 4 <= page_offset + page_size) ? abs : 0;
+}
 
 /*
  * ============================================================================
