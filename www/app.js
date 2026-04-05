@@ -95,6 +95,20 @@
         return h + 'h ' + m + 'm';
     }
     
+    // Format milliseconds as m:ss.t (tenths)
+    function formatPosMs(ms) {
+        const m = Math.floor(ms / 60000);
+        const s = Math.floor((ms % 60000) / 1000);
+        const t = Math.floor((ms % 1000) / 100);
+        return m + ':' + (s < 10 ? '0' : '') + s + '.' + t;
+    }
+    // Format seconds as m:ss
+    function formatPosSec(sec) {
+        const m = Math.floor(sec / 60);
+        const s = sec % 60;
+        return m + ':' + (s < 10 ? '0' : '') + s;
+    }
+
     // Format bytes to human readable
     function formatBytes(bytes) {
         if (bytes < 1024) return bytes + ' B';
@@ -318,13 +332,9 @@
             const posMs = d.playhead_ms || 0;
             const trackLen = d.track_length || 0;
             if (posMs > 0) {
-                const pm = Math.floor(posMs / 60000);
-                const ps = Math.floor((posMs % 60000) / 1000);
-                const posStr = `${pm}:${ps < 10 ? '0' : ''}${ps}`;
+                const posStr = formatPosMs(posMs);
                 if (trackLen > 0) {
-                    const tm = Math.floor(trackLen / 60);
-                    const ts = trackLen % 60;
-                    playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr} / ${tm}:${ts < 10 ? '0' : ''}${ts}</span>`;
+                    playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr} / ${formatPosSec(trackLen)}</span>`;
                 } else {
                     playTimeText = `<span class="deck-playtime" id="pos-${d.n}">${posStr}</span>`;
                 }
@@ -499,13 +509,9 @@
          * just update the position display if it exists */
         const posEl = document.getElementById('pos-' + devNum);
         if (posEl && rawDecks[devNum].playhead_ms > 0) {
-            const pm = Math.floor(rawDecks[devNum].playhead_ms / 60000);
-            const ps = Math.floor((rawDecks[devNum].playhead_ms % 60000) / 1000);
             const tl = rawDecks[devNum].track_length || 0;
-            const tm = Math.floor(tl / 60);
-            const ts = tl % 60;
-            posEl.textContent = `${pm}:${ps < 10 ? '0' : ''}${ps}` +
-                (tl > 0 ? ` / ${tm}:${ts < 10 ? '0' : ''}${ts}` : '');
+            posEl.textContent = formatPosMs(rawDecks[devNum].playhead_ms) +
+                (tl > 0 ? ' / ' + formatPosSec(tl) : '');
         }
     }
 
