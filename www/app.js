@@ -333,8 +333,7 @@
             let fmtBadge = '';
             if (d.format) {
                 let info = d.format;
-                if (d.samplerate) info += ' ' + (d.samplerate/1000) + 'kHz';
-                if (d.depth) info += '/' + d.depth + 'bit';
+                if (d.samplerate && d.depth) info += ' ' + Math.round(d.samplerate/1000) + '/' + d.depth;
                 else if (d.bitrate) info += ' ' + d.bitrate + 'k';
                 fmtBadge = `<span class="deck-badge fmt">${info}</span>`;
             }
@@ -347,7 +346,7 @@
                         <span class="deck-num">${deckLabel}</span>${beatDots}
                         <div class="deck-status">
                             ${d.playing ? (d.play_state === 0x05 ? '<span class="deck-badge cueing">▶ Cue</span>' : '<span class="deck-badge playing">▶ Playing</span>') : '<span class="deck-badge paused">❚❚ Paused</span>'}
-                            ${d.on_air_known ? (d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : '<span class="deck-badge off-air">OFF AIR</span>') : ''}
+                            ${d.on_air_known && d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : ''}
                             ${masterBadge}${syncBadge}${loopBadge}${mtBadge}
                             ${playTimeText}
                         </div>
