@@ -44,6 +44,17 @@ typedef enum {
     DB_SRC_DBSERVER
 } cdj_db_source_t;
 
+/* Audio file format — shared between PDB, OneLibrary, and CDJ device state.
+ * Values match rekordbox's internal encoding. */
+typedef enum {
+    FILE_FMT_UNKNOWN = 0x00,
+    FILE_FMT_MP3     = 0x01,
+    FILE_FMT_M4A     = 0x04,
+    FILE_FMT_FLAC    = 0x05,
+    FILE_FMT_WAV     = 0x0b,
+    FILE_FMT_AIFF    = 0x0c
+} cdj_file_format_t;
+
 /*
  * ============================================================================
  * Media Slots
@@ -122,6 +133,8 @@ typedef struct {
     char     track_artist[128];
     char     track_isrc[64];    /* ISRC from PDB (if available) */
     uint8_t  track_db_src;     /* cdj_db_source_t: how track was resolved */
+    uint32_t track_bitrate;    /* kbps (0 = unknown) */
+    uint8_t  track_format;     /* cdj_file_format_t */
     uint32_t lookup_failed_id;  /* rekordbox_id of last failed lookup (prevent retry spam) */
     time_t   last_lookup_time;  /* Rate-limit lookups (don't retry more than once per 5s) */
     

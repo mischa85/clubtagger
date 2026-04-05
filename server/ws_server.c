@@ -448,13 +448,22 @@ void *ws_main(void *arg) {
                 const char *db_src = dev->track_db_src < 4
                     ? db_src_names[dev->track_db_src] : "";
 
+                static const char *fmt_names[] = {
+                    [0] = "", [1] = "MP3", [4] = "M4A",
+                    [5] = "FLAC", [11] = "WAV", [12] = "AIFF"
+                };
+                const char *fmt = dev->track_format < 13
+                    ? fmt_names[dev->track_format] : "";
+
                 dlen += snprintf(dmsg + dlen, sizeof(dmsg) - dlen,
                     "{\"n\":%d,\"name\":\"%s\","
                     "\"title\":\"%s\",\"artist\":\"%s\",\"isrc\":\"%s\","
                     "\"rekordbox_id\":%u,\"db_src\":\"%s\","
+                    "\"bitrate\":%u,\"format\":\"%s\","
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
                     dev->device_num, en, et, ea, ei,
                     dev->rekordbox_id, db_src,
+                    dev->track_bitrate, fmt ? fmt : "",
                     dc.score / 10, dc.accepted,
                     confidence_source_string(dc.signals_seen));
             }

@@ -248,6 +248,8 @@
             if (d.conf_src) rawDecks[n].conf_src = d.conf_src;
             if (d.rekordbox_id) rawDecks[n].rekordbox_id = d.rekordbox_id;
             if (d.db_src) rawDecks[n].db_src = d.db_src;
+            if (d.format) rawDecks[n].format = d.format;
+            if (d.bitrate) rawDecks[n].bitrate = d.bitrate;
             rawDecks[n].on_air_known = true; // C knows on-air state
         }
     }
@@ -326,6 +328,7 @@
                 }
             }
 
+            const fmtBadge = d.format ? `<span class="deck-badge fmt">${d.format}${d.bitrate ? ' ' + d.bitrate + 'k' : ''}</span>` : '';
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
             const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
 
@@ -346,6 +349,7 @@
                     </div>
                     <div class="deck-meta">
                         ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}
+                        ${fmtBadge}
                         ${isrcText ? ' · ' + isrcText : ''}
                         ${dbText ? ' · ' + dbText : ''}
                     </div>

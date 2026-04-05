@@ -236,15 +236,7 @@ _Static_assert(sizeof(pdb_track_row_t) == 132, "pdb_track_row_t must be 132 byte
 /* Track row subtype magic */
 #define PDB_TRACK_SUBTYPE       0x0024
 
-/* File type values */
-typedef enum {
-    PDB_FILE_TYPE_UNKNOWN = 0x00,
-    PDB_FILE_TYPE_MP3     = 0x01,
-    PDB_FILE_TYPE_M4A     = 0x04,
-    PDB_FILE_TYPE_FLAC    = 0x05,
-    PDB_FILE_TYPE_WAV     = 0x0b,
-    PDB_FILE_TYPE_AIFF    = 0x0c
-} pdb_file_type_t;
+/* File type values — use cdj_file_format_t from cdj_types.h */
 
 /* String offset indices for track rows (0x5e-0x83 = 19 entries)
  * EMPIRICALLY VERIFIED from actual rekordbox exports:
