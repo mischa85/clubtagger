@@ -341,12 +341,12 @@
                     `</div>`;
             }
 
-            let fmtBadge = '';
+            let fmtText = '';
             if (d.format) {
                 let info = d.format;
                 if (d.samplerate && d.depth) info += ' ' + Math.round(d.samplerate/1000) + '/' + d.depth;
                 else if (d.bitrate) info += ' ' + d.bitrate + 'k';
-                fmtBadge = `<span class="deck-badge fmt">${info}</span>`;
+                fmtText = `<span class="deck-fmt">${info}</span>`;
             }
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
             const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
@@ -354,7 +354,7 @@
             return `
                 <div class="${classes.join(' ')}" id="deck-${d.n}">
                     <div class="deck-header">
-                        <span class="deck-num">${deckLabel}</span>${beatDots}
+                        <span class="deck-num">${deckLabel}</span>
                         <div class="deck-status">
                             ${d.playing ? (d.play_state === 0x05 ? '<span class="deck-badge cueing">▶ Cue</span>' : '<span class="deck-badge playing">▶ Playing</span>') : '<span class="deck-badge paused">❚❚ Paused</span>'}
                             ${d.on_air_known && d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : ''}
@@ -362,12 +362,12 @@
                         </div>
                     </div>
                     <div class="deck-track">
-                        <div class="deck-artist">${escapeHtml(d.artist) || '—'} ${fmtBadge}</div>
+                        <div class="deck-artist">${escapeHtml(d.artist) || '—'}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}${d.isrc ? ' <span class="deck-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}</div>
                     </div>
-                    ${progressBar}
+                    <div class="deck-realtime">${beatDots}${progressBar}</div>
                     <div class="deck-meta">
-                        ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}${dbText ? ' · ' + dbText : ''}
+                        ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}${fmtText ? ' · ' + fmtText : ''}${dbText ? ' · ' + dbText : ''}
                     </div>
                 </div>
             `;
