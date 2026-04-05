@@ -771,11 +771,13 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 } else {
                     /* Try OneLibrary first (scoped to source device) */
                     char ol_title[128] = {0}, ol_artist[128] = {0}, ol_isrc[64] = {0};
+                    uint32_t ol_bitrate = 0; uint8_t ol_format = 0;
                     if (onelibrary_lookup(dev->rekordbox_id,
                                           src_ip, src_slot,
                                           ol_title, sizeof(ol_title),
                                           ol_artist, sizeof(ol_artist),
-                                          ol_isrc, sizeof(ol_isrc)) == 0 &&
+                                          ol_isrc, sizeof(ol_isrc),
+                                          &ol_bitrate, &ol_format) == 0 &&
                         ol_title[0] != '\0' && ol_artist[0] != '\0') {
                         utf8_safe_copy(dev->track_title, ol_title, sizeof(dev->track_title));
                         utf8_safe_copy(dev->track_artist, ol_artist, sizeof(dev->track_artist));
@@ -784,6 +786,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         }
                         found = 1;
                         dev->track_db_src = DB_SRC_ONELIBRARY;
+                        dev->track_bitrate = ol_bitrate;
+                        dev->track_format = ol_format;
                         vlogmsg("cdj", "🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
                     }
 

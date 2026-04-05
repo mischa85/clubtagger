@@ -313,7 +313,8 @@ int onelibrary_lookup(uint32_t content_id,
                       uint32_t device_ip, uint8_t slot,
                       char *title, size_t title_len,
                       char *artist, size_t artist_len,
-                      char *isrc, size_t isrc_len)
+                      char *isrc, size_t isrc_len,
+                      uint32_t *bitrate_out, uint8_t *format_out)
 {
     if (content_id == 0) return -1;
 
@@ -326,7 +327,7 @@ int onelibrary_lookup(uint32_t content_id,
 
         sqlite3_stmt *stmt = NULL;
         int rc = sqlite3_prepare_v2(olib_databases[i].db,
-            "SELECT c.title, a.name, c.isrc "
+            "SELECT c.title, a.name, c.isrc, c.bitrate, c.fileType "
             "FROM content c "
             "LEFT JOIN artist a ON c.artist_id_artist = a.artist_id "
             "WHERE c.content_id = ?",
@@ -340,6 +341,8 @@ int onelibrary_lookup(uint32_t content_id,
             const char *t = (const char *)sqlite3_column_text(stmt, 0);
             const char *a = (const char *)sqlite3_column_text(stmt, 1);
             const char *isr = (const char *)sqlite3_column_text(stmt, 2);
+            int br = sqlite3_column_int(stmt, 3);
+            int ft = sqlite3_column_int(stmt, 4);
 
             if (t && title && title_len > 0) {
                 strncpy(title, t, title_len - 1);
@@ -355,6 +358,8 @@ int onelibrary_lookup(uint32_t content_id,
             } else if (isrc && isrc_len > 0) {
                 isrc[0] = '\0';
             }
+            if (bitrate_out) *bitrate_out = (uint32_t)br;
+            if (format_out) *format_out = (uint8_t)ft;
 
             sqlite3_finalize(stmt);
 
