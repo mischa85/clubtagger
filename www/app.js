@@ -102,11 +102,11 @@
         const t = Math.floor((ms % 1000) / 100);
         return m + ':' + (s < 10 ? '0' : '') + s + '.' + t;
     }
-    // Format seconds as m:ss.0
+    // Format seconds as m:ss
     function formatPosSec(sec) {
         const m = Math.floor(sec / 60);
         const s = sec % 60;
-        return m + ':' + (s < 10 ? '0' : '') + s + '.0';
+        return m + ':' + (s < 10 ? '0' : '') + s;
     }
 
     // Format bytes to human readable
