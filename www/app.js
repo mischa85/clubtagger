@@ -250,6 +250,8 @@
             if (d.db_src) rawDecks[n].db_src = d.db_src;
             if (d.format) rawDecks[n].format = d.format;
             if (d.bitrate) rawDecks[n].bitrate = d.bitrate;
+            if (d.samplerate) rawDecks[n].samplerate = d.samplerate;
+            if (d.depth) rawDecks[n].depth = d.depth;
             rawDecks[n].on_air_known = true; // C knows on-air state
         }
     }
@@ -328,7 +330,14 @@
                 }
             }
 
-            const fmtBadge = d.format ? `<span class="deck-badge fmt">${d.format}${d.bitrate ? ' ' + d.bitrate + 'k' : ''}</span>` : '';
+            let fmtBadge = '';
+            if (d.format) {
+                let info = d.format;
+                if (d.samplerate) info += ' ' + (d.samplerate/1000) + 'kHz';
+                if (d.depth) info += '/' + d.depth + 'bit';
+                else if (d.bitrate) info += ' ' + d.bitrate + 'k';
+                fmtBadge = `<span class="deck-badge fmt">${info}</span>`;
+            }
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
             const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
 

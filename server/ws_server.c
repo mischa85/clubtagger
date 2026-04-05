@@ -459,11 +459,12 @@ void *ws_main(void *arg) {
                     "{\"n\":%d,\"name\":\"%s\","
                     "\"title\":\"%s\",\"artist\":\"%s\",\"isrc\":\"%s\","
                     "\"rekordbox_id\":%u,\"db_src\":\"%s\","
-                    "\"bitrate\":%u,\"format\":\"%s\","
+                    "\"bitrate\":%u,\"samplerate\":%u,\"depth\":%u,\"format\":\"%s\","
                     "\"conf\":%d,\"conf_ok\":%d,\"conf_src\":\"%s\"}",
                     dev->device_num, en, et, ea, ei,
                     dev->rekordbox_id, db_src,
-                    dev->track_bitrate, fmt ? fmt : "",
+                    dev->track_bitrate, dev->track_samplerate, dev->track_depth,
+                    fmt ? fmt : "",
                     dc.score / 10, dc.accepted,
                     confidence_source_string(dc.signals_seen));
             }

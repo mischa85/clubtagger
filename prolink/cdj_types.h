@@ -134,6 +134,8 @@ typedef struct {
     char     track_isrc[64];    /* ISRC from PDB (if available) */
     uint8_t  track_db_src;     /* cdj_db_source_t: how track was resolved */
     uint32_t track_bitrate;    /* kbps (0 = unknown) */
+    uint32_t track_samplerate; /* Hz (0 = unknown) */
+    uint8_t  track_depth;      /* bits per sample (0 = unknown) */
     uint8_t  track_format;     /* cdj_file_format_t */
     uint32_t lookup_failed_id;  /* rekordbox_id of last failed lookup (prevent retry spam) */
     time_t   last_lookup_time;  /* Rate-limit lookups (don't retry more than once per 5s) */

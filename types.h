@@ -61,6 +61,8 @@ typedef struct TrackID {
     uint16_t bpm;            /* BPM * 100 */
     uint32_t duration_ms;    /* Duration in milliseconds */
     uint32_t bitrate;        /* kbps (0 = unknown) */
+    uint32_t sample_rate;    /* Hz (0 = unknown) */
+    uint8_t  sample_depth;   /* bits per sample (0 = unknown) */
     uint8_t  file_type;      /* cdj_file_format_t */
     char filename[256];      /* Original filename (from rekordbox) */
     
