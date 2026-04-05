@@ -138,6 +138,9 @@ _Static_assert(sizeof(pdb_page_header_t) == 40, "pdb_page_header_t must be 40 by
  * Entry 0 is at page_end - 2, entry 1 at page_end - 4, etc.
  * Use pdb_row_offset() to get the absolute file offset for a row.
  */
+#ifndef PDB_HEAP_OFFSET
+#define PDB_HEAP_OFFSET 0x28
+#endif
 
 static inline size_t pdb_row_offset(const uint8_t *file, size_t file_len,
                                      size_t page_offset, uint32_t page_size,
