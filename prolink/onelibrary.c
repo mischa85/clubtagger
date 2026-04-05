@@ -326,7 +326,7 @@ int onelibrary_lookup(uint32_t content_id,
 
         sqlite3_stmt *stmt = NULL;
         int rc = sqlite3_prepare_v2(olib_databases[i].db,
-            "SELECT c.title, a.name "
+            "SELECT c.title, a.name, c.isrc "
             "FROM content c "
             "LEFT JOIN artist a ON c.artist_id_artist = a.artist_id "
             "WHERE c.content_id = ?",
@@ -339,6 +339,7 @@ int onelibrary_lookup(uint32_t content_id,
         if (sqlite3_step(stmt) == SQLITE_ROW) {
             const char *t = (const char *)sqlite3_column_text(stmt, 0);
             const char *a = (const char *)sqlite3_column_text(stmt, 1);
+            const char *isr = (const char *)sqlite3_column_text(stmt, 2);
 
             if (t && title && title_len > 0) {
                 strncpy(title, t, title_len - 1);
@@ -348,9 +349,10 @@ int onelibrary_lookup(uint32_t content_id,
                 strncpy(artist, a, artist_len - 1);
                 artist[artist_len - 1] = '\0';
             }
-
-            /* Clear ISRC (OneLibrary doesn't store ISRC in content table) */
-            if (isrc && isrc_len > 0) {
+            if (isr && isr[0] && isrc && isrc_len > 0) {
+                strncpy(isrc, isr, isrc_len - 1);
+                isrc[isrc_len - 1] = '\0';
+            } else if (isrc && isrc_len > 0) {
                 isrc[0] = '\0';
             }
 
