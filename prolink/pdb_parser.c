@@ -388,6 +388,8 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
             track->rekordbox_id = row->id;
             track->bpm = row->tempo / 100;
             track->duration_ms = (uint32_t)row->duration * 1000;
+            track->bitrate = row->bitrate;
+            track->file_type = (uint8_t)row->file_type;
             track->sources = TRACK_SRC_CDJ;
             track->confidence = 70;
             

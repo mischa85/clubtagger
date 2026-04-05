@@ -802,6 +802,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             utf8_safe_copy(dev->track_artist, pdb->artist, sizeof(dev->track_artist));
                             if (pdb->has_isrc && pdb->isrc[0])
                                 utf8_safe_copy(dev->track_isrc, pdb->isrc, sizeof(dev->track_isrc));
+                            dev->track_bitrate = pdb->bitrate;
+                            dev->track_format = pdb->file_type;
                             found = 1;
                             dev->track_db_src = DB_SRC_PDB;
                         }
