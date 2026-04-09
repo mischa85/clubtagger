@@ -355,9 +355,13 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
 
             const pdb_track_row_t *row = (const pdb_track_row_t *)(data + pos);
 
-            /* Verify this is a track row */
-            if (row->subtype != PDB_TRACK_SUBTYPE)
+            /* Verify this is a track row — CDJ-3000X may use different subtypes */
+            if (row->subtype != PDB_TRACK_SUBTYPE) {
+                if (verbose)
+                    vlogmsg("cdj", "[PDB] Page %u row %d: subtype=0x%04x (expected 0x%04x), id=%u",
+                           page_idx, ri, row->subtype, PDB_TRACK_SUBTYPE, row->id);
                 continue;
+            }
 
             /* Sanity check: track ID should be reasonable */
             if (row->id == 0 || row->id > 999999)
