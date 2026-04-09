@@ -342,31 +342,41 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
         uint16_t num_rows = PDB_NUM_ROWS(page->row_counts);
         
         if (verbose) {
-            vlogmsg("cdj", "[PDB] Page %u: flags=0x%02x rows=%u", page_idx, page->page_flags, num_rows);
+            vlogmsg("cdj", "[PDB] Page %u: flags=0x%02x rows=%u offsets=%u", page_idx, page->page_flags, num_rows, PDB_NUM_ROW_OFFSETS(page->row_counts));
         }
-        
+
         /* Parse rows using the row offset table at end of page */
         uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
 
         for (uint16_t ri = 0; ri < num_rows && ri < num_row_offsets; ri++) {
             size_t pos = pdb_row_offset(data, len, page_offset, page_size, ri);
-            if (!pos || pos + sizeof(pdb_track_row_t) > page_offset + page_size)
-                continue;
-
-            const pdb_track_row_t *row = (const pdb_track_row_t *)(data + pos);
-
-            /* Verify this is a track row — CDJ-3000X may use different subtypes */
-            if (row->subtype != PDB_TRACK_SUBTYPE) {
+            if (!pos) {
                 if (verbose)
-                    vlogmsg("cdj", "[PDB] Page %u row %d: subtype=0x%04x (expected 0x%04x), id=%u",
-                           page_idx, ri, row->subtype, PDB_TRACK_SUBTYPE, row->id);
+                    vlogmsg("cdj", "[PDB] Page %u row %d: offset returned 0 (empty/deleted slot)", page_idx, ri);
+                continue;
+            }
+            if (pos + sizeof(pdb_track_row_t) > page_offset + page_size) {
+                if (verbose)
+                    vlogmsg("cdj", "[PDB] Page %u row %d: row extends past page (pos=%zu, need %zu, page_end=%zu)",
+                           page_idx, ri, pos, pos + sizeof(pdb_track_row_t), page_offset + page_size);
                 continue;
             }
 
-            /* Sanity check: track ID should be reasonable */
-            if (row->id == 0 || row->id > 999999)
+            const pdb_track_row_t *row = (const pdb_track_row_t *)(data + pos);
+
+            if (row->subtype != PDB_TRACK_SUBTYPE) {
+                if (verbose)
+                    vlogmsg("cdj", "[PDB] Page %u row %d: subtype=0x%04x (expected 0x%04x), raw id=%u, pos=%zu",
+                           page_idx, ri, row->subtype, PDB_TRACK_SUBTYPE, row->id, pos - page_offset);
                 continue;
-            
+            }
+
+            if (row->id == 0 || row->id > 999999) {
+                if (verbose)
+                    vlogmsg("cdj", "[PDB] Page %u row %d: bad track id=%u (out of range)", page_idx, ri, row->id);
+                continue;
+            }
+
             /* Check for duplicate */
             int duplicate = 0;
             for (int t = 0; t < db->track_count; t++) {
@@ -375,12 +385,13 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
                     break;
                 }
             }
-            
+
             if (duplicate) {
-                pos += sizeof(pdb_track_row_t);
+                if (verbose)
+                    vlogmsg("cdj", "[PDB] Page %u row %d: duplicate track id=%u, skipping", page_idx, ri, row->id);
                 continue;
             }
-            
+
             if (db->track_count >= MAX_PDB_TRACKS) {
                 vlogmsg("cdj", "[PDB] Warning: reached max tracks (%d), some tracks may be missing", MAX_PDB_TRACKS);
                 break;
@@ -402,20 +413,24 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
             /* Read title from string_offsets[PDB_STR_TITLE] (index 17) */
             uint16_t title_offset = row->string_offsets[PDB_STR_TITLE];
             if (title_offset > 0 && title_offset < 500) {
-                parse_devicesql_string(data, len, pos + title_offset, 
+                parse_devicesql_string(data, len, pos + title_offset,
                                        track->title, sizeof(track->title));
+            } else if (verbose) {
+                vlogmsg("cdj", "[PDB] Track %u: title_offset=%u out of range", row->id, title_offset);
             }
-            
+
             /* Look up artist name from Artists table */
             if (row->artist_id != 0) {
-                find_artist_name(data, len, page_size, row->artist_id, 
+                int art_rc = find_artist_name(data, len, page_size, row->artist_id,
                                 track->artist, sizeof(track->artist));
+                if (art_rc < 0 && verbose)
+                    vlogmsg("cdj", "[PDB] Track %u: artist_id=%u not found in Artists table", row->id, row->artist_id);
             }
-            
+
             /* Read ISRC from string_offsets[PDB_STR_ISRC] (index 0) */
             uint16_t isrc_offset = row->string_offsets[PDB_STR_ISRC];
             if (isrc_offset > 0 && isrc_offset < 500) {
-                parse_isrc_string(data, len, pos + isrc_offset, 
+                parse_isrc_string(data, len, pos + isrc_offset,
                                  track->isrc, sizeof(track->isrc));
                 track->has_isrc = (track->isrc[0] != '\0');
             }
@@ -434,12 +449,12 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
             db->track_count++;
         }
         
+        if (verbose)
+            vlogmsg("cdj", "[PDB] Page %u: parsed %d tracks (next_page=%u)", page_idx, db->track_count, page->next_page);
         page_idx = page->next_page;
     }
-    
-    if (verbose) {
-        vlogmsg("cdj", "[PDB] Walked %d pages, found %d tracks", pages_walked, db->track_count);
-    }
+
+    vlogmsg("cdj", "[PDB] Walked %d pages, found %d tracks", pages_walked, db->track_count);
     
     return db->track_count > 0 ? 0 : -1;
 }
