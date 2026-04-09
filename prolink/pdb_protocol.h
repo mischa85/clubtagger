@@ -157,13 +157,6 @@ static inline size_t pdb_row_offset(const uint8_t *file, size_t file_len,
     size_t entry = group_end - 6 - row_in_group * 2;  /* skip 4B header + first entry at -6 */
     if (entry + 2 > file_len || entry < page_offset + PDB_HEAP_OFFSET)
         return 0;
-    /* Check row-present flag */
-    size_t rpf_addr = group_end - 4;
-    if (rpf_addr + 2 <= file_len) {
-        uint16_t rpf = file[rpf_addr] | (file[rpf_addr + 1] << 8);
-        if (!((rpf >> row_in_group) & 1))
-            return 0;  /* Row deleted */
-    }
     uint16_t off = file[entry] | (file[entry + 1] << 8);
     size_t abs = page_offset + PDB_HEAP_OFFSET + off;
     return (abs + 4 <= page_offset + page_size) ? abs : 0;
