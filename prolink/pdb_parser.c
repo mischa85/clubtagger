@@ -237,10 +237,9 @@ static int find_artist_name(const uint8_t *data, size_t len, uint32_t page_size,
                 continue;
             }
             
-            uint16_t num_rows = PDB_NUM_ROWS(page->row_counts);
             uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
 
-            for (uint16_t ri = 0; ri < num_rows && ri < num_row_offsets; ri++) {
+            for (uint16_t ri = 0; ri < num_row_offsets; ri++) {
                 size_t pos = pdb_row_offset(data, len, page_offset, page_size, ri);
                 if (!pos || pos + 10 > page_offset + page_size) continue;
 
@@ -339,17 +338,12 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
             continue;
         }
         
-        uint16_t num_rows = PDB_NUM_ROWS(page->row_counts);
-        
-        if (verbose) {
-            vlogmsg("cdj", "[PDB] Page %u: flags=0x%02x rows=%u offsets=%u", page_idx, page->page_flags, num_rows, PDB_NUM_ROW_OFFSETS(page->row_counts));
-        }
-
-        /* Parse rows using the row offset table at end of page */
         uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
 
-        /* Iterate all offset slots, not just num_rows — some valid tracks
-         * may be in slots beyond num_rows (e.g. after delete+reinsert) */
+        if (verbose) {
+            vlogmsg("cdj", "[PDB] Page %u: flags=0x%02x offsets=%u", page_idx, page->page_flags, num_row_offsets);
+        }
+
         for (uint16_t ri = 0; ri < num_row_offsets; ri++) {
             size_t pos = pdb_row_offset(data, len, page_offset, page_size, ri);
             if (!pos) {
