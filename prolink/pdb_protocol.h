@@ -142,12 +142,28 @@ _Static_assert(sizeof(pdb_page_header_t) == 40, "pdb_page_header_t must be 40 by
 #define PDB_HEAP_OFFSET 0x28
 #endif
 
+/*
+ * Row offset table: rows are in groups of 16, each group has a 4-byte
+ * header (2B transaction flags + 2B row-present flags) then 16 offsets.
+ * Groups grow backward from page end, stride = 4 + 16*2 = 36 (0x24).
+ */
 static inline size_t pdb_row_offset(const uint8_t *file, size_t file_len,
                                      size_t page_offset, uint32_t page_size,
                                      uint16_t row_index) {
-    size_t entry = page_offset + page_size - (row_index + 1) * 2;
+    uint16_t group = row_index / 16;
+    uint16_t row_in_group = row_index % 16;
+    /* Each group: [ofs15..ofs0][rowpf][tranrf] packed backward from page end */
+    size_t group_end = page_offset + page_size - group * 0x24;
+    size_t entry = group_end - 6 - row_in_group * 2;  /* skip 4B header + first entry at -6 */
     if (entry + 2 > file_len || entry < page_offset + PDB_HEAP_OFFSET)
         return 0;
+    /* Check row-present flag */
+    size_t rpf_addr = group_end - 4;
+    if (rpf_addr + 2 <= file_len) {
+        uint16_t rpf = file[rpf_addr] | (file[rpf_addr + 1] << 8);
+        if (!((rpf >> row_in_group) & 1))
+            return 0;  /* Row deleted */
+    }
     uint16_t off = file[entry] | (file[entry + 1] << 8);
     size_t abs = page_offset + PDB_HEAP_OFFSET + off;
     return (abs + 4 <= page_offset + page_size) ? abs : 0;
