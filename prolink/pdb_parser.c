@@ -348,7 +348,9 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
         /* Parse rows using the row offset table at end of page */
         uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
 
-        for (uint16_t ri = 0; ri < num_rows && ri < num_row_offsets; ri++) {
+        /* Iterate all offset slots, not just num_rows — some valid tracks
+         * may be in slots beyond num_rows (e.g. after delete+reinsert) */
+        for (uint16_t ri = 0; ri < num_row_offsets; ri++) {
             size_t pos = pdb_row_offset(data, len, page_offset, page_size, ri);
             if (!pos) {
                 if (verbose)
