@@ -90,7 +90,8 @@ int onelibrary_lookup(uint32_t content_id,
                       char *artist, size_t artist_len,
                       char *isrc, size_t isrc_len,
                       uint32_t *bitrate_out, uint8_t *format_out,
-                      uint32_t *samplerate_out, uint8_t *depth_out);
+                      uint32_t *samplerate_out, uint8_t *depth_out,
+                      char *anlz_path, size_t anlz_path_len);
 
 /*
  * ============================================================================
