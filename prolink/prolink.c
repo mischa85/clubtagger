@@ -857,6 +857,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                   dev->track_isrc, dev->rekordbox_id);
 
                 /* Fetch waveform data if we have an analysis path */
+                logmsg("cdj", "ANLZ path: [%s] reg=%d", dev->track_anlz_path, registration_state);
                 if (dev->track_anlz_path[0] && registration_state == REG_ACTIVE) {
                     /* Try .2EX (3-band), then .EXT (color), then .DAT (mono) */
                     static uint8_t anlz_buf[300000];
