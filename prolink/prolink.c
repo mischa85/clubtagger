@@ -795,11 +795,22 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         vlogmsg("cdj", "🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
                     }
 
-                    /* Try DBServer (authoritative — queries CDJ's own database) */
+                    /* Try DBServer — but only after database fetch has been
+                     * attempted for this slot (avoids pointless startup failures) */
                     if (!found) {
-                        retry_later = try_resolve_track_name(dev);
-                        found = (dev->track_title[0] != '\0');
-                        if (found) dev->track_db_src = DB_SRC_DBSERVER;
+                        int fetch_done = 1;
+                        if (src_slot == SLOT_USB)
+                            fetch_done = dev->usb_olib_fetched || dev->usb_db_fetched;
+                        else if (src_slot == SLOT_SD)
+                            fetch_done = dev->sd_olib_fetched || dev->sd_db_fetched;
+
+                        if (fetch_done) {
+                            retry_later = try_resolve_track_name(dev);
+                            found = (dev->track_title[0] != '\0');
+                            if (found) dev->track_db_src = DB_SRC_DBSERVER;
+                        } else {
+                            retry_later = 1; /* Wait for fetch to complete */
+                        }
                     }
 
                     /* Fall back to PDB (parsed export — may have version differences) */

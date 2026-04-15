@@ -89,7 +89,25 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
     /* If this signal brings a track identity, check for track change */
     if (title && title[0]) {
         if (d->title[0] && is_different_track(d, artist, title, rekordbox_id)) {
-            /* Different track — reset the slot but carry flip count */
+            if (deck_idx < 0) {
+                /* Audio slot: penalize instead of hard reset.
+                 * Survives brief interruptions during transitions. */
+                int conf = (value > 0 && value <= 100) ? value : 70;
+                int penalty = W_SHAZAM_DISAGREE * conf / 100;
+                d->score += penalty; /* penalty is negative */
+                if (d->score < 0) d->score = 0;
+                d->shazam_flips++;
+                d->last_signal = now;
+                /* If score decayed to zero, clear slot for replacement */
+                if (d->score == 0) {
+                    uint8_t dn = d->deck_num;
+                    memset(d, 0, sizeof(*d));
+                    d->deck_num = dn;
+                }
+                pthread_mutex_unlock(&g_confidence.mu);
+                return;
+            }
+            /* CDJ deck: hard reset — CDJ track changes are authoritative */
             uint8_t deck_num = d->deck_num;
             int flips = d->shazam_flips + 1;
             memset(d, 0, sizeof(*d));
@@ -275,13 +293,48 @@ uint32_t confidence_tick(time_t now)
 
         /* Check acceptance threshold — score alone decides */
         if (!d->accepted && d->score >= g_confidence.accept_threshold && d->title[0]) {
+            /* Dedup: check if same track already accepted on another slot */
+            int is_dup = 0;
+            for (int j = 0; j < CONF_MAX_DECKS + 1; j++) {
+                if (j == i) continue;
+                deck_confidence_t *other = (j < CONF_MAX_DECKS)
+                    ? &g_confidence.decks[j] : &g_confidence.audio_only;
+                if (!other->accepted || !other->title[0]) continue;
+                if (!is_different_track(other, d->artist, d->title, d->rekordbox_id)) {
+                    is_dup = 1;
+                    break;
+                }
+            }
+
+            /* Audio slot: also check re-acceptance of same track */
+            if (!is_dup && i == CONF_MAX_DECKS) {
+                if (g_confidence.audio_last_title[0] &&
+                    now - g_confidence.audio_last_accepted_at < 300 &&
+                    !is_different_track(d, NULL, g_confidence.audio_last_title, 0)) {
+                    is_dup = 1;
+                }
+                if (!is_dup) {
+                    snprintf(g_confidence.audio_last_title,
+                             sizeof(g_confidence.audio_last_title), "%s", d->title);
+                    g_confidence.audio_last_accepted_at = now;
+                }
+            }
+
             d->accepted = 1;
             d->accepted_at = now;
-            accepted_mask |= (1u << i);
 
-            logmsg("conf", "✅ ACCEPTED Deck %d: %s — %s (%d%%, %s)",
-                   d->deck_num, d->artist, d->title,
-                   d->score / 10, confidence_source_string(d->signals_seen));
+            if (is_dup) {
+                logmsg("conf", "⏭ DEDUP %s %d: %s — %s (%d%%, %s)",
+                       d->deck_num == 0 ? "Audio" : "Deck",
+                       d->deck_num, d->artist, d->title,
+                       d->score / 10, confidence_source_string(d->signals_seen));
+            } else {
+                accepted_mask |= (1u << i);
+                logmsg("conf", "✅ ACCEPTED %s %d: %s — %s (%d%%, %s)",
+                       d->deck_num == 0 ? "Audio" : "Deck",
+                       d->deck_num, d->artist, d->title,
+                       d->score / 10, confidence_source_string(d->signals_seen));
+            }
         }
     }
 

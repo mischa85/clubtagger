@@ -117,6 +117,10 @@ typedef struct {
     deck_confidence_t audio_only;              /* Audio-only candidate (no CDJ) */
     pthread_mutex_t   mu;
 
+    /* Audio slot re-acceptance guard */
+    char  audio_last_title[256];
+    time_t audio_last_accepted_at;
+
     /* Thresholds (set at init, then read-only) */
     int accept_threshold;
     int decay_rate;
