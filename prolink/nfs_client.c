@@ -439,6 +439,9 @@ int nfs_fetch_path(uint32_t server_ip, const char *path,
     extern uint16_t g_nfs_port;
     if (!path || path[0] != '/') return -1;
 
+    /* Ensure socket is open (may have been closed by previous fetch) */
+    if (!nfs_socket_ready()) nfs_init_socket();
+
     /* We need a root file handle — mount "/" */
     uint8_t root_fh[NFS_FHSIZE];
     size_t fh_len = 0;
@@ -452,22 +455,25 @@ int nfs_fetch_path(uint32_t server_ip, const char *path,
 
     /* Mount to get root FH */
     int mount_port = query_pioneer_portmapper(server_ip);
-    if (mount_port <= 0) {
+    if (mount_port <= 0)
         mount_port = rpc_portmap_getport(server_ip, 100005, 1);
-    }
-    if (mount_port <= 0) return -1;
-
-    if (nfs_mount_to_port(server_ip, (uint16_t)mount_port,
-                          "/", root_fh, &fh_len) != 0) {
+    if (mount_port <= 0) {
+        logmsg("nfs", "fetch_path: no mount port for %s", path);
         return -1;
     }
 
-    /* Walk path components: "/PIONEER/USBANLZ/.../ANLZ0001.EXT" */
+    if (nfs_mount_to_port(server_ip, (uint16_t)mount_port,
+                          "/", root_fh, &fh_len) != 0) {
+        logmsg("nfs", "fetch_path: mount failed for %s", path);
+        return -1;
+    }
+
+    /* Walk path components */
     uint8_t dir_fh[NFS_FHSIZE], file_fh[NFS_FHSIZE];
     memcpy(dir_fh, root_fh, NFS_FHSIZE);
 
     char pathbuf[256];
-    strncpy(pathbuf, path + 1, sizeof(pathbuf) - 1); /* skip leading '/' */
+    strncpy(pathbuf, path + 1, sizeof(pathbuf) - 1);
     pathbuf[sizeof(pathbuf) - 1] = '\0';
 
     char *saveptr = NULL;
@@ -475,17 +481,17 @@ int nfs_fetch_path(uint32_t server_ip, const char *path,
     while (component) {
         char *next = strtok_r(NULL, "/", &saveptr);
         if (nfs_lookup(server_ip, g_nfs_port, dir_fh, component, file_fh) != 0) {
+            logmsg("nfs", "fetch_path: lookup failed at '%s' in %s", component, path);
             return -1;
         }
-        if (next) {
-            /* More components — this was a directory */
-            memcpy(dir_fh, file_fh, NFS_FHSIZE);
-        }
+        if (next) memcpy(dir_fh, file_fh, NFS_FHSIZE);
         component = next;
     }
 
     /* Read the file */
-    return nfs_read_file(server_ip, g_nfs_port, file_fh, buf, buf_len, bytes_read);
+    int rc = nfs_read_file(server_ip, g_nfs_port, file_fh, buf, buf_len, bytes_read);
+    if (rc != 0) logmsg("nfs", "fetch_path: read failed for %s", path);
+    return rc;
 }
 
 int send_nfs_unlock(uint32_t target_ip) {
