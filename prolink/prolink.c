@@ -723,6 +723,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_depth = 0;
             dev->track_format = 0;
             dev->track_anlz_path[0] = '\0';
+            dev->waveform_sent = 0;
             dev->track_db_src = DB_SRC_NONE;
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
             dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
@@ -855,36 +856,34 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 confidence_signal(didx, SIG_CDJ_LOADED, 0,
                                   dev->track_artist, dev->track_title,
                                   dev->track_isrc, dev->rekordbox_id);
-
-                /* Fetch waveform data if we have an analysis path */
-                logmsg("cdj", "ANLZ path: [%s] reg=%d", dev->track_anlz_path, registration_state);
-                if (dev->track_anlz_path[0] && registration_state == REG_ACTIVE) {
-                    /* Try .2EX (3-band), then .EXT (color), then .DAT (mono) */
-                    static uint8_t anlz_buf[300000];
-                    size_t anlz_read = 0;
-                    char ext_path[256];
-                    int fetched = 0;
-
-                    const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
-                    for (int ei = 0; exts[ei] && !fetched; ei++) {
-                        strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
-                        ext_path[sizeof(ext_path) - 1] = '\0';
-                        /* Replace extension */
-                        char *dot = strrchr(ext_path, '.');
-                        if (dot) {
-                            strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
-                        }
-                        if (nfs_fetch_path(src_ip, ext_path, anlz_buf,
-                                           sizeof(anlz_buf), &anlz_read) == 0 && anlz_read > 0) {
-                            logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
-                            ws_broadcast_waveform(dev->device_num, anlz_buf, anlz_read);
-                            fetched = 1;
-                        }
-                    }
-                }
             }
         }
-        
+
+        /* Fetch and broadcast waveform data (once per track) */
+        if (dev->track_anlz_path[0] && !dev->waveform_sent
+            && registration_state == REG_ACTIVE) {
+            static uint8_t anlz_buf[300000];
+            size_t anlz_read = 0;
+            char ext_path[256];
+            int fetched = 0;
+
+            const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
+            for (int ei = 0; exts[ei] && !fetched; ei++) {
+                strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
+                ext_path[sizeof(ext_path) - 1] = '\0';
+                char *dot = strrchr(ext_path, '.');
+                if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
+
+                if (nfs_fetch_path(src_ip, ext_path, anlz_buf,
+                                   sizeof(anlz_buf), &anlz_read) == 0 && anlz_read > 0) {
+                    logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
+                    ws_broadcast_waveform(dev->device_num, anlz_buf, anlz_read);
+                    fetched = 1;
+                }
+            }
+            dev->waveform_sent = 1; /* Don't retry even if fetch failed */
+        }
+
         /* Log track and play state changes */
         if (dev->track_id != old_track || dev->track_slot != old_slot ||
             dev->rekordbox_id != old_rekordbox ||
