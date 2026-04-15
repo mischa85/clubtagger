@@ -203,6 +203,23 @@
         .deck-track { font-size: 12px; }
         .deck-artist { font-weight: bold; color: #eee; margin-bottom: 2px; }
         .deck-title { color: #888; font-size: 11px; }
+        .deck-key-top {
+            color: #e1bee7;
+            font-weight: bold;
+            font-size: 13px;
+            margin-left: auto;
+            padding-left: 8px;
+        }
+        .deck-footer {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 4px;
+            font-size: 10px;
+            color: #666;
+        }
+        .deck-footer .beat-indicator { margin-left: 0; flex-shrink: 0; }
+        .deck-footer-right { margin-left: auto; }
         .deck-meta { margin-top: 6px; font-size: 10px; color: #666; }
         .deck-bpm { color: #00d4ff; font-weight: bold; }
         .deck-playtime { color: #aaa; font-size: 11px; font-variant-numeric: tabular-nums; margin-left: 8px; }
@@ -212,7 +229,6 @@
             gap: 8px;
             margin-top: 6px;
         }
-        .deck-realtime .beat-indicator { margin-left: 0; flex-shrink: 0; }
         .deck-realtime .deck-progress { flex: 1; margin-top: 0; }
         .deck-waveform-wrap {
             position: relative;

@@ -368,14 +368,17 @@
                             ${d.on_air_known && d.on_air ? '<span class="deck-badge on-air">ON AIR</span>' : ''}
                             ${masterBadge}${syncBadge}${loopBadge}${mtBadge}
                         </div>
+                        ${keyText ? '<span class="deck-key-top">' + keyName(d.key_note, d.key_scale, d.key_acc) + '</span>' : ''}
                     </div>
                     <div class="deck-track">
                         <div class="deck-artist">${escapeHtml(d.artist) || '—'}${fmtText ? ' ' + fmtText : ''}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}${d.isrc ? ' <span class="deck-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}</div>
                     </div>
-                    <div class="deck-realtime">${beatDots}${waveformHtml}</div>
-                    <div class="deck-meta">
-                        ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}${dbText ? ' · ' + dbText : ''}
+                    <div class="deck-realtime">${waveformHtml}</div>
+                    <div class="deck-footer">
+                        ${beatDots}
+                        ${bpmText}
+                        <span class="deck-footer-right">${sourceText}${dbText ? ' · ' + dbText : ''}</span>
                     </div>
                 </div>
             `;
