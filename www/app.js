@@ -344,8 +344,11 @@
             let fmtText = '';
             if (d.format) {
                 let info = d.format;
-                if (d.samplerate && d.depth) info += ' ' + Math.round(d.samplerate/1000) + '/' + d.depth;
-                else if (d.bitrate) info += ' ' + d.bitrate + 'k';
+                const lossless = d.format === 'WAV' || d.format === 'AIFF' || d.format === 'FLAC';
+                if (lossless && d.samplerate && d.depth)
+                    info += ' ' + Math.round(d.samplerate/1000) + '/' + d.depth;
+                else if (d.bitrate)
+                    info += ' ' + d.bitrate + 'k';
                 fmtText = `<span class="deck-fmt">${info}</span>`;
             }
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
