@@ -352,6 +352,13 @@
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
             const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
 
+            const waveformHtml = d.waveform
+                ? `<div class="deck-waveform-wrap"><canvas class="deck-waveform" id="waveform-${d.n}"></canvas>`
+                  + `<span class="deck-progress-time deck-progress-elapsed">${posMs > 0 ? formatPosMs(posMs) : ''}</span>`
+                  + (trackLen > 0 && posMs > 0 ? `<span class="deck-progress-time deck-progress-remain">-${formatPosMs(remainMs)}</span>` : '')
+                  + `</div>`
+                : progressBar;
+
             return `
                 <div class="${classes.join(' ')}" id="deck-${d.n}">
                     <div class="deck-header">
@@ -363,19 +370,12 @@
                         </div>
                     </div>
                     <div class="deck-track">
-                        <div class="deck-artist">${escapeHtml(d.artist) || '—'}</div>
+                        <div class="deck-artist">${escapeHtml(d.artist) || '—'}${fmtText ? ' ' + fmtText : ''}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}${d.isrc ? ' <span class="deck-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}</div>
                     </div>
-                    <div class="deck-realtime">${beatDots}${
-                        d.waveform
-                            ? `<div class="deck-waveform-wrap"><canvas class="deck-waveform" id="waveform-${d.n}"></canvas>`
-                              + `<span class="deck-progress-time deck-progress-elapsed">${posMs > 0 ? formatPosMs(posMs) : ''}</span>`
-                              + (trackLen > 0 && posMs > 0 ? `<span class="deck-progress-time deck-progress-remain">-${formatPosMs(remainMs)}</span>` : '')
-                              + `</div>`
-                            : progressBar
-                    }</div>
+                    <div class="deck-realtime">${beatDots}${waveformHtml}</div>
                     <div class="deck-meta">
-                        ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}${fmtText ? ' · ' + fmtText : ''}${dbText ? ' · ' + dbText : ''}
+                        ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}${dbText ? ' · ' + dbText : ''}
                     </div>
                 </div>
             `;
@@ -633,35 +633,40 @@
     function renderWaveform(canvas, waveform) {
         if (!canvas || !waveform) return;
         const ctx = canvas.getContext('2d');
-        const w = canvas.width = canvas.clientWidth * (window.devicePixelRatio || 1);
-        const h = canvas.height = canvas.clientHeight * (window.devicePixelRatio || 1);
+        const dpr = window.devicePixelRatio || 1;
+        const w = canvas.width = canvas.clientWidth * dpr;
+        const h = canvas.height = canvas.clientHeight * dpr;
         ctx.clearRect(0, 0, w, h);
 
         const entries = waveform.entries;
         const colW = w / entries;
 
         if (waveform.type === '3band') {
-            /* 3 bytes per entry: mid, high, low */
+            /* Find peak for normalization — fills the full canvas height */
+            let peak = 1;
+            for (let i = 0; i < entries * 3; i++)
+                if (waveform.data[i] > peak) peak = waveform.data[i];
+
             for (let i = 0; i < entries; i++) {
                 const mid = waveform.data[i * 3];
                 const high = waveform.data[i * 3 + 1];
                 const low = waveform.data[i * 3 + 2];
                 const x = (i / entries) * w;
-                const maxH = h;
 
-                /* Low (blue) */
-                const lowH = (low / 255) * maxH;
-                ctx.fillStyle = '#1a3a6e';
+                const lowH = (low / peak) * h;
+                const midH = (mid / peak) * h;
+                const highH = (high / peak) * h;
+
+                /* Low (deep blue) */
+                ctx.fillStyle = '#1a3a7a';
                 ctx.fillRect(x, h - lowH, Math.max(colW, 1), lowH);
 
-                /* Mid (orange/amber) — stacked on low */
-                const midH = (mid / 255) * maxH;
-                ctx.fillStyle = '#c87020';
+                /* Mid (warm amber) */
+                ctx.fillStyle = '#c07018';
                 ctx.fillRect(x, h - Math.max(lowH, midH), Math.max(colW, 1), midH);
 
-                /* High (white/cyan) — drawn last */
-                const highH = (high / 255) * maxH;
-                ctx.fillStyle = 'rgba(220, 240, 255, 0.8)';
+                /* High (bright cyan/white) */
+                ctx.fillStyle = 'rgba(200, 235, 255, 0.85)';
                 ctx.fillRect(x, h - Math.max(lowH, midH, highH), Math.max(colW, 1), highH);
             }
         } else if (waveform.type === 'color') {
