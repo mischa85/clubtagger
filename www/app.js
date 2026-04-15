@@ -919,5 +919,98 @@
     }
 
     // Start
-    connect();
+    if (new URLSearchParams(location.search).has('mock')) {
+        statusEl.textContent = 'Mock Mode';
+        statusEl.className = 'status connected';
+
+        /* Generate fake waveform data */
+        function fakeWaveform(entries) {
+            const data = new Uint8Array(entries * 3);
+            for (let i = 0; i < entries; i++) {
+                const t = i / entries;
+                const beat = Math.sin(t * Math.PI * 64) * 0.3 + 0.5;
+                const drop = (t > 0.25 && t < 0.75) ? 1.2 : 0.6;
+                data[i*3]   = Math.min(255, Math.floor((Math.random()*40+60) * beat * drop)); // mid
+                data[i*3+1] = Math.min(255, Math.floor((Math.random()*30+20) * beat * drop)); // high
+                data[i*3+2] = Math.min(255, Math.floor((Math.random()*50+80) * beat * drop)); // low
+            }
+            return { type: '3band', entries: entries, data: data };
+        }
+
+        /* Create 2 mock decks */
+        rawDecks[2] = {
+            playing: true, on_air: true, master: true, sync: false,
+            bpm: 12840, pitch: 32, beat_in_bar: 1, play_state: 0x04,
+            track_slot: 3, source_player: 2, looping: true, loop_beats: 4,
+            master_tempo: true, key_note: 3, key_scale: 0, key_acc: 0,
+            playhead_ms: 142000, track_length: 420, on_air_known: true,
+            title: 'Holding On (Original Club Mix)', artist: 'Lika Morgan',
+            name: 'CDJ-3000X', isrc: 'USRC11234567', db_src: 'OneLibrary',
+            format: 'FLAC', samplerate: 44100, depth: 24, bitrate: 1411,
+            conf: 72, conf_ok: true, conf_src: 'both',
+            lastUpdate: Date.now(),
+            waveform: { preview: fakeWaveform(1200), detail: fakeWaveform(63000) }
+        };
+        rawDecks[5] = {
+            playing: true, on_air: false, master: false, sync: true,
+            bpm: 12800, pitch: -45, beat_in_bar: 3, play_state: 0x69,
+            track_slot: 3, source_player: 5, looping: false, loop_beats: 0,
+            master_tempo: false, key_note: 10, key_scale: 1, key_acc: 0,
+            playhead_ms: 67000, track_length: 355, on_air_known: true,
+            title: 'Cascade (Original Mix)', artist: 'Psyk',
+            name: 'CDJ-3000X', isrc: '', db_src: 'DBServer',
+            format: 'MP3', samplerate: 44100, depth: 0, bitrate: 320,
+            conf: 45, conf_ok: false, conf_src: 'cdj',
+            lastUpdate: Date.now(),
+            waveform: { preview: fakeWaveform(1200), detail: fakeWaveform(53250) }
+        };
+
+        renderDecks();
+
+        /* Simulate playhead movement */
+        setInterval(function() {
+            for (var n in rawDecks) {
+                var d = rawDecks[n];
+                if (d.playing) {
+                    d.playhead_ms += 30;
+                    if (d.track_length && d.playhead_ms > d.track_length * 1000) d.playhead_ms = 0;
+                    d.beat_in_bar = (Math.floor(d.playhead_ms / 500) % 4) + 1;
+
+                    /* Update detail waveform */
+                    var dc = document.getElementById('detail-' + n);
+                    if (dc && d.waveform && d.waveform.detail)
+                        renderDetail(dc, d.waveform.detail, d.playhead_ms, d.track_length);
+
+                    /* Update overview */
+                    var oc = document.getElementById('overview-' + n);
+                    if (oc && d.waveform && d.waveform.preview) {
+                        var pct = d.track_length > 0 ? Math.min(100, d.playhead_ms / (d.track_length * 1000) * 100) : 0;
+                        renderOverview(oc, d.waveform.preview, pct);
+                    }
+
+                    /* Update time */
+                    var te = document.getElementById('cdj-time-' + n);
+                    if (te) {
+                        var tl = d.track_length || 0;
+                        var mode = d.timeMode || 'remain';
+                        if (mode === 'remain' && tl > 0)
+                            te.textContent = '-' + formatPosMs(Math.max(0, tl*1000 - d.playhead_ms));
+                        else
+                            te.textContent = formatPosMs(d.playhead_ms);
+                    }
+
+                    /* Update beat dots */
+                    for (var b = 1; b <= 4; b++) {
+                        var dot = document.getElementById('beat-' + n + '-' + b);
+                        if (dot) {
+                            if (d.beat_in_bar === b) dot.classList.add('active');
+                            else dot.classList.remove('active');
+                        }
+                    }
+                }
+            }
+        }, 30);
+    } else {
+        connect();
+    }
 })();
