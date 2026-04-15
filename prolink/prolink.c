@@ -716,6 +716,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_title[0] = '\0';
             dev->track_artist[0] = '\0';
             dev->track_isrc[0] = '\0';
+            dev->track_bitrate = 0;
+            dev->track_samplerate = 0;
+            dev->track_depth = 0;
+            dev->track_format = 0;
+            dev->track_db_src = DB_SRC_NONE;
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
             dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
             dev->logged_rekordbox_id = 0;  /* Allow new track to be logged */
