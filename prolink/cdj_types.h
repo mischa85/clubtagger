@@ -138,7 +138,8 @@ typedef struct {
     uint8_t  track_depth;      /* bits per sample (0 = unknown) */
     uint8_t  track_format;     /* cdj_file_format_t */
     char     track_anlz_path[256]; /* ANLZ analysis file path from database */
-    uint8_t  waveform_sent;       /* 1 = waveform already sent to WS clients */
+    uint8_t *waveform_data;       /* Cached ANLZ waveform (heap-allocated, NULL if not fetched) */
+    size_t   waveform_len;        /* Length of waveform_data */
     uint32_t lookup_failed_id;  /* rekordbox_id of last failed lookup (prevent retry spam) */
     time_t   last_lookup_time;  /* Rate-limit lookups (don't retry more than once per 5s) */
     
