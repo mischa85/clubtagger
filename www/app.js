@@ -343,13 +343,11 @@
 
             let fmtText = '';
             if (d.format) {
-                let info = d.format;
-                const lossless = d.format === 'WAV' || d.format === 'AIFF' || d.format === 'FLAC';
-                if (lossless && d.samplerate && d.depth)
-                    info += ' ' + Math.round(d.samplerate/1000) + '/' + d.depth;
-                else if (d.bitrate)
-                    info += ' ' + d.bitrate + 'k';
-                fmtText = `<span class="deck-fmt">${info}</span>`;
+                let parts = [d.format];
+                if (d.samplerate) parts.push(Math.round(d.samplerate/1000) + 'kHz');
+                if (d.depth) parts.push(d.depth + 'bit');
+                if (d.bitrate) parts.push(d.bitrate + 'kbps');
+                fmtText = `<span class="deck-fmt">${parts.join(' ')}</span>`;
             }
             const isrcText = d.isrc ? `<span class="deck-isrc">${escapeHtml(d.isrc)}</span>` : '';
             const dbText = d.db_src ? `<span class="deck-db">${d.db_src}</span>` : '';
