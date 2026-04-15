@@ -189,8 +189,8 @@
         .cdj-format { color: #445; font-size: 8px; flex-shrink: 0; }
 
         /* Detail waveform */
-        .cdj-detail-wrap { display: flex; gap: 4px; margin-bottom: 4px; }
-        .cdj-detail { flex: 1; height: 100px; display: block; background: #060610;
+        .cdj-detail-wrap { display: flex; gap: 4px; margin-bottom: 4px; width: 100%; overflow: hidden; }
+        .cdj-detail { flex: 1 1 0; min-width: 0; height: 100px; display: block; background: #060610;
                       border: 1px solid #1a2a3a; border-radius: 2px; }
         .cdj-zoom { display: flex; flex-direction: column; gap: 2px; }
         .cdj-zoom button { width: 22px; height: 22px; background: #1a1a2e; border: 1px solid #2a2a3e;
@@ -236,11 +236,12 @@
 
         /* Bottom bar: overview + source */
         .cdj-bottom { display: flex; align-items: center; gap: 6px; margin-top: 4px;
-                      min-width: 0; overflow: hidden; }
-        .cdj-overview { flex: 1; height: 16px; display: block; background: #060610;
-                        border-radius: 2px; border: 1px solid #1a1a2e; min-width: 0; }
-        .cdj-overview-placeholder { flex: 1; height: 16px; min-width: 0; }
-        .cdj-source { font-size: 8px; color: #334; flex-shrink: 0; white-space: nowrap; }
+                      width: 100%; overflow: hidden; }
+        .cdj-overview { height: 16px; display: block; background: #060610;
+                        border-radius: 2px; border: 1px solid #1a1a2e;
+                        flex: 1 1 0; min-width: 0; max-width: 100%; }
+        .cdj-overview-placeholder { flex: 1 1 0; height: 16px; min-width: 0; }
+        .cdj-source { font-size: 8px; color: #445; flex: 0 0 auto; white-space: nowrap; }
 
         /* Progress bar fallback (when no waveform) */
         .deck-progress {

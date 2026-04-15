@@ -937,11 +937,11 @@
             return { type: '3band', entries: entries, data: data };
         }
 
-        /* Create 2 mock decks */
-        rawDecks[2] = {
+        /* Create 4 mock decks */
+        rawDecks[1] = {
             playing: true, on_air: true, master: true, sync: false,
             bpm: 12840, pitch: 32, beat_in_bar: 1, play_state: 0x04,
-            track_slot: 3, source_player: 2, looping: true, loop_beats: 4,
+            track_slot: 3, source_player: 1, looping: true, loop_beats: 4,
             master_tempo: true, key_note: 3, key_scale: 0, key_acc: 0,
             playhead_ms: 142000, track_length: 420, on_air_known: true,
             title: 'Holding On (Original Club Mix)', artist: 'Lika Morgan',
@@ -951,10 +951,10 @@
             lastUpdate: Date.now(),
             waveform: { preview: fakeWaveform(1200), detail: fakeWaveform(63000) }
         };
-        rawDecks[5] = {
+        rawDecks[2] = {
             playing: true, on_air: false, master: false, sync: true,
             bpm: 12800, pitch: -45, beat_in_bar: 3, play_state: 0x69,
-            track_slot: 3, source_player: 5, looping: false, loop_beats: 0,
+            track_slot: 3, source_player: 2, looping: false, loop_beats: 0,
             master_tempo: false, key_note: 10, key_scale: 1, key_acc: 0,
             playhead_ms: 67000, track_length: 355, on_air_known: true,
             title: 'Cascade (Original Mix)', artist: 'Psyk',
@@ -963,6 +963,32 @@
             conf: 45, conf_ok: false, conf_src: 'cdj',
             lastUpdate: Date.now(),
             waveform: { preview: fakeWaveform(1200), detail: fakeWaveform(53250) }
+        };
+        rawDecks[5] = {
+            playing: false, on_air: false, master: false, sync: false,
+            bpm: 13400, pitch: 0, beat_in_bar: 0, play_state: 0x0e,
+            track_slot: 3, source_player: 5, looping: false, loop_beats: 0,
+            master_tempo: true, key_note: 7, key_scale: 1, key_acc: 0xff,
+            playhead_ms: 0, track_length: 288, on_air_known: true,
+            title: 'Detachment', artist: 'Solarythm',
+            name: 'CDJ-3000X', isrc: 'GBXYZ9876543', db_src: 'OneLibrary',
+            format: 'AIFF', samplerate: 96000, depth: 24, bitrate: 4608,
+            conf: 20, conf_ok: false, conf_src: 'cdj',
+            lastUpdate: Date.now(),
+            waveform: { preview: fakeWaveform(1200), detail: fakeWaveform(43200) }
+        };
+        rawDecks[6] = {
+            playing: true, on_air: true, master: false, sync: true,
+            bpm: 12600, pitch: 190, beat_in_bar: 2, play_state: 0x69,
+            track_slot: 2, source_player: 6, looping: false, loop_beats: 0,
+            master_tempo: false, key_note: 0, key_scale: 0, key_acc: 0,
+            playhead_ms: 234000, track_length: 512, on_air_known: true,
+            title: 'Above The Cloud (Original Mix)', artist: 'Pyramidal Decode',
+            name: 'CDJ-3000X', isrc: '', db_src: 'PDB',
+            format: 'WAV', samplerate: 44100, depth: 16, bitrate: 1411,
+            conf: 58, conf_ok: true, conf_src: 'both',
+            lastUpdate: Date.now(),
+            waveform: { preview: fakeWaveform(1200), detail: fakeWaveform(76800) }
         };
 
         renderDecks();
