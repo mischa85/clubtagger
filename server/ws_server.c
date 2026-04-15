@@ -90,6 +90,33 @@ static void ws_broadcast_text(const char *data, size_t len) {
     }
 }
 
+/* ── Waveform broadcast (called from prolink thread) ────────────────────── */
+
+void ws_broadcast_waveform(uint8_t device_num, const uint8_t *data, size_t len) {
+    if (len == 0 || len > 300000) return; /* ANLZ files are typically 50-200KB */
+
+    /* Header: [0xFF][device_num][len2][len1][len0] — 5 bytes, 24-bit length */
+    uint8_t hdr[5] = {
+        0xFF, device_num,
+        (uint8_t)((len >> 16) & 0xFF),
+        (uint8_t)((len >> 8) & 0xFF),
+        (uint8_t)(len & 0xFF)
+    };
+
+    /* Build frame: header + payload. Use heap for large files. */
+    uint8_t *frame = malloc(5 + len);
+    if (!frame) return;
+    memcpy(frame, hdr, 5);
+    memcpy(frame + 5, data, len);
+
+    for (int i = 0; i < WS_MAX_CLIENTS; i++) {
+        int fd = atomic_load(&ws_fds[i]);
+        if (fd < 0) continue;
+        ws_send_frame(fd, 0x02, frame, 5 + len);
+    }
+    free(frame);
+}
+
 /* ── Pro DJ Link binary broadcast (called from prolink thread) ──────────── */
 
 void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,

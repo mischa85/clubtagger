@@ -12,7 +12,9 @@
 #include "pdb_parser.h"
 #include "onelibrary.h"
 #include "registration.h"
+#include "nfs_client.h"
 #include "../confidence.h"
+#include "../server/ws_server.h"
 #include "../common.h"
 #include <stdio.h>
 #include <string.h>
@@ -853,6 +855,32 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 confidence_signal(didx, SIG_CDJ_LOADED, 0,
                                   dev->track_artist, dev->track_title,
                                   dev->track_isrc, dev->rekordbox_id);
+
+                /* Fetch waveform data if we have an analysis path */
+                if (dev->track_anlz_path[0] && registration_state == REG_ACTIVE) {
+                    /* Try .2EX (3-band), then .EXT (color), then .DAT (mono) */
+                    static uint8_t anlz_buf[300000];
+                    size_t anlz_read = 0;
+                    char ext_path[256];
+                    int fetched = 0;
+
+                    const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
+                    for (int ei = 0; exts[ei] && !fetched; ei++) {
+                        strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
+                        ext_path[sizeof(ext_path) - 1] = '\0';
+                        /* Replace extension */
+                        char *dot = strrchr(ext_path, '.');
+                        if (dot) {
+                            strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
+                        }
+                        if (nfs_fetch_path(src_ip, ext_path, anlz_buf,
+                                           sizeof(anlz_buf), &anlz_read) == 0 && anlz_read > 0) {
+                            logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
+                            ws_broadcast_waveform(dev->device_num, anlz_buf, anlz_read);
+                            fetched = 1;
+                        }
+                    }
+                }
             }
         }
         

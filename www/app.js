@@ -366,16 +366,36 @@
                         <div class="deck-artist">${escapeHtml(d.artist) || '—'}</div>
                         <div class="deck-title">${escapeHtml(d.title) || 'No track loaded'}${d.isrc ? ' <span class="deck-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}</div>
                     </div>
-                    <div class="deck-realtime">${beatDots}${progressBar}</div>
+                    <div class="deck-realtime">${beatDots}${
+                        d.waveform
+                            ? `<div class="deck-waveform-wrap"><canvas class="deck-waveform" id="waveform-${d.n}"></canvas>`
+                              + `<span class="deck-progress-time deck-progress-elapsed">${posMs > 0 ? formatPosMs(posMs) : ''}</span>`
+                              + (trackLen > 0 && posMs > 0 ? `<span class="deck-progress-time deck-progress-remain">-${formatPosMs(remainMs)}</span>` : '')
+                              + `</div>`
+                            : progressBar
+                    }</div>
                     <div class="deck-meta">
                         ${bpmText}${keyText ? ' · ' + keyText : ''}${sourceText ? ' · ' + sourceText : ''}${fmtText ? ' · ' + fmtText : ''}${dbText ? ' · ' + dbText : ''}
                     </div>
                 </div>
             `;
         }).join('');
+
+        /* Re-render waveforms on canvas after DOM rebuild */
+        for (const d of active) {
+            if (d.waveform) {
+                const canvas = document.getElementById('waveform-' + d.n);
+                if (canvas) {
+                    renderWaveform(canvas, d.waveform);
+                    const pct = (d.track_length > 0 && d.playhead_ms > 0)
+                        ? Math.min(100, d.playhead_ms / (d.track_length * 1000) * 100) : 0;
+                    if (pct > 0) drawPlayhead(canvas, pct);
+                }
+            }
+        }
     }
 
-    
+
     // Add track to list
     function addTrack(artist, title, timestamp, source, confidence, isrc) {
         let time;
@@ -508,34 +528,214 @@
         rawDecks[devNum].track_length = dv.getUint32(POS_PKT.TRACK_LEN);
         /* Position updates are fast (30ms) — don't rebuild DOM every time,
          * just update the position display if it exists */
-        const progEl = document.getElementById('progress-' + devNum);
-        if (progEl && rawDecks[devNum].playhead_ms > 0) {
-            const ms = rawDecks[devNum].playhead_ms;
-            const tl = rawDecks[devNum].track_length || 0;
-            /* Update bar width */
-            const bar = progEl.firstElementChild;
-            if (bar && tl > 0) bar.style.width = Math.min(100, ms / (tl * 1000) * 100).toFixed(1) + '%';
-            /* Update elapsed text */
-            const elapsedEl = progEl.querySelector('.deck-progress-elapsed');
-            if (elapsedEl) elapsedEl.textContent = formatPosMs(ms);
-            /* Update remaining text */
-            const remainEl = progEl.querySelector('.deck-progress-remain');
-            if (remainEl && tl > 0) remainEl.textContent = '-' + formatPosMs(Math.max(0, tl * 1000 - ms));
+        const ms = rawDecks[devNum].playhead_ms;
+        const tl = rawDecks[devNum].track_length || 0;
+        if (ms > 0) {
+            const pct = tl > 0 ? Math.min(100, ms / (tl * 1000) * 100) : 0;
+
+            /* Waveform canvas: redraw playhead + update time labels */
+            const canvas = document.getElementById('waveform-' + devNum);
+            if (canvas && rawDecks[devNum].waveform) {
+                renderWaveform(canvas, rawDecks[devNum].waveform);
+                if (pct > 0) drawPlayhead(canvas, pct);
+                /* Update time labels in the wrapper */
+                const wrap = canvas.parentElement;
+                if (wrap) {
+                    const elapsed = wrap.querySelector('.deck-progress-elapsed');
+                    if (elapsed) elapsed.textContent = formatPosMs(ms);
+                    const remain = wrap.querySelector('.deck-progress-remain');
+                    if (remain && tl > 0) remain.textContent = '-' + formatPosMs(Math.max(0, tl * 1000 - ms));
+                }
+                return;
+            }
+
+            /* Plain progress bar fallback */
+            const progEl = document.getElementById('progress-' + devNum);
+            if (progEl) {
+                const bar = progEl.firstElementChild;
+                if (bar && tl > 0) bar.style.width = pct.toFixed(1) + '%';
+                const elapsedEl = progEl.querySelector('.deck-progress-elapsed');
+                if (elapsedEl) elapsedEl.textContent = formatPosMs(ms);
+                const remainEl = progEl.querySelector('.deck-progress-remain');
+                if (remainEl && tl > 0) remainEl.textContent = '-' + formatPosMs(Math.max(0, tl * 1000 - ms));
+            }
         }
     }
 
+    /* ── ANLZ waveform parser ──────────────────────────────────────────── */
+
+    function parseANLZ(buffer) {
+        const dv = new DataView(buffer);
+        if (buffer.byteLength < 12) return null;
+
+        /* Verify PMAI magic */
+        const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+        if (magic !== 'PMAI') return null;
+        const headerLen = dv.getUint32(4);
+
+        /* Walk tagged sections */
+        let result = null;
+        let offset = headerLen;
+        while (offset + 12 <= buffer.byteLength) {
+            const fourcc = String.fromCharCode(
+                dv.getUint8(offset), dv.getUint8(offset+1),
+                dv.getUint8(offset+2), dv.getUint8(offset+3));
+            const tagLen = dv.getUint32(offset + 8);
+            if (tagLen < 12 || offset + tagLen > buffer.byteLength) break;
+
+            if (fourcc === 'PWV6' || fourcc === 'PWV7') {
+                /* 3-band waveform: 3 bytes per entry (mid, high, low) */
+                const entryBytes = dv.getUint32(offset + 12);
+                const numEntries = dv.getUint32(offset + 16);
+                const dataStart = offset + (fourcc === 'PWV7' ? 24 : 20);
+                if (entryBytes === 3 && numEntries > 0 && dataStart + numEntries * 3 <= offset + tagLen) {
+                    result = { type: '3band', entries: numEntries,
+                               data: new Uint8Array(buffer, dataStart, numEntries * 3) };
+                    if (fourcc === 'PWV6') break; /* Prefer preview over detail */
+                }
+            } else if (fourcc === 'PWV5') {
+                /* Color detail: 2 bytes per entry (RGB + height) */
+                const entryBytes = dv.getUint32(offset + 12);
+                const numEntries = dv.getUint32(offset + 16);
+                const dataStart = offset + 24;
+                if (entryBytes === 2 && numEntries > 0 && dataStart + numEntries * 2 <= offset + tagLen) {
+                    if (!result) /* Only if no 3-band found */
+                        result = { type: 'color', entries: numEntries,
+                                   data: new Uint8Array(buffer, dataStart, numEntries * 2) };
+                }
+            } else if (fourcc === 'PWV4') {
+                /* Color preview: 6 bytes per entry */
+                const entryBytes = dv.getUint32(offset + 12);
+                const numEntries = dv.getUint32(offset + 16);
+                const dataStart = offset + 24;
+                if (entryBytes === 6 && numEntries > 0 && dataStart + numEntries * 6 <= offset + tagLen) {
+                    if (!result)
+                        result = { type: 'color6', entries: numEntries,
+                                   data: new Uint8Array(buffer, dataStart, numEntries * 6) };
+                }
+            } else if (fourcc === 'PWAV') {
+                /* Mono preview: 1 byte per entry (height 5bits + whiteness 3bits) */
+                const previewLen = dv.getUint32(offset + 12);
+                const dataStart = offset + 20;
+                if (previewLen > 0 && dataStart + previewLen <= offset + tagLen) {
+                    if (!result)
+                        result = { type: 'mono', entries: previewLen,
+                                   data: new Uint8Array(buffer, dataStart, previewLen) };
+                }
+            }
+
+            offset += tagLen;
+        }
+        return result;
+    }
+
+    /* Render waveform to a canvas element */
+    function renderWaveform(canvas, waveform) {
+        if (!canvas || !waveform) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width = canvas.clientWidth * (window.devicePixelRatio || 1);
+        const h = canvas.height = canvas.clientHeight * (window.devicePixelRatio || 1);
+        ctx.clearRect(0, 0, w, h);
+
+        const entries = waveform.entries;
+        const colW = w / entries;
+
+        if (waveform.type === '3band') {
+            /* 3 bytes per entry: mid, high, low */
+            for (let i = 0; i < entries; i++) {
+                const mid = waveform.data[i * 3];
+                const high = waveform.data[i * 3 + 1];
+                const low = waveform.data[i * 3 + 2];
+                const x = (i / entries) * w;
+                const maxH = h;
+
+                /* Low (blue) */
+                const lowH = (low / 255) * maxH;
+                ctx.fillStyle = '#1a3a6e';
+                ctx.fillRect(x, h - lowH, Math.max(colW, 1), lowH);
+
+                /* Mid (orange/amber) — stacked on low */
+                const midH = (mid / 255) * maxH;
+                ctx.fillStyle = '#c87020';
+                ctx.fillRect(x, h - Math.max(lowH, midH), Math.max(colW, 1), midH);
+
+                /* High (white/cyan) — drawn last */
+                const highH = (high / 255) * maxH;
+                ctx.fillStyle = 'rgba(220, 240, 255, 0.8)';
+                ctx.fillRect(x, h - Math.max(lowH, midH, highH), Math.max(colW, 1), highH);
+            }
+        } else if (waveform.type === 'color') {
+            /* 2 bytes per entry: bits 15-13=R, 12-10=G, 9-7=B, 6-2=height */
+            for (let i = 0; i < entries; i++) {
+                const val = (waveform.data[i * 2] << 8) | waveform.data[i * 2 + 1];
+                const r = ((val >> 13) & 7) * 36;
+                const g = ((val >> 10) & 7) * 36;
+                const b = ((val >> 7) & 7) * 36;
+                const height = (val >> 2) & 31;
+                const x = (i / entries) * w;
+                const barH = (height / 31) * h;
+                ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
+                ctx.fillRect(x, h - barH, Math.max(colW, 1), barH);
+            }
+        } else if (waveform.type === 'mono') {
+            /* 1 byte per entry: bits 0-4=height, 5-7=whiteness */
+            ctx.fillStyle = '#aaccee';
+            for (let i = 0; i < entries; i++) {
+                const height = waveform.data[i] & 0x1f;
+                const x = (i / entries) * w;
+                const barH = (height / 31) * h;
+                ctx.fillRect(x, h - barH, Math.max(colW, 1), barH);
+            }
+        }
+    }
+
+    /* Draw playhead line on waveform canvas */
+    function drawPlayhead(canvas, pct) {
+        if (!canvas || pct <= 0) return;
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+        const x = Math.round(pct * w / 100);
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+        ctx.fillRect(x - 1, 0, 2, h);
+    }
+
     function handleBinaryFrame(data) {
-        if (data.byteLength < 8) return;  /* 7-byte header + at least 1 byte payload */
-        const header = new DataView(data, 0, 7);
+        if (data.byteLength < 5) return;
+        const header = new DataView(data, 0, 5);
         const portId = header.getUint8(0);
-        const payloadLen = (header.getUint8(5) << 8) | header.getUint8(6);
+
+        /* Waveform frame: [0xFF][device_num][len2][len1][len0][ANLZ data...] */
+        if (portId === 0xFF && data.byteLength >= 5) {
+            const devNum = header.getUint8(1);
+            const anlzLen = (header.getUint8(2) << 16) | (header.getUint8(3) << 8) | header.getUint8(4);
+            if (5 + anlzLen <= data.byteLength) {
+                const anlzBuf = data.slice(5, 5 + anlzLen);
+                const wf = parseANLZ(anlzBuf);
+                if (wf && !rawDecks[devNum]) rawDecks[devNum] = {};
+                if (wf) {
+                    rawDecks[devNum].waveform = wf;
+                    /* Render immediately if canvas exists */
+                    const canvas = document.getElementById('waveform-' + devNum);
+                    if (canvas) {
+                        renderWaveform(canvas, wf);
+                    }
+                }
+            }
+            return;
+        }
+
+        /* CDJ packet frames need 7-byte header */
+        if (data.byteLength < 8) return;
+        const portId2 = new DataView(data, 0, 7).getUint8(0);
+        const payloadLen = (new DataView(data, 0, 7).getUint8(5) << 8) | new DataView(data, 0, 7).getUint8(6);
         if (7 + payloadLen > data.byteLength) return;
 
         const payload = new DataView(data, 7, payloadLen);
 
-        if (portId === 2 && payloadLen >= 0xa7) {
+        if (portId2 === 2 && payloadLen >= 0xa7) {
             parseStatusPacket(payload, payloadLen);
-        } else if (portId === 1) {
+        } else if (portId2 === 1) {
             /* Beat port: could be beat packet or position packet */
             if (payloadLen >= 96 && payload.getUint8(0x0a) === 0x28) {
                 parseBeatPacket(payload);
