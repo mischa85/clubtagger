@@ -723,7 +723,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_depth = 0;
             dev->track_format = 0;
             dev->track_anlz_path[0] = '\0';
-            dev->waveform_sent = 0;
+            if (dev->waveform_data) { free(dev->waveform_data); dev->waveform_data = NULL; }
+            dev->waveform_len = 0;
             dev->track_db_src = DB_SRC_NONE;
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
             dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
@@ -859,29 +860,34 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
 
-        /* Fetch and broadcast waveform data (once per track) */
-        if (dev->track_anlz_path[0] && !dev->waveform_sent
+        /* Fetch and cache waveform data (once per track) */
+        if (dev->track_anlz_path[0] && !dev->waveform_data
             && registration_state == REG_ACTIVE) {
-            static uint8_t anlz_buf[300000];
-            size_t anlz_read = 0;
-            char ext_path[256];
-            int fetched = 0;
+            uint8_t *tmp = malloc(300000);
+            if (tmp) {
+                size_t anlz_read = 0;
+                char ext_path[256];
+                int fetched = 0;
 
-            const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
-            for (int ei = 0; exts[ei] && !fetched; ei++) {
-                strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
-                ext_path[sizeof(ext_path) - 1] = '\0';
-                char *dot = strrchr(ext_path, '.');
-                if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
+                const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
+                for (int ei = 0; exts[ei] && !fetched; ei++) {
+                    strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
+                    ext_path[sizeof(ext_path) - 1] = '\0';
+                    char *dot = strrchr(ext_path, '.');
+                    if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
 
-                if (nfs_fetch_path(src_ip, ext_path, anlz_buf,
-                                   sizeof(anlz_buf), &anlz_read) == 0 && anlz_read > 0) {
-                    logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
-                    ws_broadcast_waveform(dev->device_num, anlz_buf, anlz_read);
-                    fetched = 1;
+                    if (nfs_fetch_path(src_ip, ext_path, tmp,
+                                       300000, &anlz_read) == 0 && anlz_read > 0) {
+                        logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
+                        dev->waveform_data = realloc(tmp, anlz_read);
+                        if (!dev->waveform_data) dev->waveform_data = tmp;
+                        dev->waveform_len = anlz_read;
+                        ws_broadcast_waveform(dev->device_num, dev->waveform_data, dev->waveform_len);
+                        fetched = 1;
+                    }
                 }
+                if (!fetched) free(tmp);
             }
-            dev->waveform_sent = 1; /* Don't retry even if fetch failed */
         }
 
         /* Log track and play state changes */

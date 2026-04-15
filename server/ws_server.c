@@ -348,6 +348,29 @@ void *ws_main(void *arg) {
                 len += snprintf(msg + len, sizeof(msg) - len, "]}");
                 ws_text(fd, msg, len);
             }
+
+            /* Send cached waveforms for all active decks */
+            if (app->prolink) {
+                for (int d = 0; d < MAX_DEVICES; d++) {
+                    cdj_device_t *dev = &devices[d];
+                    if (dev->active && dev->waveform_data && dev->waveform_len > 0) {
+                        /* Build waveform frame and send to this client only */
+                        uint8_t hdr[5] = {
+                            0xFF, dev->device_num,
+                            (uint8_t)((dev->waveform_len >> 16) & 0xFF),
+                            (uint8_t)((dev->waveform_len >> 8) & 0xFF),
+                            (uint8_t)(dev->waveform_len & 0xFF)
+                        };
+                        uint8_t *frame = malloc(5 + dev->waveform_len);
+                        if (frame) {
+                            memcpy(frame, hdr, 5);
+                            memcpy(frame + 5, dev->waveform_data, dev->waveform_len);
+                            ws_send_frame(fd, 0x02, frame, 5 + dev->waveform_len);
+                            free(frame);
+                        }
+                    }
+                }
+            }
         }
 
         /* ── VU meter + audio stats (every cycle, ~60 Hz) ──────────────── */
