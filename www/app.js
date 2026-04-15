@@ -253,19 +253,19 @@
             if (d.audio_only) continue; // handled by updateIdentification
             const n = d.n;
             if (!rawDecks[n]) rawDecks[n] = {};
-            if (d.title) rawDecks[n].title = d.title;
-            if (d.artist) rawDecks[n].artist = d.artist;
-            if (d.isrc) rawDecks[n].isrc = d.isrc;
+            rawDecks[n].title = d.title || '';
+            rawDecks[n].artist = d.artist || '';
+            rawDecks[n].isrc = d.isrc || '';
             if (d.name) rawDecks[n].name = d.name;
-            if (d.conf !== undefined) rawDecks[n].conf = d.conf;
-            if (d.conf_ok !== undefined) rawDecks[n].conf_ok = d.conf_ok;
-            if (d.conf_src) rawDecks[n].conf_src = d.conf_src;
-            if (d.rekordbox_id) rawDecks[n].rekordbox_id = d.rekordbox_id;
-            if (d.db_src) rawDecks[n].db_src = d.db_src;
-            if (d.format) rawDecks[n].format = d.format;
-            if (d.bitrate) rawDecks[n].bitrate = d.bitrate;
-            if (d.samplerate) rawDecks[n].samplerate = d.samplerate;
-            if (d.depth) rawDecks[n].depth = d.depth;
+            rawDecks[n].conf = d.conf || 0;
+            rawDecks[n].conf_ok = d.conf_ok || false;
+            rawDecks[n].conf_src = d.conf_src || '';
+            rawDecks[n].rekordbox_id = d.rekordbox_id || 0;
+            rawDecks[n].db_src = d.db_src || '';
+            rawDecks[n].format = d.format || '';
+            rawDecks[n].bitrate = d.bitrate || 0;
+            rawDecks[n].samplerate = d.samplerate || 0;
+            rawDecks[n].depth = d.depth || 0;
             rawDecks[n].on_air_known = true; // C knows on-air state
         }
     }
