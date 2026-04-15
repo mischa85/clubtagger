@@ -806,7 +806,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         dev->track_depth = ol_depth;
                         if (ol_anlz[0])
                             strncpy(dev->track_anlz_path, ol_anlz, sizeof(dev->track_anlz_path) - 1);
-                        vlogmsg("cdj", "🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
+                        logmsg("cdj", "🎵 %s - %s (via OneLibrary, anlz=%s)",
+                               ol_artist, ol_title, ol_anlz[0] ? ol_anlz : "(none)");
                     }
 
                     /* Try DBServer — but only after database fetch has been
