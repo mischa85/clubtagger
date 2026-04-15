@@ -91,6 +91,41 @@ void db_insert_play(App *app, const char *timestamp, const char *artist,
     pthread_mutex_unlock(&app->db_mu);
 }
 
+void db_update_play_source(App *app, const char *artist, const char *title,
+                           const char *new_source, const char *isrc) {
+    if (!app->db) return;
+
+    pthread_mutex_lock(&app->db_mu);
+
+    const char *sql = "UPDATE plays SET source = ?, isrc = COALESCE(?, isrc) "
+                      "WHERE id = (SELECT id FROM plays WHERE artist = ? AND title = ? "
+                      "ORDER BY id DESC LIMIT 1)";
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(app->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        logmsg("db", "update prepare failed: %s", sqlite3_errmsg(app->db));
+        pthread_mutex_unlock(&app->db_mu);
+        return;
+    }
+
+    sqlite3_bind_text(stmt, 1, new_source, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, (isrc && isrc[0]) ? isrc : NULL, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 3, artist, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 4, title, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_DONE) {
+        logmsg("db", "update failed: %s", sqlite3_errmsg(app->db));
+    } else if (sqlite3_changes(app->db) > 0) {
+        logmsg("db", "enriched: %s — %s → source=%s%s",
+               artist, title, new_source,
+               (isrc && isrc[0]) ? " +ISRC" : "");
+    }
+
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&app->db_mu);
+}
+
 int db_get_recent_tracks(App *app, int max_tracks,
                          char timestamps[][32], char artists[][256], char titles[][256],
                          char sources[][16], int confidences[], char isrcs[][64]) {

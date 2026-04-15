@@ -288,10 +288,43 @@ int levenshtein_distance(const char *s1, const char *s2) {
     return result;
 }
 
+/* Strip trailing parenthetical mix descriptors for fuzzy matching.
+ * "(Original Mix)", "(12" Version)", "(Extended Mix)", "(Remix)", etc. */
+static void strip_mix_suffix(char *s) {
+    size_t len = strlen(s);
+    /* Find last '(' */
+    for (int i = (int)len - 1; i >= 0; i--) {
+        if (s[i] == '(') {
+            /* Check if the parenthetical looks like a mix descriptor */
+            const char *suffixes[] = {
+                "mix", "remix", "version", "edit", "dub", "acapella",
+                "a cappella", "instrumental", "remaster", "rework",
+                "bootleg", "rework", "vip", NULL
+            };
+            char lower[128] = {0};
+            size_t k = 0;
+            for (int j = i + 1; j < (int)len && k < sizeof(lower) - 1; j++)
+                lower[k++] = (s[j] >= 'A' && s[j] <= 'Z') ? s[j] - 'A' + 'a' : s[j];
+            lower[k] = '\0';
+            for (int si = 0; suffixes[si]; si++) {
+                if (strstr(lower, suffixes[si])) {
+                    /* Trim at the '(' and trailing whitespace */
+                    s[i] = '\0';
+                    while (i > 0 && s[i-1] == ' ') s[--i] = '\0';
+                    return;
+                }
+            }
+            break; /* Only check the last parenthetical */
+        }
+    }
+}
+
 int str_similarity(const char *s1, const char *s2) {
     char n1[256], n2[256];
     normalize_for_match(s1, n1, sizeof(n1));
     normalize_for_match(s2, n2, sizeof(n2));
+    strip_mix_suffix(n1);
+    strip_mix_suffix(n2);
     
     size_t len1 = strlen(n1), len2 = strlen(n2);
     size_t max_len = len1 > len2 ? len1 : len2;

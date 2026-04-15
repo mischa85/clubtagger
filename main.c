@@ -542,6 +542,10 @@ int main(int argc, char **argv) {
         }
     }
 
+    /* Track source at time of acceptance — detect enrichment */
+    char accepted_source[CONF_MAX_DECKS + 1][16];
+    memset(accepted_source, 0, sizeof(accepted_source));
+
     while (g_running) {
         /* Tick the confidence model — handles decay, duration ticks, acceptance */
         uint32_t accepted = confidence_tick(time(NULL));
@@ -574,6 +578,35 @@ int main(int argc, char **argv) {
                 pthread_mutex_unlock(&app.db_mu);
 
                 atomic_fetch_add_explicit(&app.track_seq, 1, memory_order_release);
+
+                /* Record source at acceptance for enrichment tracking */
+                snprintf(accepted_source[i], sizeof(accepted_source[i]), "%s", source);
+            }
+        }
+
+        /* Post-acceptance enrichment: if the source string changed since
+         * we logged it (new signals arrived), update the DB entry. */
+        if (need_audio) {
+            for (int i = 0; i < CONF_MAX_DECKS + 1; i++) {
+                if (!accepted_source[i][0]) continue;
+                deck_confidence_t dc;
+                if (i < CONF_MAX_DECKS) confidence_get_deck(i, &dc);
+                else confidence_get_audio(&dc);
+                if (!dc.accepted || !dc.title[0]) continue;
+
+                const char *cur_source = confidence_source_string(dc.signals_seen);
+                if (strcmp(cur_source, accepted_source[i]) != 0) {
+                    db_update_play_source(&app, dc.artist, dc.title,
+                                          cur_source, dc.isrc);
+                    snprintf(accepted_source[i], sizeof(accepted_source[i]),
+                             "%s", cur_source);
+
+                    pthread_mutex_lock(&app.db_mu);
+                    snprintf(app.last_source, sizeof(app.last_source), "%s", cur_source);
+                    if (dc.isrc[0])
+                        snprintf(app.last_isrc, sizeof(app.last_isrc), "%s", dc.isrc);
+                    pthread_mutex_unlock(&app.db_mu);
+                }
             }
         }
 

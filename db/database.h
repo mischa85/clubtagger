@@ -18,6 +18,11 @@ void db_close(App *app);
 void db_insert_play(App *app, const char *timestamp, const char *artist,
                     const char *title, const char *isrc, int confidence, const char *source);
 
+/* Update source and ISRC for the most recent play matching artist+title.
+ * Used for post-acceptance enrichment when Shazam confirms a CDJ track. */
+void db_update_play_source(App *app, const char *artist, const char *title,
+                           const char *new_source, const char *isrc);
+
 /* Get recent tracks from database
  * Returns number of tracks written to the output arrays (up to max_tracks)
  * Arrays must be pre-allocated with at least max_tracks elements */
