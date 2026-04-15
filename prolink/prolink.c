@@ -876,7 +876,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     char *dot = strrchr(ext_path, '.');
                     if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
 
-                    if (nfs_fetch_path(src_ip, ext_path, tmp,
+                    if (nfs_fetch_path(dev->ip_addr, dev->track_slot, ext_path, tmp,
                                        300000, &anlz_read) == 0 && anlz_read > 0) {
                         logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
                         dev->waveform_data = realloc(tmp, anlz_read);

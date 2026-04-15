@@ -64,10 +64,11 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port,
                   const uint8_t *file_fh,
                   uint8_t *buf, size_t buf_len, size_t *bytes_read);
 
-/* Fetch a file by absolute path (e.g. "/PIONEER/USBANLZ/.../ANLZ0001.EXT").
+/* Fetch a file by path (e.g. "/PIONEER/USBANLZ/.../ANLZ0001.EXT").
+ * slot: media slot (2=SD, 3=USB) — determines NFS export path.
  * Handles mount, path traversal, and read. Caller provides buffer.
  * Returns 0 on success, -1 on failure. */
-int nfs_fetch_path(uint32_t server_ip, const char *path,
+int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
                    uint8_t *buf, size_t buf_len, size_t *bytes_read);
 
 /* Send NFS unlock request (Pioneer-specific) */

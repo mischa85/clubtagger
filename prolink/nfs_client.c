@@ -434,37 +434,36 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     return 0;
 }
 
-int nfs_fetch_path(uint32_t server_ip, const char *path,
+int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
                    uint8_t *buf, size_t buf_len, size_t *bytes_read) {
     extern uint16_t g_nfs_port;
     if (!path || path[0] != '/') return -1;
 
+    /* Determine export path from slot (same as OneLibrary/PDB fetch) */
+    const char *export_path;
+    switch (slot) {
+        case 2: export_path = "/B/"; break;  /* SD */
+        case 3: export_path = "/C/"; break;  /* USB */
+        default: return -1;
+    }
+
     /* Ensure socket is open (may have been closed by previous fetch) */
     if (!nfs_socket_ready()) nfs_init_socket();
 
-    /* We need a root file handle — mount "/" */
     uint8_t root_fh[NFS_FHSIZE];
     size_t fh_len = 0;
 
-    /* Try portmapper if we don't have g_nfs_port yet */
     if (g_nfs_port == 0) {
         int nfs_port = rpc_portmap_getport(server_ip, 100003, 2);
         if (nfs_port <= 0) return -1;
         g_nfs_port = (uint16_t)nfs_port;
     }
 
-    /* Mount to get root FH */
-    int mount_port = query_pioneer_portmapper(server_ip);
-    if (mount_port <= 0)
-        mount_port = rpc_portmap_getport(server_ip, 100005, 1);
-    if (mount_port <= 0) {
-        logmsg("nfs", "fetch_path: no mount port for %s", path);
-        return -1;
-    }
+    int mount_port = rpc_portmap_getport(server_ip, 100005, 1);
+    if (mount_port <= 0) return -1;
 
     if (nfs_mount_to_port(server_ip, (uint16_t)mount_port,
-                          "/", root_fh, &fh_len) != 0) {
-        logmsg("nfs", "fetch_path: mount failed for %s", path);
+                          export_path, root_fh, &fh_len) != 0) {
         return -1;
     }
 
@@ -490,7 +489,7 @@ int nfs_fetch_path(uint32_t server_ip, const char *path,
 
     /* Read the file */
     int rc = nfs_read_file(server_ip, g_nfs_port, file_fh, buf, buf_len, bytes_read);
-    if (rc != 0) logmsg("nfs", "fetch_path: read failed for %s", path);
+    nfs_close_socket();
     return rc;
 }
 
