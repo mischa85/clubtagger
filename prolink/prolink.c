@@ -720,6 +720,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_samplerate = 0;
             dev->track_depth = 0;
             dev->track_format = 0;
+            dev->track_anlz_path[0] = '\0';
             dev->track_db_src = DB_SRC_NONE;
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
             dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
@@ -776,6 +777,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 } else {
                     /* Try OneLibrary first (scoped to source device) */
                     char ol_title[128] = {0}, ol_artist[128] = {0}, ol_isrc[64] = {0};
+                    char ol_anlz[256] = {0};
                     uint32_t ol_bitrate = 0, ol_srate = 0;
                     uint8_t ol_format = 0, ol_depth = 0;
                     if (onelibrary_lookup(dev->rekordbox_id,
@@ -784,7 +786,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                           ol_artist, sizeof(ol_artist),
                                           ol_isrc, sizeof(ol_isrc),
                                           &ol_bitrate, &ol_format,
-                                          &ol_srate, &ol_depth) == 0 &&
+                                          &ol_srate, &ol_depth,
+                                          ol_anlz, sizeof(ol_anlz)) == 0 &&
                         ol_title[0] != '\0' && ol_artist[0] != '\0') {
                         utf8_safe_copy(dev->track_title, ol_title, sizeof(dev->track_title));
                         utf8_safe_copy(dev->track_artist, ol_artist, sizeof(dev->track_artist));
@@ -797,6 +800,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         dev->track_format = ol_format;
                         dev->track_samplerate = ol_srate;
                         dev->track_depth = ol_depth;
+                        if (ol_anlz[0])
+                            strncpy(dev->track_anlz_path, ol_anlz, sizeof(dev->track_anlz_path) - 1);
                         vlogmsg("cdj", "🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
                     }
 

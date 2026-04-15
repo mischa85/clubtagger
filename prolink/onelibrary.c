@@ -315,7 +315,8 @@ int onelibrary_lookup(uint32_t content_id,
                       char *artist, size_t artist_len,
                       char *isrc, size_t isrc_len,
                       uint32_t *bitrate_out, uint8_t *format_out,
-                      uint32_t *samplerate_out, uint8_t *depth_out)
+                      uint32_t *samplerate_out, uint8_t *depth_out,
+                      char *anlz_path, size_t anlz_path_len)
 {
     if (content_id == 0) return -1;
 
@@ -328,7 +329,7 @@ int onelibrary_lookup(uint32_t content_id,
 
         sqlite3_stmt *stmt = NULL;
         int rc = sqlite3_prepare_v2(olib_databases[i].db,
-            "SELECT c.title, a.name, c.isrc, c.bitrate, c.fileType, c.samplingRate, c.bitDepth "
+            "SELECT c.title, a.name, c.isrc, c.bitrate, c.fileType, c.samplingRate, c.bitDepth, c.analysisDataFilePath "
             "FROM content c "
             "LEFT JOIN artist a ON c.artist_id_artist = a.artist_id "
             "WHERE c.content_id = ?",
@@ -365,6 +366,13 @@ int onelibrary_lookup(uint32_t content_id,
             if (format_out) *format_out = (uint8_t)ft;
             if (samplerate_out) *samplerate_out = (uint32_t)sr;
             if (depth_out) *depth_out = (uint8_t)bd;
+            const char *ap = (const char *)sqlite3_column_text(stmt, 7);
+            if (ap && ap[0] && anlz_path && anlz_path_len > 0) {
+                strncpy(anlz_path, ap, anlz_path_len - 1);
+                anlz_path[anlz_path_len - 1] = '\0';
+            } else if (anlz_path && anlz_path_len > 0) {
+                anlz_path[0] = '\0';
+            }
 
             sqlite3_finalize(stmt);
 
