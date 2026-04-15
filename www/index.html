@@ -13,8 +13,20 @@
             min-height: 100vh;
             padding: 12px;
         }
-        .container { max-width: 900px; margin: 0 auto; }
+        .container { max-width: 1600px; margin: 0 auto; }
         h1 { text-align: center; margin-bottom: 15px; color: #00d4ff; font-size: 1.5em; }
+
+        /* Responsive layout: widescreen = decks left + sidebar right */
+        @media (min-width: 1100px) {
+            .container { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: auto 1fr; gap: 12px; }
+            .container > h1 { grid-column: 1 / -1; }
+            .main-content { display: contents; }
+            .decks-container { grid-column: 1; grid-row: 2; }
+            .sidebar { grid-column: 2; grid-row: 2; display: flex; flex-direction: column; gap: 12px; }
+        }
+        @media (max-width: 1099px) {
+            .sidebar { /* stacked below decks on narrow screens */ }
+        }
         
         /* Audio section - compact VU + REC status */
         .audio-section {
@@ -153,17 +165,19 @@
         /* ═══════════ CDJ-2000 Style Deck Cards ═══════════ */
         .decks-container {
             display: grid;
-            grid-template-columns: repeat(2, 1fr);
+            grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
             gap: 10px;
             margin-bottom: 20px;
         }
-        @media (max-width: 700px) { .decks-container { grid-template-columns: 1fr; } }
+        @media (max-width: 480px) { .decks-container { grid-template-columns: 1fr; } }
 
         .deck.cdj-style {
             background: #0a0a12;
             border: 1px solid #1a1a2e;
             border-radius: 4px;
             padding: 8px;
+            overflow: hidden;
+            min-width: 0; /* prevent flex/grid blowout */
         }
         .deck.cdj-style.on-air { border-color: #3a1a1a; }
 
@@ -221,11 +235,12 @@
         .deck.on-air .beat-dot.active { background: #ff9800; }
 
         /* Bottom bar: overview + source */
-        .cdj-bottom { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+        .cdj-bottom { display: flex; align-items: center; gap: 6px; margin-top: 4px;
+                      min-width: 0; overflow: hidden; }
         .cdj-overview { flex: 1; height: 16px; display: block; background: #060610;
-                        border-radius: 2px; border: 1px solid #1a1a2e; }
-        .cdj-overview-placeholder { flex: 1; height: 16px; }
-        .cdj-source { font-size: 8px; color: #334; flex-shrink: 0; }
+                        border-radius: 2px; border: 1px solid #1a1a2e; min-width: 0; }
+        .cdj-overview-placeholder { flex: 1; height: 16px; min-width: 0; }
+        .cdj-source { font-size: 8px; color: #334; flex-shrink: 0; white-space: nowrap; }
 
         /* Progress bar fallback (when no waveform) */
         .deck-progress {
@@ -386,69 +401,71 @@
     <div class="container">
         <h1>Clubtagger</h1>
         
-        <div class="audio-section">
-            <div class="vu-container">
-                <div class="vu-channel">
-                    <div class="vu-bar-container">
-                        <div class="vu-bar-bg"></div>
-                        <div class="vu-bar-mask" id="vu-left"></div>
-                        <div class="vu-peak" id="peak-left"></div>
-                    </div>
-                    <span class="vu-label">L</span>
-                </div>
-                <div class="vu-channel">
-                    <div class="vu-bar-container">
-                        <div class="vu-bar-bg"></div>
-                        <div class="vu-bar-mask" id="vu-right"></div>
-                        <div class="vu-peak" id="peak-right"></div>
-                    </div>
-                    <span class="vu-label">R</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="rec-panel">
-            <div class="rec-indicator standby" id="rec-status">Standby</div>
-            <div class="rec-detail"><span id="stat-format">—</span></div>
-            <div class="rec-detail">Runtime: <span id="stat-runtime">0s</span></div>
-            <div class="rec-detail">Written: <span id="stat-written">0</span></div>
-            <div class="rec-detail">Lost: <span id="stat-lost">0</span></div>
-        </div>
-        
-        <div class="nerd-stats">
-            <div class="nerd-stats-header">
-                <span>📊 Stats</span>
-            </div>
-            <div class="nerd-stats-grid">
-                <div class="nerd-stat"><span class="label">Uptime</span><span class="value" id="stat-uptime">—</span></div>
-                <div class="nerd-stat"><span class="label">CDJs</span><span class="value" id="stat-cdjs">0</span></div>
-                <div class="nerd-stat"><span class="label">WS clients</span><span class="value" id="stat-ws">0</span></div>
-                <div class="nerd-stat"><span class="label">Tracks tagged</span><span class="value" id="stat-tagged">0</span></div>
-                <div class="nerd-stat"><span class="label">Pkt/s</span><span class="value" id="stat-pkts">0</span></div>
-                <div class="nerd-stat"><span class="label">Shazam</span><span class="value" id="stat-shazam">0/0</span></div>
-                <div class="nerd-stat"><span class="label">Ring buf</span><span class="value" id="stat-ring">—</span></div>
-                <div class="nerd-stat"><span class="label">Load</span><span class="value" id="stat-load">—</span></div>
-                <div class="nerd-stat"><span class="label">Mem</span><span class="value" id="stat-mem">—</span></div>
-                <div class="nerd-stat"><span class="label">Disk</span><span class="value" id="stat-disk">—</span></div>
-            </div>
-        </div>
-        
         <div class="decks-container" id="decks">
             <div class="no-decks">No CDJs detected</div>
         </div>
-        
-        <div class="identification-panel" id="identification">
-            <div class="id-waiting">Waiting for track...</div>
-        </div>
 
-        <div class="activity-section">
-            <h2>ACTIVITY</h2>
-            <div class="activity-log" id="activity-log"></div>
-        </div>
+        <div class="sidebar">
+            <div class="audio-section">
+                <div class="vu-container">
+                    <div class="vu-channel">
+                        <div class="vu-bar-container">
+                            <div class="vu-bar-bg"></div>
+                            <div class="vu-bar-mask" id="vu-left"></div>
+                            <div class="vu-peak" id="peak-left"></div>
+                        </div>
+                        <span class="vu-label">L</span>
+                    </div>
+                    <div class="vu-channel">
+                        <div class="vu-bar-container">
+                            <div class="vu-bar-bg"></div>
+                            <div class="vu-bar-mask" id="vu-right"></div>
+                            <div class="vu-peak" id="peak-right"></div>
+                        </div>
+                        <span class="vu-label">R</span>
+                    </div>
+                </div>
+            </div>
 
-        <div class="tracklist">
-            <h2>RECENT TRACKS</h2>
-            <div id="tracks"></div>
+            <div class="rec-panel">
+                <div class="rec-indicator standby" id="rec-status">Standby</div>
+                <div class="rec-detail"><span id="stat-format">—</span></div>
+                <div class="rec-detail">Runtime: <span id="stat-runtime">0s</span></div>
+                <div class="rec-detail">Written: <span id="stat-written">0</span></div>
+                <div class="rec-detail">Lost: <span id="stat-lost">0</span></div>
+            </div>
+
+            <div class="identification-panel" id="identification">
+                <div class="id-waiting">Waiting for track...</div>
+            </div>
+
+            <div class="nerd-stats">
+                <div class="nerd-stats-header">
+                    <span>📊 Stats</span>
+                </div>
+                <div class="nerd-stats-grid">
+                    <div class="nerd-stat"><span class="label">Uptime</span><span class="value" id="stat-uptime">—</span></div>
+                    <div class="nerd-stat"><span class="label">CDJs</span><span class="value" id="stat-cdjs">0</span></div>
+                    <div class="nerd-stat"><span class="label">WS clients</span><span class="value" id="stat-ws">0</span></div>
+                    <div class="nerd-stat"><span class="label">Tracks tagged</span><span class="value" id="stat-tagged">0</span></div>
+                    <div class="nerd-stat"><span class="label">Pkt/s</span><span class="value" id="stat-pkts">0</span></div>
+                    <div class="nerd-stat"><span class="label">Shazam</span><span class="value" id="stat-shazam">0/0</span></div>
+                    <div class="nerd-stat"><span class="label">Ring buf</span><span class="value" id="stat-ring">—</span></div>
+                    <div class="nerd-stat"><span class="label">Load</span><span class="value" id="stat-load">—</span></div>
+                    <div class="nerd-stat"><span class="label">Mem</span><span class="value" id="stat-mem">—</span></div>
+                    <div class="nerd-stat"><span class="label">Disk</span><span class="value" id="stat-disk">—</span></div>
+                </div>
+            </div>
+
+            <div class="activity-section">
+                <h2>ACTIVITY</h2>
+                <div class="activity-log" id="activity-log"></div>
+            </div>
+
+            <div class="tracklist">
+                <h2>RECENT TRACKS</h2>
+                <div id="tracks"></div>
+            </div>
         </div>
     </div>
     
