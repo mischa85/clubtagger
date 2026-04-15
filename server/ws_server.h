@@ -18,4 +18,9 @@ void *ws_main(void *arg);
 void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
                          const uint8_t *payload, size_t len);
 
+/* Broadcast ANLZ waveform data for a specific device.
+ * Called from prolink thread after fetching ANLZ file.
+ * Frame type 0xFF distinguishes from CDJ packet frames (0/1/2). */
+void ws_broadcast_waveform(uint8_t device_num, const uint8_t *data, size_t len);
+
 #endif /* CLUBTAGGER_WS_SERVER_H */

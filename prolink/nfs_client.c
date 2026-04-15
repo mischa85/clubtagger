@@ -434,6 +434,60 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     return 0;
 }
 
+int nfs_fetch_path(uint32_t server_ip, const char *path,
+                   uint8_t *buf, size_t buf_len, size_t *bytes_read) {
+    extern uint16_t g_nfs_port;
+    if (!path || path[0] != '/') return -1;
+
+    /* We need a root file handle — mount "/" */
+    uint8_t root_fh[NFS_FHSIZE];
+    size_t fh_len = 0;
+
+    /* Try portmapper if we don't have g_nfs_port yet */
+    if (g_nfs_port == 0) {
+        int nfs_port = rpc_portmap_getport(server_ip, 100003, 2);
+        if (nfs_port <= 0) return -1;
+        g_nfs_port = (uint16_t)nfs_port;
+    }
+
+    /* Mount to get root FH */
+    int mount_port = query_pioneer_portmapper(server_ip);
+    if (mount_port <= 0) {
+        mount_port = rpc_portmap_getport(server_ip, 100005, 1);
+    }
+    if (mount_port <= 0) return -1;
+
+    if (nfs_mount_to_port(server_ip, (uint16_t)mount_port,
+                          "/", root_fh, &fh_len) != 0) {
+        return -1;
+    }
+
+    /* Walk path components: "/PIONEER/USBANLZ/.../ANLZ0001.EXT" */
+    uint8_t dir_fh[NFS_FHSIZE], file_fh[NFS_FHSIZE];
+    memcpy(dir_fh, root_fh, NFS_FHSIZE);
+
+    char pathbuf[256];
+    strncpy(pathbuf, path + 1, sizeof(pathbuf) - 1); /* skip leading '/' */
+    pathbuf[sizeof(pathbuf) - 1] = '\0';
+
+    char *saveptr = NULL;
+    char *component = strtok_r(pathbuf, "/", &saveptr);
+    while (component) {
+        char *next = strtok_r(NULL, "/", &saveptr);
+        if (nfs_lookup(server_ip, g_nfs_port, dir_fh, component, file_fh) != 0) {
+            return -1;
+        }
+        if (next) {
+            /* More components — this was a directory */
+            memcpy(dir_fh, file_fh, NFS_FHSIZE);
+        }
+        component = next;
+    }
+
+    /* Read the file */
+    return nfs_read_file(server_ip, g_nfs_port, file_fh, buf, buf_len, bytes_read);
+}
+
 int send_nfs_unlock(uint32_t target_ip) {
     (void)target_ip;
     return -1;  /* Not implemented */
