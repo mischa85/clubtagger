@@ -163,6 +163,11 @@
         .rec-panel .rec-detail span { color: #aaa; }
 
         /* ═══════════ CDJ-2000 Style Deck Cards ═══════════ */
+        @font-face {
+            font-family: 'CDJ2000';
+            src: url('CDJ2000-Regular.woff2') format('woff2');
+            font-weight: normal; font-style: normal;
+        }
         .decks-container {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
@@ -183,73 +188,143 @@
         }
         .deck.cdj-style.on-air { border-color: #3a1a1a; }
 
-        /* Title bar */
-        .cdj-title { display: flex; align-items: baseline; gap: 6px; margin-bottom: 4px;
-                     overflow: hidden; min-width: 0; }
-        .cdj-note { color: #0af; font-size: 12px; }
-        .cdj-track-name { color: #fff; font-size: 12px; font-weight: bold; flex: 1;
+        /* Title */
+        .cdj-title { display: flex; align-items: baseline; gap: 6px; margin-bottom: 6px; }
+        .cdj-note { color: #0af; }
+        .cdj-track-name { color: #fff; font-size: 13px; font-weight: bold; flex: 1;
                           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .cdj-format { color: #445; font-size: 8px; flex-shrink: 0; }
+        .cdj-format { color: #445; font-size: 9px; }
+        .cdj-key { color: #e1bee7; font-weight: bold; font-size: 12px; flex-shrink: 0; }
 
-        /* Detail waveform */
-        .cdj-detail-wrap { display: flex; gap: 4px; margin-bottom: 4px; width: 100%; overflow: hidden; }
-        .cdj-detail { flex: 1 1 0; min-width: 0; height: 100px; display: block; background: #060610;
-                      border: 1px solid #1a2a3a; border-radius: 2px; }
-        .cdj-zoom { display: flex; flex-direction: column; gap: 2px; }
-        .cdj-zoom button { width: 22px; height: 22px; background: #1a1a2e; border: 1px solid #2a2a3e;
-                           color: #0af; font-size: 14px; border-radius: 2px; cursor: pointer;
-                           display: flex; align-items: center; justify-content: center; }
+        /* Beat strip: ISRC left, beats centered, source right */
+        .cdj-beat-strip { display: flex; align-items: center;
+                          position: relative; padding: 4px 0; margin-bottom: 4px; }
+        .cdj-beats { display: inline-flex; gap: 3px; align-items: center;
+                     position: absolute; left: 50%; transform: translateX(-50%); }
+        .beat-dot { width: 16px; height: 8px; border-radius: 1px; background: #1a1a2e; }
+        .beat-dot.active { background: #ff5522; box-shadow: 0 0 4px #ff5522; }
+        .cdj-source { font-size: 8px; color: #445; white-space: nowrap; margin-left: auto; }
+        .cdj-isrc { font-size: 8px; color: #556; font-family: monospace; letter-spacing: 0.5px; }
+
+        /* Detail waveform — zoom buttons overlaid top-right */
+        .cdj-detail-wrap { position: relative; margin-bottom: 4px; flex: 1; min-height: 0; }
+        .cdj-detail { width: 100%; height: 100%; display: block; background: transparent;
+                      border-radius: 2px; min-width: 0; min-height: 0; }
+        .cdj-zoom { position: absolute; right: 4px; top: 4px; display: flex; flex-direction: column; gap: 2px; z-index: 1; }
+        .cdj-zoom button { width: 20px; height: 20px; background: rgba(10,10,30,0.7); border: 1px solid #2a2a3e;
+                           color: #0af; font-size: 12px; border-radius: 2px; cursor: pointer; }
         .cdj-zoom button:hover { background: #2a2a3e; }
         .cdj-detail-fallback { margin-bottom: 4px; }
 
-        /* Info bar (CDJ-2000 LCD style) — single horizontal row */
+        /* ═══ Info bar ═══ */
         .cdj-info {
-            display: flex; align-items: flex-end; gap: 8px;
-            padding: 6px 0 4px; margin-top: 4px;
-            border-top: 1px solid #1a1a2e;
-            flex-wrap: nowrap; min-width: 0;
+            position: relative; height: 55px;
+            margin-top: 2px;
         }
-        .cdj-col { text-align: center; flex-shrink: 0; }
-        .cdj-grow { flex: 1 1 0; min-width: 0; }
-        .cdj-label { font-size: 7px; color: #445; text-transform: uppercase; letter-spacing: 0.5px;
-                     margin-bottom: 2px; white-space: nowrap; display: block; }
-        .cdj-player-box { font-size: 18px; font-weight: bold; color: #fff;
-                          border: 1px solid #2a2a3e; border-radius: 3px; padding: 2px 8px;
-                          font-family: 'Courier New', monospace; display: inline-block; }
-        .cdj-onair-active { color: #ff5722; }
-        .cdj-onair-dim { color: #333; }
-        .cdj-time { font-size: 18px; font-family: 'Courier New', monospace;
-                    font-variant-numeric: tabular-nums; color: #0cf; cursor: pointer;
-                    letter-spacing: -0.5px; white-space: nowrap; }
-        .cdj-pitch { font-size: 11px; font-family: 'Courier New', monospace; color: #0af;
-                     font-variant-numeric: tabular-nums; white-space: nowrap; }
-        .cdj-bpm { font-size: 20px; font-weight: bold; font-family: 'Courier New', monospace;
-                   color: #0cf; background: #0a1a2a; border: 1px solid #0af;
-                   border-radius: 4px; padding: 2px 8px; font-variant-numeric: tabular-nums;
-                   display: inline-block; white-space: nowrap; }
-        .cdj-key { color: #e1bee7; font-weight: bold; font-size: 10px; margin-top: 2px; }
-        .cdj-sub { font-size: 8px; color: #556; margin-top: 1px; }
-        .cdj-play-state { color: #4caf50; }
-        .cdj-badge-master { font-size: 8px; color: #ffc107; background: #2a2000; padding: 1px 4px; border-radius: 2px; display: inline-block; }
-        .cdj-badge-sync { font-size: 7px; color: #26c6da; background: #0a2a2a; padding: 1px 3px;
-                          border-radius: 2px; vertical-align: middle; }
-        .cdj-badge-mt { font-size: 8px; color: #82b1ff; background: #0a0a2a; padding: 1px 4px; border-radius: 2px; display: inline-block; }
 
-        /* Beat dots — larger, more visible */
-        .cdj-beats { display: inline-flex; gap: 4px; align-items: center; margin: 0 4px; }
-        .beat-dot { width: 8px; height: 8px; border-radius: 50%; background: #2a2a2a;
-                    transition: background 0.08s, transform 0.08s; }
-        .beat-dot.active { background: #ff5722; transform: scale(1.4); }
-        .deck.on-air .beat-dot.active { background: #ff9800; }
+        /* PLAYER box — CDJ-3000 style */
+        .cdj-player-box {
+            position: absolute; left: 0; top: 0; width: 50px; height: 46px;
+            background: #0c0c18; border: 1px solid #2a2a3e; border-radius: 2px;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+        }
+        .cdj-player-label { font-size: 7px; color: #889; text-transform: uppercase;
+                            letter-spacing: 0.5px; font-weight: 600; line-height: 1; margin-bottom: 1px; }
+        .cdj-player-num-row { display: flex; align-items: center; gap: 3px;
+                              font-family: -apple-system, 'Helvetica Neue', sans-serif; }
+        .cdj-player-num { font-size: 24px; font-weight: 700; color: #fff; line-height: 1; }
+        /* On-air broadcast arcs — CDJ-3000 style */
+        .cdj-onair { display: flex; flex-direction: row; gap: 2px; align-items: center; }
+        .cdj-onair-arc { border: 1px solid transparent; box-sizing: border-box; border-radius: 50%; }
+        .cdj-onair-arc-inner { width: 5px; height: 11px; }
+        .cdj-onair-arc-outer { width: 7px; height: 15px; }
+        .cdj-onair-on .cdj-onair-arc { border-color: #ff5722; }
+        .cdj-onair-off .cdj-onair-arc { border-color: #333; }
+        .cdj-onair-left .cdj-onair-arc { border-right-color: transparent; border-top-color: transparent; border-bottom-color: transparent; }
+        .cdj-onair-right .cdj-onair-arc { border-left-color: transparent; border-top-color: transparent; border-bottom-color: transparent; }
+        .cdj-master-badge { position: absolute; left: 0; top: 46px; font-size: 7px; }
 
-        /* Bottom bar: overview + source */
-        .cdj-bottom { display: flex; align-items: center; gap: 6px; margin-top: 4px;
-                      width: 100%; overflow: hidden; }
-        .cdj-overview { height: 16px; display: block; background: #060610;
-                        border-radius: 2px; border: 1px solid #1a1a2e;
-                        flex: 1 1 0; min-width: 0; max-width: 100%; }
-        .cdj-overview-placeholder { flex: 1 1 0; height: 16px; min-width: 0; }
-        .cdj-source { font-size: 8px; color: #445; flex: 0 0 auto; white-space: nowrap; }
+        /* REMAIN label */
+        .cdj-lbl-remain { position: absolute; left: 58px; top: 0px;
+                          font-size: 7px; color: #556; text-transform: uppercase; letter-spacing: 0.5px; }
+
+        /* LCD digits */
+        .cdj-lcd { font-family: 'CDJ2000', monospace; color: #fff; font-size: 23px; line-height: 1; position: absolute; }
+        .cdj-unit { font-family: -apple-system, sans-serif; color: #889; font-size: 9px; font-weight: 600;
+                    position: absolute; }
+
+        /* Time */
+        .cdj-time { left: 58px; top: 10px; cursor: pointer; }
+        .cdj-time-frac { font-size: 16px; }
+
+        /* TEMPO label + badges */
+        .cdj-tempo-badges { position: absolute; left: 220px; top: 0px; display: flex; gap: 3px;
+                            align-items: center; }
+        .cdj-badge { font-size: 7px; padding: 1px 3px; border-radius: 2px; display: inline-block; }
+        .cdj-badge-master { color: #ffc107; background: #2a2000; }
+        .cdj-badge-sync { color: #26c6da; background: #0a2a2a; }
+        .cdj-badge-mt { color: #82b1ff; background: #0a0a2a; }
+
+        /* Pitch — decimal point anchored at fixed position */
+        .cdj-pitch-sign { left: 220px; top: 10px; }
+        .cdj-pitch-int  { left: 239px; top: 10px; width: 36px; text-align: right; }
+        .cdj-pitch-dot  { left: 275px; top: 10px; }
+        .cdj-pitch-frac { left: 283px; top: 10px; }
+        .cdj-pitch-pct  { left: 319px; top: 24px; font-size: 9px; color: #fff; }
+
+        /* Play state */
+        .cdj-play-state { position: absolute; left: 58px; top: 38px;
+                          font-size: 8px; color: #4caf50; }
+
+        /* BPM box */
+        .cdj-bpm-box {
+            position: absolute; right: 0; top: 0px; width: 80px; height: 43px;
+            background: #0a0a12;
+            border: 1px solid #f08138;
+            border-radius: 3px;
+            padding: 2px 4px; text-align: right;
+            display: flex; flex-direction: column; justify-content: center;
+        }
+        .cdj-bpm-num { font-size: 23px; font-family: 'CDJ2000', monospace;
+                       color: #f08138; line-height: 1; white-space: nowrap; }
+        .cdj-bpm-dec { font-size: 16px; }
+        .cdj-bpm-label { font-size: 7px; color: #f08138; text-transform: uppercase;
+                         letter-spacing: 1px; margin-top: 2px; text-align: right; }
+
+        /* Bottom: overview + position bar */
+        .cdj-bottom { margin-top: 0; }
+        .cdj-overview-stack { position: relative; }
+        .cdj-overview { width: 100%; height: 16px; background: transparent; display: block; }
+        .cdj-overview-placeholder { height: 16px; }
+
+        /* Playhead */
+        .cdj-playhead { position: absolute; left: 0%; top: -9px; bottom: 4px;
+                        width: 2px; z-index: 2; pointer-events: none;
+                        background: #fff;
+                        border-top: 1px solid #0e0e0e;
+                        border-bottom: 1px solid #0e0e0e; }
+        .cdj-playhead::after { content: ''; position: absolute; left: -1px; right: -1px;
+                               bottom: -3px; height: 10px;
+                               border-left: 1px solid #0e0e0e;
+                               border-right: 1px solid #0e0e0e; }
+
+        /* Position bar */
+        .cdj-posbar { position: relative; height: 11px; margin-top: 2px; }
+        .cdj-posbar-played { position: absolute; left: 0; top: 0; width: 0%; height: 4px; box-sizing: border-box;
+                             border-left: 1px solid #64656d;
+                             background:
+                               repeating-linear-gradient(90deg, #44454a 0px, #44454a 1px, #64656d 1px, #64656d 2px),
+                               repeating-linear-gradient(90deg, #44454a 0px, #44454a 1px, #64656d 1px, #64656d 2px);
+                             background-size: 100% 1px;
+                             background-position: 0 0, 0 100%;
+                             background-repeat: repeat-x; }
+        .cdj-posbar-remain { position: absolute; left: 0%; top: 0; right: 0; height: 4px;
+                             background: repeating-linear-gradient(90deg,
+                               #fff 0px, #fff 1px, #c4c5c6 1px, #c4c5c6 2px); }
+        .cdj-posbar-ticks { position: absolute; left: 0; right: 0; top: 7px; height: 4px; }
+        .cdj-posbar-tick { position: absolute; top: 0; width: 1px; height: 4px; background: #fff; }
+
+        .cdj-source-bottom { font-size: 8px; color: #445; white-space: nowrap; margin-left: auto; }
 
         /* Progress bar fallback (when no waveform) */
         .deck-progress {

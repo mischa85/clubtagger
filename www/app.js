@@ -102,6 +102,24 @@
         const t = Math.floor((ms % 1000) / 100);
         return m + ':' + (s < 10 ? '0' : '') + s + '.' + t;
     }
+    /* CDJ LCD time: returns {main: "MM:SS", frac: ".F00"} for the CDJ2000 font display */
+    function formatTimeLCD(ms) {
+        const m = Math.floor(ms / 60000);
+        const s = Math.floor((ms % 60000) / 1000);
+        const f = Math.floor(ms % 1000);
+        return {
+            main: (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s,
+            frac: '.' + (f < 100 ? '0' : '') + (f < 10 ? '0' : '') + f
+        };
+    }
+    /* Pitch display: sign, integer (right-aligned), decimal frac */
+    function formatPitchLCD(pitchPct) {
+        const sign = pitchPct >= 0 ? '+' : '-';
+        const abs = Math.abs(pitchPct);
+        const intPart = Math.floor(abs);
+        const fracPart = ((abs % 1) * 100).toFixed(0).padStart(2, '0');
+        return { sign: sign, int: intPart < 10 ? ' ' + intPart : '' + intPart, frac: fracPart };
+    }
     // Format seconds as m:ss
     function formatPosSec(sec) {
         const m = Math.floor(sec / 60);
@@ -293,10 +311,6 @@
             if (d.playing) classes.push('playing');
             if (d.on_air) classes.push('on-air');
 
-            const beatDots = d.bpm > 0 ? '<span class="cdj-beats">' +
-                [1,2,3,4].map(b => `<span class="beat-dot${d.beat_in_bar === b ? ' active' : ''}" id="beat-${d.n}-${b}"></span>`).join('') +
-                '</div>' : '';
-
             /* Compute display values */
             const posMs = d.playhead_ms || 0;
             const trackLen = d.track_length || 0;
@@ -305,8 +319,10 @@
 
             const baseBpm = d.bpm > 0 ? (d.bpm / 100) : 0;
             const pitchPct = (d.pitch || 0) / 100;
-            const effectiveBpm = baseBpm > 0 ? (baseBpm * (1 + pitchPct / 100)).toFixed(1) : '--.-';
-            const pitchStr = baseBpm > 0 ? (pitchPct >= 0 ? '+' : '') + pitchPct.toFixed(2) + '%' : '';
+            const effectiveBpm = baseBpm > 0 ? (baseBpm * (1 + pitchPct / 100)) : 0;
+            const bpmInt = effectiveBpm > 0 ? Math.floor(effectiveBpm) : '--';
+            const bpmDec = effectiveBpm > 0 ? '.' + ((effectiveBpm % 1) * 10).toFixed(0) : '.-';
+            const pitch = formatPitchLCD(pitchPct);
 
             const slotName = SLOTS[d.track_slot] || '';
             const keyStr = d.key_note <= 11 ? keyName(d.key_note, d.key_scale, d.key_acc) : '';
@@ -318,15 +334,12 @@
                 else if (d.bitrate) fmtStr += ' ' + d.bitrate + 'k';
             }
 
-            const onairL = d.on_air ? '((' : '';
-            const onairR = d.on_air ? '))' : '';
-            const onairCls = d.on_air ? 'cdj-onair-active' : 'cdj-onair-dim';
+            const onairState = d.on_air ? 'cdj-onair-on' : 'cdj-onair-off';
 
             const timeMode = d.timeMode || 'remain';
             const timeLabel = timeMode === 'remain' ? 'REMAIN' : 'ELAPSED';
-            const timeVal = (timeMode === 'remain' && trackLen > 0 && posMs > 0)
-                ? '-' + formatPosMs(remainMs)
-                : (posMs > 0 ? formatPosMs(posMs) : '--:--.--');
+            const timeMs = (timeMode === 'remain' && trackLen > 0 && posMs > 0) ? remainMs : posMs;
+            const timeLCD = posMs > 0 ? formatTimeLCD(timeMs) : { main: '--:--', frac: '.---' };
 
             /* Waveform or fallback */
             const hasWf = d.waveform && d.waveform.detail;
@@ -341,12 +354,37 @@
                     `</div>`;
             }
 
+            /* Beat dots */
+            const beatDots = d.bpm > 0 ? '<span class="cdj-beats">' +
+                [1,2,3,4].map(b => `<span class="beat-dot${d.beat_in_bar === b ? ' active' : ''}" id="beat-${d.n}-${b}"></span>`).join('') +
+                '</span>' : '';
+
+            /* Play state */
+            const playStateStr = d.playing
+                ? '▶' + (d.looping ? ' LOOP' + (d.loop_beats > 0 ? ' ' + d.loop_beats : '') : '')
+                : '❚❚';
+
+            /* Minute ticks for position bar */
+            let ticksHtml = '';
+            if (trackLen > 0) {
+                const totalMin = trackLen / 60;
+                for (let m = 1; m < totalMin; m++) {
+                    ticksHtml += `<div class="cdj-posbar-tick" style="left:${(m * 60 / trackLen * 100).toFixed(2)}%"></div>`;
+                }
+            }
+
             return `
                 <div class="${classes.join(' ')}" id="deck-${d.n}">
                     <div class="cdj-title">
                         <span class="cdj-note">♪</span>
                         <span class="cdj-track-name">${escapeHtml(d.artist ? d.artist + ' - ' : '')}${escapeHtml(d.title) || 'No track loaded'}</span>
-                        ${fmtStr ? '<span class="cdj-format">' + fmtStr + '</span>' : ''}
+                        ${fmtStr ? '<span class="cdj-format">' + escapeHtml(fmtStr) + '</span>' : ''}
+                        ${keyStr ? '<span class="cdj-key">' + keyStr + '</span>' : ''}
+                    </div>
+                    <div class="cdj-beat-strip">
+                        ${d.isrc ? '<span class="cdj-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}
+                        ${beatDots}
+                        <span class="cdj-source">${escapeHtml(slotName)}${d.db_src ? ' · ' + escapeHtml(d.db_src) : ''}</span>
                     </div>
                     ${hasWf
                         ? `<div class="cdj-detail-wrap">
@@ -359,33 +397,40 @@
                         : `<div class="cdj-detail-fallback">${progressBar}</div>`
                     }
                     <div class="cdj-info">
-                        <div class="cdj-col">
-                            <div class="cdj-label">PLAYER</div>
-                            <div class="cdj-player-box"><span class="${onairCls}">${onairL}</span>${d.n}<span class="${onairCls}">${onairR}</span></div>
-                            ${d.master ? '<div class="cdj-sub cdj-badge-master">MASTER</div>' : ''}
+                        <div class="cdj-player-box">
+                            <div class="cdj-player-label">PLAYER</div>
+                            <div class="cdj-player-num-row">
+                                <span class="cdj-onair ${onairState} cdj-onair-left"><span class="cdj-onair-arc cdj-onair-arc-outer"></span><span class="cdj-onair-arc cdj-onair-arc-inner"></span></span>
+                                <span class="cdj-player-num">${d.n}</span>
+                                <span class="cdj-onair ${onairState} cdj-onair-right"><span class="cdj-onair-arc cdj-onair-arc-inner"></span><span class="cdj-onair-arc cdj-onair-arc-outer"></span></span>
+                            </div>
                         </div>
-                        <div class="cdj-col">
-                            ${beatDots}
+                        ${d.master ? '<div class="cdj-master-badge"><span class="cdj-badge cdj-badge-master">MASTER</span></div>' : ''}
+                        <span class="cdj-lbl-remain" id="cdj-lbl-${d.n}">${timeLabel}</span>
+                        <div class="cdj-tempo-badges">
+                            ${d.sync ? '<span class="cdj-badge cdj-badge-sync">SYNC</span>' : ''}
+                            ${d.master_tempo ? '<span class="cdj-badge cdj-badge-mt">MT</span>' : ''}
                         </div>
-                        <div class="cdj-col cdj-grow">
-                            <div class="cdj-label">${timeLabel}</div>
-                            <div class="cdj-time" id="cdj-time-${d.n}" onclick="rawDecks[${d.n}].timeMode=rawDecks[${d.n}].timeMode==='elapsed'?'remain':'elapsed'">${timeVal}</div>
-                            ${d.playing ? '<div class="cdj-sub cdj-play-state">▶' + (d.looping ? ' LOOP' + (d.loop_beats > 0 ? ' ' + d.loop_beats : '') : '') + '</div>' : '<div class="cdj-sub">❚❚</div>'}
-                        </div>
-                        <div class="cdj-col">
-                            <div class="cdj-label">TEMPO${d.sync ? ' <span class="cdj-badge-sync">SYNC</span>' : ''}</div>
-                            <div class="cdj-pitch">${pitchStr || '+0.00%'}</div>
-                            ${d.master_tempo ? '<div class="cdj-sub cdj-badge-mt">MT</div>' : ''}
-                        </div>
-                        <div class="cdj-col">
-                            <div class="cdj-label">BPM</div>
-                            <div class="cdj-bpm">${effectiveBpm}</div>
-                            ${keyStr ? '<div class="cdj-key">' + keyStr + '</div>' : ''}
+                        <span class="cdj-lcd cdj-time" id="cdj-time-${d.n}" onclick="rawDecks[${d.n}].timeMode=rawDecks[${d.n}].timeMode==='elapsed'?'remain':'elapsed'">${timeLCD.main}<span class="cdj-time-frac" id="cdj-frac-${d.n}">${timeLCD.frac}</span></span>
+                        <span class="cdj-lcd cdj-pitch-sign">${pitch.sign}</span>
+                        <span class="cdj-lcd cdj-pitch-int">${pitch.int}</span><span class="cdj-lcd cdj-pitch-dot">.</span><span class="cdj-lcd cdj-pitch-frac">${pitch.frac}</span>
+                        <span class="cdj-unit cdj-pitch-pct">%</span>
+                        <div class="cdj-play-state">${playStateStr}</div>
+                        <div class="cdj-bpm-box">
+                            <div class="cdj-bpm-num">${bpmInt}<span class="cdj-bpm-dec">${bpmDec}</span></div>
+                            <div class="cdj-bpm-label">BPM</div>
                         </div>
                     </div>
                     <div class="cdj-bottom">
-                        ${hasOverview ? '<canvas class="cdj-overview" id="overview-' + d.n + '"></canvas>' : '<div class="cdj-overview-placeholder"></div>'}
-                        <span class="cdj-source">${slotName}${d.db_src ? ' · ' + d.db_src : ''}</span>
+                        <div class="cdj-overview-stack">
+                            ${hasOverview ? '<canvas class="cdj-overview" id="overview-' + d.n + '"></canvas>' : '<div class="cdj-overview-placeholder"></div>'}
+                            <div class="cdj-posbar">
+                                <div class="cdj-posbar-played" id="posbar-played-${d.n}" style="width:${pct.toFixed(1)}%"></div>
+                                <div class="cdj-posbar-remain" id="posbar-remain-${d.n}" style="left:${pct.toFixed(1)}%"></div>
+                                <div class="cdj-posbar-ticks">${ticksHtml}</div>
+                            </div>
+                            <div class="cdj-playhead" id="playhead-${d.n}" style="left:${pct.toFixed(1)}%"></div>
+                        </div>
                     </div>
                 </div>
             `;
@@ -561,15 +606,29 @@
                 renderOverview(overviewCanvas, wf.preview, pct);
             }
 
-            /* Time display */
+            /* Time display (LCD: main + frac spans) */
             const timeEl = document.getElementById('cdj-time-' + devNum);
             if (timeEl) {
                 const mode = rawDecks[devNum].timeMode || 'remain';
-                if (mode === 'remain' && tl > 0)
-                    timeEl.textContent = '-' + formatPosMs(Math.max(0, tl * 1000 - ms));
-                else
-                    timeEl.textContent = formatPosMs(ms);
+                const displayMs = (mode === 'remain' && tl > 0) ? Math.max(0, tl * 1000 - ms) : ms;
+                const lcd = formatTimeLCD(displayMs);
+                /* Update main text (first text node) and frac span */
+                const fracEl = document.getElementById('cdj-frac-' + devNum);
+                if (fracEl) {
+                    timeEl.firstChild.textContent = lcd.main;
+                    fracEl.textContent = lcd.frac;
+                } else {
+                    timeEl.textContent = lcd.main + lcd.frac;
+                }
             }
+
+            /* Position bar + playhead */
+            const playedEl = document.getElementById('posbar-played-' + devNum);
+            const remainEl2 = document.getElementById('posbar-remain-' + devNum);
+            const playheadEl = document.getElementById('playhead-' + devNum);
+            if (playedEl) playedEl.style.width = pct.toFixed(1) + '%';
+            if (remainEl2) remainEl2.style.left = pct.toFixed(1) + '%';
+            if (playheadEl) playheadEl.style.left = pct.toFixed(1) + '%';
 
             /* Fallback: plain progress bar */
             const progEl = document.getElementById('progress-' + devNum);
@@ -749,6 +808,9 @@
     function cycleZoom(dir) {
         zoomIndex = Math.max(0, Math.min(zoomLevels.length - 1, zoomIndex + dir));
     }
+    /* Expose to onclick handlers in deck template */
+    window.cycleZoom = cycleZoom;
+    window.rawDecks = rawDecks;
 
     function handleBinaryFrame(data) {
         if (data.byteLength < 5) return;
@@ -1014,16 +1076,30 @@
                         renderOverview(oc, d.waveform.preview, pct);
                     }
 
-                    /* Update time */
+                    /* Update time (LCD: main + frac) */
                     var te = document.getElementById('cdj-time-' + n);
                     if (te) {
                         var tl = d.track_length || 0;
                         var mode = d.timeMode || 'remain';
-                        if (mode === 'remain' && tl > 0)
-                            te.textContent = '-' + formatPosMs(Math.max(0, tl*1000 - d.playhead_ms));
-                        else
-                            te.textContent = formatPosMs(d.playhead_ms);
+                        var displayMs = (mode === 'remain' && tl > 0) ? Math.max(0, tl*1000 - d.playhead_ms) : d.playhead_ms;
+                        var lcd = formatTimeLCD(displayMs);
+                        var fracEl = document.getElementById('cdj-frac-' + n);
+                        if (fracEl) {
+                            te.firstChild.textContent = lcd.main;
+                            fracEl.textContent = lcd.frac;
+                        } else {
+                            te.textContent = lcd.main + lcd.frac;
+                        }
                     }
+
+                    /* Update position bar + playhead */
+                    var pct2 = d.track_length > 0 ? Math.min(100, d.playhead_ms / (d.track_length * 1000) * 100) : 0;
+                    var played = document.getElementById('posbar-played-' + n);
+                    var remain = document.getElementById('posbar-remain-' + n);
+                    var ph = document.getElementById('playhead-' + n);
+                    if (played) played.style.width = pct2.toFixed(1) + '%';
+                    if (remain) remain.style.left = pct2.toFixed(1) + '%';
+                    if (ph) ph.style.left = pct2.toFixed(1) + '%';
 
                     /* Update beat dots */
                     for (var b = 1; b <= 4; b++) {
