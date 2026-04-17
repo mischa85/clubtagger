@@ -165,9 +165,13 @@
         if (statLost) {
             statLost.textContent = data.lost || 0;
         }
-        if (statWritten && data.frames && data.rate) {
-            const bytes = data.frames * data.ch * 3; /* 24-bit = 3 bytes/sample */
-            statWritten.textContent = formatBytes(bytes);
+        if (statWritten) {
+            if (data.rec && data.frames && data.rate) {
+                const bytes = data.frames * data.ch * 3; /* 24-bit = 3 bytes/sample */
+                statWritten.textContent = formatBytes(bytes);
+            } else if (!data.rec) {
+                statWritten.textContent = '0';
+            }
         }
     }
 
@@ -718,49 +722,61 @@
 
     /* ── Waveform rendering helpers ─────────────────────────────────── */
 
-    /* Draw 3-band waveform entries — CDJ-3000 colors, mirrored from center */
-    function draw3band(ctx, wf, startEntry, count, x0, w, h, peak) {
+    /* Draw 3-band waveform — CDJ-3000 style color blending.
+       The whole column color shifts based on frequency balance:
+       bass-heavy = red/orange, mid-heavy = orange/yellow, high-heavy = blue/cyan.
+       mode='center': mirrored from vertical center (detail).
+       mode='bottom': grows upward from bottom (overview). */
+    function draw3band(ctx, wf, startEntry, count, x0, w, h, peak, mode) {
         if (!peak) {
             peak = 1;
             for (let i = 0; i < wf.entries * 3; i++)
                 if (wf.data[i] > peak) peak = wf.data[i];
         }
         const colW = w / count;
-        const cy = h / 2;
+        const fromCenter = (mode === 'center');
+        const half = fromCenter ? h / 2 : h;
         for (let i = 0; i < count; i++) {
             const idx = startEntry + i;
             if (idx < 0 || idx >= wf.entries) continue;
             const mid = wf.data[idx * 3];
             const high = wf.data[idx * 3 + 1];
             const low = wf.data[idx * 3 + 2];
+            const total = low + mid + high;
+            if (total === 0) continue;
+            /* Blend color based on frequency balance */
+            const lw = low / total, mw = mid / total, hw = high / total;
+            const r = Math.round(lw * 220 + mw * 200 + hw * 30);
+            const g = Math.round(lw * 40 + mw * 140 + hw * 180);
+            const b = Math.round(lw * 30 + mw * 20 + hw * 220);
+            ctx.fillStyle = 'rgb(' + r + ',' + g + ',' + b + ')';
             const x = x0 + (i / count) * w;
-            const lowH = (low / peak) * cy;
-            const midH = (mid / peak) * cy;
-            const highH = (high / peak) * cy;
+            const maxH = (Math.max(low, mid, high) / peak) * half;
             const cw = Math.max(colW, 1);
-            /* Bass (red) — innermost, drawn first */
-            ctx.fillStyle = '#cc3333';
-            ctx.fillRect(x, cy - lowH, cw, lowH * 2);
-            /* Mid (orange) */
-            ctx.fillStyle = '#cc8822';
-            ctx.fillRect(x, cy - Math.max(lowH, midH), cw, Math.max(lowH, midH) * 2);
-            /* High (cyan) — outermost */
-            ctx.fillStyle = 'rgba(100, 210, 255, 0.85)';
-            ctx.fillRect(x, cy - Math.max(lowH, midH, highH), cw, Math.max(lowH, midH, highH) * 2);
+            if (fromCenter) {
+                ctx.fillRect(x, h / 2 - maxH, cw, maxH * 2);
+            } else {
+                ctx.fillRect(x, h - maxH, cw, maxH);
+            }
         }
     }
 
-    function drawMono(ctx, wf, startEntry, count, x0, w, h) {
+    function drawMono(ctx, wf, startEntry, count, x0, w, h, mode) {
         const colW = w / count;
-        const cy = h / 2;
+        const fromCenter = (mode === 'center');
         ctx.fillStyle = '#4488cc';
         for (let i = 0; i < count; i++) {
             const idx = startEntry + i;
             if (idx < 0 || idx >= wf.entries) continue;
-            const height = wf.data[idx] & 0x1f;
+            const val = wf.data[idx] & 0x1f;
             const x = x0 + (i / count) * w;
-            const barH = (height / 31) * cy;
-            ctx.fillRect(x, cy - barH, Math.max(colW, 1), barH * 2);
+            if (fromCenter) {
+                const barH = (val / 31) * (h / 2);
+                ctx.fillRect(x, h / 2 - barH, Math.max(colW, 1), barH * 2);
+            } else {
+                const barH = (val / 31) * h;
+                ctx.fillRect(x, h - barH, Math.max(colW, 1), barH);
+            }
         }
     }
 
@@ -773,8 +789,8 @@
         const h = canvas.height = canvas.clientHeight * dpr;
         ctx.clearRect(0, 0, w, h);
 
-        if (wf.type === '3band') draw3band(ctx, wf, 0, wf.entries, 0, w, h);
-        else drawMono(ctx, wf, 0, wf.entries, 0, w, h);
+        if (wf.type === '3band') draw3band(ctx, wf, 0, wf.entries, 0, w, h, 0, 'bottom');
+        else drawMono(ctx, wf, 0, wf.entries, 0, w, h, 'bottom');
 
         /* Playhead line */
         if (pct > 0) {
@@ -804,8 +820,8 @@
         const startEntry = centerEntry - Math.floor(visibleEntries / 2);
 
         /* Use global peak (not per-window) so waveform doesn't rescale as you scroll */
-        if (wf.type === '3band') draw3band(ctx, wf, startEntry, visibleEntries, 0, w, h);
-        else drawMono(ctx, wf, startEntry, visibleEntries, 0, w, h);
+        if (wf.type === '3band') draw3band(ctx, wf, startEntry, visibleEntries, 0, w, h, 0, 'center');
+        else drawMono(ctx, wf, startEntry, visibleEntries, 0, w, h, 'center');
 
         /* Center playhead line */
         const cx = Math.round(w / 2);
