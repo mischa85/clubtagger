@@ -42,6 +42,7 @@
 #define WS_MAGIC_GUID   "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 static _Atomic int ws_fds[WS_MAX_CLIENTS];
+static pthread_mutex_t ws_send_mu = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── WebSocket framing (RFC 6455) ───────────────────────────────────────── */
 
@@ -75,10 +76,14 @@ static ssize_t ws_send_frame(int fd, uint8_t opcode, const void *data, size_t le
 }
 
 static ssize_t ws_text(int fd, const char *data, size_t len) {
-    return ws_send_frame(fd, 0x01, data, len);
+    pthread_mutex_lock(&ws_send_mu);
+    ssize_t r = ws_send_frame(fd, 0x01, data, len);
+    pthread_mutex_unlock(&ws_send_mu);
+    return r;
 }
 
 static void ws_broadcast_text(const char *data, size_t len) {
+    pthread_mutex_lock(&ws_send_mu);
     for (int i = 0; i < WS_MAX_CLIENTS; i++) {
         int fd = atomic_load(&ws_fds[i]);
         if (fd < 0) continue;
@@ -88,6 +93,7 @@ static void ws_broadcast_text(const char *data, size_t len) {
             atomic_store(&ws_fds[i], -1);
         }
     }
+    pthread_mutex_unlock(&ws_send_mu);
 }
 
 /* ── Waveform broadcast (called from prolink thread) ────────────────────── */
@@ -109,11 +115,13 @@ void ws_broadcast_waveform(uint8_t device_num, const uint8_t *data, size_t len) 
     memcpy(frame, hdr, 5);
     memcpy(frame + 5, data, len);
 
+    pthread_mutex_lock(&ws_send_mu);
     for (int i = 0; i < WS_MAX_CLIENTS; i++) {
         int fd = atomic_load(&ws_fds[i]);
         if (fd < 0) continue;
         ws_send_frame(fd, 0x02, frame, 5 + len);
     }
+    pthread_mutex_unlock(&ws_send_mu);
     free(frame);
 }
 
@@ -130,11 +138,13 @@ void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
     buf[6] = (uint8_t)(len & 0xFF);
     memcpy(buf + 7, payload, len);
 
+    pthread_mutex_lock(&ws_send_mu);
     for (int i = 0; i < WS_MAX_CLIENTS; i++) {
         int fd = atomic_load(&ws_fds[i]);
         if (fd < 0) continue;
         ws_send_frame(fd, 0x02, buf, len + 7);
     }
+    pthread_mutex_unlock(&ws_send_mu);
 }
 
 /* ── Handshake ──────────────────────────────────────────────────────────── */
@@ -365,7 +375,9 @@ void *ws_main(void *arg) {
                         if (frame) {
                             memcpy(frame, hdr, 5);
                             memcpy(frame + 5, dev->waveform_data, dev->waveform_len);
+                            pthread_mutex_lock(&ws_send_mu);
                             ws_send_frame(fd, 0x02, frame, 5 + dev->waveform_len);
+                            pthread_mutex_unlock(&ws_send_mu);
                             free(frame);
                         }
                     }
