@@ -18,7 +18,7 @@
 
         /* Responsive layout: widescreen = decks left + sidebar right */
         @media (min-width: 1100px) {
-            .container { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: auto 1fr; gap: 12px; }
+            .container { display: grid; grid-template-columns: 1fr 400px; grid-template-rows: auto 1fr; gap: 12px; }
             .container > h1 { grid-column: 1 / -1; }
             .main-content { display: contents; }
             .decks-container { grid-column: 1; grid-row: 2; }
@@ -173,6 +173,7 @@
             grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
             gap: 10px;
             margin-bottom: 20px;
+            align-content: start;
         }
         @media (max-width: 480px) { .decks-container { grid-template-columns: 1fr; } }
 
@@ -183,6 +184,7 @@
             padding: 8px;
             overflow: hidden;
             min-width: 0;
+            aspect-ratio: 30 / 17;
             display: flex;
             flex-direction: column;
         }
@@ -207,7 +209,7 @@
         .cdj-isrc { font-size: 8px; color: #556; font-family: monospace; letter-spacing: 0.5px; }
 
         /* Detail waveform — zoom buttons overlaid top-right */
-        .cdj-detail-wrap { position: relative; margin-bottom: 4px; flex: 1; min-height: 0; max-height: 120px; }
+        .cdj-detail-wrap { position: relative; margin-bottom: 4px; flex: 1; min-height: 0; }
         .cdj-detail { width: 100%; height: 100%; display: block; background: transparent;
                       border-radius: 2px; min-width: 0; min-height: 0; }
         .cdj-zoom { position: absolute; right: 4px; top: 4px; display: flex; flex-direction: column; gap: 2px; z-index: 1; }
