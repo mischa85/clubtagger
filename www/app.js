@@ -112,6 +112,13 @@
             frac: '.' + (f < 100 ? '0' : '') + (f < 10 ? '0' : '') + f
         };
     }
+    /* Best-available track duration in ms.
+       track_length_ms: precise, computed once from detail waveform (150 entries/sec).
+       track_length: fallback, whole seconds from position packet. */
+    function trackDurationMs(d) {
+        return d.track_length_ms || (d.track_length || 0) * 1000;
+    }
+
     /* Pitch display: sign, integer (right-aligned), decimal frac */
     function formatPitchLCD(pitchPct) {
         const sign = pitchPct >= 0 ? '+' : '-';
@@ -313,9 +320,9 @@
 
             /* Compute display values */
             const posMs = d.playhead_ms || 0;
-            const trackLen = d.track_length || 0;
-            const pct = (trackLen > 0 && posMs > 0) ? Math.min(100, posMs / (trackLen * 1000) * 100) : 0;
-            const remainMs = (trackLen > 0 && posMs > 0) ? Math.max(0, trackLen * 1000 - posMs) : 0;
+            const durMs = trackDurationMs(d);
+            const pct = (durMs > 0 && posMs > 0) ? Math.min(100, posMs / durMs * 100) : 0;
+            const remainMs = (durMs > 0 && posMs > 0) ? Math.max(0, durMs - posMs) : 0;
 
             const baseBpm = d.bpm > 0 ? (d.bpm / 100) : 0;
             const pitchPct = (d.pitch || 0) / 100;
@@ -331,14 +338,14 @@
             if (d.format) {
                 fmtStr = d.format;
                 if (d.samplerate && d.depth) fmtStr += ' ' + Math.round(d.samplerate/1000) + '/' + d.depth;
-                else if (d.bitrate) fmtStr += ' ' + d.bitrate + 'k';
+                if (d.bitrate) fmtStr += ' ' + d.bitrate + 'k';
             }
 
             const onairState = d.on_air ? 'cdj-onair-on' : 'cdj-onair-off';
 
             const timeMode = d.timeMode || 'remain';
             const timeLabel = timeMode === 'remain' ? 'REMAIN' : 'ELAPSED';
-            const timeMs = (timeMode === 'remain' && trackLen > 0 && posMs > 0) ? remainMs : posMs;
+            const timeMs = (timeMode === 'remain' && durMs > 0 && posMs > 0) ? remainMs : posMs;
             const timeLCD = posMs > 0 ? formatTimeLCD(timeMs) : { main: '--:--', frac: '.---' };
 
             /* Waveform or fallback */
@@ -350,7 +357,7 @@
                 progressBar = `<div class="deck-progress" id="progress-${d.n}">` +
                     `<div class="deck-progress-bar" style="width:${pct.toFixed(1)}%"></div>` +
                     `<span class="deck-progress-time deck-progress-elapsed">${formatPosMs(posMs)}</span>` +
-                    (trackLen > 0 ? `<span class="deck-progress-time deck-progress-remain">-${formatPosMs(remainMs)}</span>` : '') +
+                    (durMs > 0 ? `<span class="deck-progress-time deck-progress-remain">-${formatPosMs(remainMs)}</span>` : '') +
                     `</div>`;
             }
 
@@ -366,10 +373,11 @@
 
             /* Minute ticks for position bar */
             let ticksHtml = '';
-            if (trackLen > 0) {
-                const totalMin = trackLen / 60;
+            if (durMs > 0) {
+                const durSec = durMs / 1000;
+                const totalMin = durSec / 60;
                 for (let m = 1; m < totalMin; m++) {
-                    ticksHtml += `<div class="cdj-posbar-tick" style="left:${(m * 60 / trackLen * 100).toFixed(2)}%"></div>`;
+                    ticksHtml += `<div class="cdj-posbar-tick" style="left:${(m * 60 / durSec * 100).toFixed(2)}%"></div>`;
                 }
             }
 
@@ -440,11 +448,12 @@
         for (const d of active) {
             if (d.waveform) {
                 const posMs = d.playhead_ms || 0;
-                const trackLen = d.track_length || 0;
-                const pct = (trackLen > 0 && posMs > 0) ? Math.min(100, posMs / (trackLen * 1000) * 100) : 0;
+                const durMs = trackDurationMs(d);
+                const durSec = durMs / 1000;
+                const pct = (durMs > 0 && posMs > 0) ? Math.min(100, posMs / durMs * 100) : 0;
                 if (d.waveform.detail) {
                     const dc = document.getElementById('detail-' + d.n);
-                    if (dc) renderDetail(dc, d.waveform.detail, posMs, trackLen);
+                    if (dc) renderDetail(dc, d.waveform.detail, posMs, durSec);
                 }
                 if (d.waveform.preview) {
                     const oc = document.getElementById('overview-' + d.n);
@@ -588,16 +597,17 @@
         /* Position updates are fast (30ms) — don't rebuild DOM every time,
          * just update the position display if it exists */
         const ms = rawDecks[devNum].playhead_ms;
-        const tl = rawDecks[devNum].track_length || 0;
+        const durMs = trackDurationMs(rawDecks[devNum]);
+        const durSec = durMs / 1000;
         if (ms > 0) {
-            const pct = tl > 0 ? Math.min(100, ms / (tl * 1000) * 100) : 0;
+            const pct = durMs > 0 ? Math.min(100, ms / durMs * 100) : 0;
 
             const wf = rawDecks[devNum].waveform;
 
             /* Scrolling detail waveform */
             const detailCanvas = document.getElementById('detail-' + devNum);
             if (detailCanvas && wf && wf.detail) {
-                renderDetail(detailCanvas, wf.detail, ms, tl);
+                renderDetail(detailCanvas, wf.detail, ms, durSec);
             }
 
             /* Overview strip */
@@ -610,7 +620,7 @@
             const timeEl = document.getElementById('cdj-time-' + devNum);
             if (timeEl) {
                 const mode = rawDecks[devNum].timeMode || 'remain';
-                const displayMs = (mode === 'remain' && tl > 0) ? Math.max(0, tl * 1000 - ms) : ms;
+                const displayMs = (mode === 'remain' && durMs > 0) ? Math.max(0, durMs - ms) : ms;
                 const lcd = formatTimeLCD(displayMs);
                 /* Update main text (first text node) and frac span */
                 const fracEl = document.getElementById('cdj-frac-' + devNum);
@@ -708,7 +718,7 @@
 
     /* ── Waveform rendering helpers ─────────────────────────────────── */
 
-    /* Draw 3-band waveform entries into a canvas region */
+    /* Draw 3-band waveform entries — CDJ-3000 colors, mirrored from center */
     function draw3band(ctx, wf, startEntry, count, x0, w, h, peak) {
         if (!peak) {
             peak = 1;
@@ -716,6 +726,7 @@
                 if (wf.data[i] > peak) peak = wf.data[i];
         }
         const colW = w / count;
+        const cy = h / 2;
         for (let i = 0; i < count; i++) {
             const idx = startEntry + i;
             if (idx < 0 || idx >= wf.entries) continue;
@@ -723,28 +734,33 @@
             const high = wf.data[idx * 3 + 1];
             const low = wf.data[idx * 3 + 2];
             const x = x0 + (i / count) * w;
-            const lowH = (low / peak) * h;
-            const midH = (mid / peak) * h;
-            const highH = (high / peak) * h;
-            ctx.fillStyle = '#1a3a7a';
-            ctx.fillRect(x, h - lowH, Math.max(colW, 1), lowH);
-            ctx.fillStyle = '#c07018';
-            ctx.fillRect(x, h - Math.max(lowH, midH), Math.max(colW, 1), midH);
-            ctx.fillStyle = 'rgba(200, 235, 255, 0.85)';
-            ctx.fillRect(x, h - Math.max(lowH, midH, highH), Math.max(colW, 1), highH);
+            const lowH = (low / peak) * cy;
+            const midH = (mid / peak) * cy;
+            const highH = (high / peak) * cy;
+            const cw = Math.max(colW, 1);
+            /* Bass (red) — innermost, drawn first */
+            ctx.fillStyle = '#cc3333';
+            ctx.fillRect(x, cy - lowH, cw, lowH * 2);
+            /* Mid (orange) */
+            ctx.fillStyle = '#cc8822';
+            ctx.fillRect(x, cy - Math.max(lowH, midH), cw, Math.max(lowH, midH) * 2);
+            /* High (cyan) — outermost */
+            ctx.fillStyle = 'rgba(100, 210, 255, 0.85)';
+            ctx.fillRect(x, cy - Math.max(lowH, midH, highH), cw, Math.max(lowH, midH, highH) * 2);
         }
     }
 
     function drawMono(ctx, wf, startEntry, count, x0, w, h) {
         const colW = w / count;
+        const cy = h / 2;
         ctx.fillStyle = '#4488cc';
         for (let i = 0; i < count; i++) {
             const idx = startEntry + i;
             if (idx < 0 || idx >= wf.entries) continue;
             const height = wf.data[idx] & 0x1f;
             const x = x0 + (i / count) * w;
-            const barH = (height / 31) * h;
-            ctx.fillRect(x, h - barH, Math.max(colW, 1), barH);
+            const barH = (height / 31) * cy;
+            ctx.fillRect(x, cy - barH, Math.max(colW, 1), barH * 2);
         }
     }
 
@@ -787,16 +803,8 @@
         const centerEntry = Math.floor((playheadMs / 1000) * eps);
         const startEntry = centerEntry - Math.floor(visibleEntries / 2);
 
-        /* Find peak for normalization across visible window */
-        let peak = 1;
-        if (wf.type === '3band') {
-            for (let i = Math.max(0, startEntry); i < Math.min(wf.entries, startEntry + visibleEntries); i++) {
-                for (let b = 0; b < 3; b++)
-                    if (wf.data[i * 3 + b] > peak) peak = wf.data[i * 3 + b];
-            }
-        }
-
-        if (wf.type === '3band') draw3band(ctx, wf, startEntry, visibleEntries, 0, w, h, peak);
+        /* Use global peak (not per-window) so waveform doesn't rescale as you scroll */
+        if (wf.type === '3band') draw3band(ctx, wf, startEntry, visibleEntries, 0, w, h);
         else drawMono(ctx, wf, startEntry, visibleEntries, 0, w, h);
 
         /* Center playhead line */
@@ -827,6 +835,9 @@
                 if (wf && !rawDecks[devNum]) rawDecks[devNum] = {};
                 if (wf) {
                     rawDecks[devNum].waveform = wf; /* { preview, detail } */
+                    /* Precise track duration from detail waveform (150 entries/sec) */
+                    if (wf.detail && wf.detail.entries > 0)
+                        rawDecks[devNum].track_length_ms = Math.round(wf.detail.entries / 150 * 1000);
                 }
             }
             return;
@@ -1061,27 +1072,28 @@
                 var d = rawDecks[n];
                 if (d.playing) {
                     d.playhead_ms += 30;
-                    if (d.track_length && d.playhead_ms > d.track_length * 1000) d.playhead_ms = 0;
+                    var durMs = trackDurationMs(d);
+                    var durSec = durMs / 1000;
+                    if (durMs > 0 && d.playhead_ms > durMs) d.playhead_ms = 0;
                     d.beat_in_bar = (Math.floor(d.playhead_ms / 500) % 4) + 1;
 
                     /* Update detail waveform */
                     var dc = document.getElementById('detail-' + n);
                     if (dc && d.waveform && d.waveform.detail)
-                        renderDetail(dc, d.waveform.detail, d.playhead_ms, d.track_length);
+                        renderDetail(dc, d.waveform.detail, d.playhead_ms, durSec);
 
                     /* Update overview */
                     var oc = document.getElementById('overview-' + n);
                     if (oc && d.waveform && d.waveform.preview) {
-                        var pct = d.track_length > 0 ? Math.min(100, d.playhead_ms / (d.track_length * 1000) * 100) : 0;
+                        var pct = durMs > 0 ? Math.min(100, d.playhead_ms / durMs * 100) : 0;
                         renderOverview(oc, d.waveform.preview, pct);
                     }
 
                     /* Update time (LCD: main + frac) */
                     var te = document.getElementById('cdj-time-' + n);
                     if (te) {
-                        var tl = d.track_length || 0;
                         var mode = d.timeMode || 'remain';
-                        var displayMs = (mode === 'remain' && tl > 0) ? Math.max(0, tl*1000 - d.playhead_ms) : d.playhead_ms;
+                        var displayMs = (mode === 'remain' && durMs > 0) ? Math.max(0, durMs - d.playhead_ms) : d.playhead_ms;
                         var lcd = formatTimeLCD(displayMs);
                         var fracEl = document.getElementById('cdj-frac-' + n);
                         if (fracEl) {
@@ -1093,7 +1105,7 @@
                     }
 
                     /* Update position bar + playhead */
-                    var pct2 = d.track_length > 0 ? Math.min(100, d.playhead_ms / (d.track_length * 1000) * 100) : 0;
+                    var pct2 = durMs > 0 ? Math.min(100, d.playhead_ms / durMs * 100) : 0;
                     var played = document.getElementById('posbar-played-' + n);
                     var remain = document.getElementById('posbar-remain-' + n);
                     var ph = document.getElementById('playhead-' + n);
