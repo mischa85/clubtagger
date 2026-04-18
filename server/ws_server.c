@@ -406,29 +406,11 @@ void *ws_main(void *arg) {
             }
         }
 
-        /* ── VU meter + audio stats (every cycle, ~60 Hz) ──────────────── */
+        /* ── VU meter (every cycle, ~60 Hz) ───────────────────────────── */
         {
-            uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
-
             int nch = app->cfg.slink_channel_count;
-            /* Sum bytes written to disk across all channels */
-            uint64_t written_bytes = 0;
-            for (int c = 0; c < nch; c++) {
-                size_t tw = atomic_load_explicit(&app->ch[c].aw.total_written, memory_order_relaxed);
-                written_bytes += tw * app->cfg.channels * app->cfg.bytes_per_sample;
-            }
-
             char msg[512];
-            int len = snprintf(msg, sizeof(msg),
-                "{\"event\":\"vu\","
-                "\"lost\":%llu,\"written\":%llu,"
-                "\"rate\":%u,\"ch\":%u,"
-                "\"fmt\":\"%s\",\"src\":\"%s\","
-                "\"cp\":[",
-                (unsigned long long)lost, (unsigned long long)written_bytes,
-                app->cfg.rate, app->cfg.channels,
-                app->cfg.format ? app->cfg.format : "wav",
-                app->cfg.source ? app->cfg.source : "unknown");
+            int len = snprintf(msg, sizeof(msg), "{\"event\":\"vu\",\"cp\":[");
             for (int c = 0; c < nch && len < (int)sizeof(msg) - 100; c++) {
                 ChannelState *cs = &app->ch[c];
                 uint16_t pl = atomic_load_explicit(&cs->vu_l, memory_order_relaxed);
@@ -660,6 +642,13 @@ void *ws_main(void *arg) {
                 int ring_filled = (ring_rate > 0 && ring_cap > 0)
                     ? (int)((ring_written % ring_cap) * 100 / ring_cap) : 0;
 
+                /* Audio: bytes written to disk, lost packets */
+                uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
+                uint64_t written_bytes = 0;
+                int nch_s = app->cfg.slink_channel_count;
+                for (int c = 0; c < nch_s; c++)
+                    written_bytes += atomic_load_explicit(&app->ch[c].aw.bytes_on_disk, memory_order_relaxed);
+
                 char msg[512];
                 int len = snprintf(msg, sizeof(msg),
                     "{\"event\":\"stats\",\"load\":%.2f,"
@@ -668,14 +657,21 @@ void *ws_main(void *arg) {
                     "\"uptime\":%d,\"cdjs\":%d,\"ws_clients\":%d,"
                     "\"tracks_tagged\":%u,\"pkt_sec\":%llu,"
                     "\"sz_queries\":%u,\"sz_matches\":%u,"
-                    "\"ring_sec\":%d,\"ring_pct\":%d}",
+                    "\"ring_sec\":%d,\"ring_pct\":%d,"
+                    "\"written\":%llu,\"lost\":%llu,"
+                    "\"rate\":%u,\"ach\":%u,"
+                    "\"fmt\":\"%s\",\"src\":\"%s\"}",
                     loadavg[0],
                     (unsigned long long)mem_used, (unsigned long long)mem_total,
                     (unsigned long long)disk_free, (unsigned long long)disk_total,
                     uptime, cdj_count, ws_clients,
                     tracks_tagged, (unsigned long long)pkt_sec,
                     sz_queries, sz_matches,
-                    ring_sec, ring_filled);
+                    ring_sec, ring_filled,
+                    (unsigned long long)written_bytes, (unsigned long long)lost,
+                    app->cfg.rate, app->cfg.channels,
+                    app->cfg.format ? app->cfg.format : "wav",
+                    app->cfg.source ? app->cfg.source : "unknown");
                 ws_broadcast_text(msg, len);
             }
         }

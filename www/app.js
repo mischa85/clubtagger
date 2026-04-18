@@ -120,20 +120,6 @@
         return (bytes / 1073741824).toFixed(2) + ' GB';
     }
     
-    // Update audio stats in nerd stats (from 'vu' event at 60Hz)
-    function updateAudioStats(data) {
-        if (statFormat && data.rate) {
-            const fmt = data.fmt ? data.fmt.toUpperCase() : 'WAV';
-            const src = data.src ? data.src.toUpperCase() : '';
-            statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch ' + fmt + (src ? ' (' + src + ')' : '');
-        }
-        if (statWritten && data.written !== undefined) {
-            statWritten.textContent = formatBytes(data.written);
-        }
-        if (statLost) {
-            statLost.textContent = data.lost || 0;
-        }
-    }
 
     // Update nerd stats (from 'stats' event at 1Hz)
     function updateNerdStats(data) {
@@ -165,6 +151,15 @@
             statDisk.textContent = formatBytes(data.diskfree) + ' free';
             statDisk.className = 'value' + (pct < 10 ? ' warn' : '');
         }
+        if (statFormat && data.rate) {
+            const fmt = data.fmt ? data.fmt.toUpperCase() : 'WAV';
+            const src = data.src ? data.src.toUpperCase() : '';
+            statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ach + 'ch ' + fmt + (src ? ' (' + src + ')' : '');
+        }
+        if (statWritten && data.written !== undefined)
+            statWritten.textContent = formatBytes(data.written);
+        if (statLost)
+            statLost.textContent = data.lost || 0;
     }
     
     // Source badge HTML helper
@@ -908,7 +903,6 @@
                 switch (msg.event) {
                 case 'vu':
                     if (msg.cp) updateChMeters(msg);
-                    updateAudioStats(msg);
                     break;
                 case 'track':
                     if (msg.a || msg.t)
