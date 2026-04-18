@@ -53,7 +53,7 @@ static void usage(const char *argv0) {
 #if defined(HAVE_PCAP) && defined(HAVE_AF_XDP)
             "  --slink-backend TYPE   Slink capture backend: 'pcap' or 'afxdp' (default: pcap)\n"
 #endif
-            "  --slink-channels MAP   Channel mapping: \"main:0,1 booth:4,5\" (name:L,R)\n"
+            "  --slink-channels MAP   Channel mapping: \"main:0,1/booth:4,5\" (name:L,R)\n"
             "\n"
 #ifdef HAVE_VIBRA
             "Audio parameters (for --record / --audio-tag):\n"
@@ -179,16 +179,17 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
         else if (!strcmp(a, "--olib-key") && i + 1 < argc)
             cfg->olib_key = argv[++i];
         else if (!strcmp(a, "--slink-channels") && i + 1 < argc) {
-            /* Parse "main:0,1 booth:4,5" → slink_channels[] */
+            /* Parse "main:0,1 booth:4,5" → slink_channels[]
+             * Accepts space or '/' as channel separator (/ avoids systemd quoting issues) */
             const char *s = argv[++i];
             char buf[512];
             strncpy(buf, s, sizeof(buf) - 1);
             buf[sizeof(buf) - 1] = '\0';
             cfg->slink_channel_count = 0;
             char *saveptr = NULL;
-            for (char *tok = strtok_r(buf, " ", &saveptr);
+            for (char *tok = strtok_r(buf, " /", &saveptr);
                  tok && cfg->slink_channel_count < SLINK_MAX_CHANNELS;
-                 tok = strtok_r(NULL, " ", &saveptr)) {
+                 tok = strtok_r(NULL, " /", &saveptr)) {
                 /* tok = "main:0,1" */
                 char *colon = strchr(tok, ':');
                 if (!colon) { logmsg("main", "bad slink-channel: %s (expected name:L,R)", tok); continue; }

@@ -225,7 +225,7 @@ void *capture_afxdp(void *arg) {
     int prev_active = -1;
 
     /* Noise floor for channel activity detection (24-bit sample absolute value) */
-    const int32_t noise_floor = 400;
+    const int32_t noise_floor = 8000;
 
     struct pollfd fds = {
         .fd = xsk_socket__fd(xsk.xsk),
@@ -302,15 +302,14 @@ void *capture_afxdp(void *arg) {
                     memset(&audio_buf[buf_idx * fb], 0, fb);
                 }
 
-                /* Track active channel changes */
                 if (active != prev_active) {
                     if (active >= 0)
-                        logmsg("cap", "active channel: %s (L=%d R=%d)",
-                               cfg->slink_channels[active].name,
-                               cfg->slink_channels[active].left,
-                               cfg->slink_channels[active].right);
+                        vlogmsg("cap", "active channel: %s (L=%d R=%d)",
+                                cfg->slink_channels[active].name,
+                                cfg->slink_channels[active].left,
+                                cfg->slink_channels[active].right);
                     else if (prev_active >= 0)
-                        logmsg("cap", "all channels silent");
+                        vlogmsg("cap", "all channels silent");
                     atomic_store_explicit(&app->slink_active_ch, active, memory_order_relaxed);
                     prev_active = active;
                 }
