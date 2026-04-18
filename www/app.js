@@ -6,8 +6,6 @@
     const tracksEl = document.getElementById('tracks');
     const statusEl = document.getElementById('status');
     const decksEl = document.getElementById('decks');
-    const statFormat = document.getElementById('stat-format');
-    const statLost = document.getElementById('stat-lost');
     // Nerd stats elements
     const statUptime = document.getElementById('stat-uptime');
     const statCdjs = document.getElementById('stat-cdjs');
@@ -18,6 +16,9 @@
     const statRing = document.getElementById('stat-ring');
     const statLoad = document.getElementById('stat-load');
     const statMem = document.getElementById('stat-mem');
+    const statFormat = document.getElementById('stat-format');
+    const statWritten = document.getElementById('stat-written');
+    const statLost = document.getElementById('stat-lost');
     const statDisk = document.getElementById('stat-disk');
     const chMeters = document.getElementById('ch-meters');
     
@@ -119,12 +120,15 @@
         return (bytes / 1073741824).toFixed(2) + ' GB';
     }
     
-    // Update audio stats (from 'vu' event at 60Hz)
-    function updateRecPanel(data) {
+    // Update audio stats in nerd stats (from 'vu' event at 60Hz)
+    function updateAudioStats(data) {
         if (statFormat && data.rate) {
             const fmt = data.fmt ? data.fmt.toUpperCase() : 'WAV';
             const src = data.src ? data.src.toUpperCase() : '';
             statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch ' + fmt + (src ? ' (' + src + ')' : '');
+        }
+        if (statWritten && data.written !== undefined) {
+            statWritten.textContent = formatBytes(data.written);
         }
         if (statLost) {
             statLost.textContent = data.lost || 0;
@@ -904,7 +908,7 @@
                 switch (msg.event) {
                 case 'vu':
                     if (msg.cp) updateChMeters(msg);
-                    updateRecPanel(msg);
+                    updateAudioStats(msg);
                     break;
                 case 'track':
                     if (msg.a || msg.t)
