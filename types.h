@@ -235,7 +235,8 @@ typedef struct {
     int last_deck;                 /* protected by db_mu: CDJ deck number (0 if none) */
     /* Audio statistics (for web UI nerd info) */
     _Atomic int      slink_active_ch;  /* index into cfg.slink_channels[] (-1 = none) */
-    _Atomic uint16_t slink_ch_peak[SLINK_MAX_CHANNELS]; /* per-channel peak (for UI meters) */
+    _Atomic uint16_t slink_ch_peak_l[SLINK_MAX_CHANNELS]; /* per-channel L peak (for UI meters) */
+    _Atomic uint16_t slink_ch_peak_r[SLINK_MAX_CHANNELS]; /* per-channel R peak (for UI meters) */
     _Atomic uint32_t audio_rms;    /* current RMS level */
     _Atomic uint64_t audio_lost;   /* total lost samples (sequence discontinuities) */
     _Atomic uint64_t audio_frames; /* total frames captured */
