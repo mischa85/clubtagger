@@ -72,7 +72,7 @@ static ssize_t ws_send_frame(int fd, uint8_t opcode, const void *data, size_t le
         { .iov_base = (void *)data, .iov_len = len }
     };
     struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
-    return sendmsg(fd, &msg, MSG_NOSIGNAL | MSG_DONTWAIT);
+    return sendmsg(fd, &msg, MSG_NOSIGNAL);
 }
 
 static ssize_t ws_text(int fd, const char *data, size_t len) {
