@@ -3,19 +3,11 @@
     'use strict';
     
     // DOM elements
-    const vuLeft = document.getElementById('vu-left');
-    const vuRight = document.getElementById('vu-right');
-    const peakLeft = document.getElementById('peak-left');
-    const peakRight = document.getElementById('peak-right');
     const tracksEl = document.getElementById('tracks');
     const statusEl = document.getElementById('status');
     const decksEl = document.getElementById('decks');
-    // Recording panel elements
     const statFormat = document.getElementById('stat-format');
-    const statRuntime = document.getElementById('stat-runtime');
     const statLost = document.getElementById('stat-lost');
-    const statWritten = document.getElementById('stat-written');
-    const recStatus = document.getElementById('rec-status');
     // Nerd stats elements
     const statUptime = document.getElementById('stat-uptime');
     const statCdjs = document.getElementById('stat-cdjs');
@@ -32,43 +24,6 @@
     // Slot names
     const SLOTS = { 0: '', 1: 'CD', 2: 'SD', 3: 'USB', 4: 'Link', 6: 'Stream', 9: 'Beatport' };
     
-    // Peak hold state
-    let peakLVal = 0, peakRVal = 0;
-    let peakLDecay = 0, peakRDecay = 0;
-    
-    // Convert 16-bit value (0-32767) to percentage
-    function toPercent(val) {
-        // Use logarithmic scale for better visual representation
-        if (val === 0) return 0;
-        const db = 20 * Math.log10(val / 32767);
-        // Map -60dB to 0dB -> 0% to 100%
-        const pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
-        return pct;
-    }
-    
-    // Update VU meters (using mask technique - set mask height to hide gradient)
-    function updateVU(left, right) {
-        const lPct = toPercent(left);
-        const rPct = toPercent(right);
-        
-        // Mask height is inverse of level (100% mask = 0% visible)
-        vuLeft.style.height = (100 - lPct) + '%';
-        vuRight.style.height = (100 - rPct) + '%';
-        
-        // Peak hold with decay
-        if (lPct > peakLVal) {
-            peakLVal = lPct;
-            peakLDecay = 30; // Hold for ~500ms at 60fps
-        }
-        if (rPct > peakRVal) {
-            peakRVal = rPct;
-            peakRDecay = 30;
-        }
-        
-        peakLeft.style.bottom = peakLVal + '%';
-        peakRight.style.bottom = peakRVal + '%';
-    }
-    
     // Update per-channel meters (from 'vu' event, cp array)
     // Each channel gets L + R bars side by side, same size as global VU
     let chMetersInit = false;
@@ -80,8 +35,6 @@
     function updateChMeters(msg) {
         if (!chMeters || !msg.cp) return;
         if (!chMetersInit) {
-            const vuContainer = document.querySelector('.vu-container');
-            if (vuContainer) vuContainer.style.display = 'none';
             chMeters.innerHTML = '';
             for (const ch of msg.cp) {
                 const div = document.createElement('div');
@@ -102,33 +55,14 @@
             const maskR = meters[i].querySelector('[data-ch="r"]');
             if (maskL) maskL.style.height = (100 - valToPct(msg.cp[i].l)) + '%';
             if (maskR) maskR.style.height = (100 - valToPct(msg.cp[i].r)) + '%';
-            const isActive = (i === msg.ach);
-            const isRec = isActive && msg.rec;
-            const cls = isRec ? ' recording' : isActive ? ' active' : '';
+            const isRec = msg.cp[i].rec;
+            const cls = isRec ? ' recording' : '';
             meters[i].className = 'ch-meter' + cls;
             const bars = meters[i].querySelectorAll('.ch-meter-bar');
             bars.forEach(b => b.className = 'ch-meter-bar' + cls);
         }
     }
 
-    // Decay peaks
-    function decayPeaks() {
-        if (peakLDecay > 0) {
-            peakLDecay--;
-        } else if (peakLVal > 0) {
-            peakLVal = Math.max(0, peakLVal - 2);
-            peakLeft.style.bottom = peakLVal + '%';
-        }
-        
-        if (peakRDecay > 0) {
-            peakRDecay--;
-        } else if (peakRVal > 0) {
-            peakRVal = Math.max(0, peakRVal - 2);
-            peakRight.style.bottom = peakRVal + '%';
-        }
-    }
-    setInterval(decayPeaks, 16);
-    
     // Format runtime seconds
     function formatRuntime(secs) {
         if (secs < 60) return secs + 's';
@@ -185,36 +119,15 @@
         return (bytes / 1073741824).toFixed(2) + ' GB';
     }
     
-    // Update recording panel (from 'vu' event at 60Hz)
+    // Update audio stats (from 'vu' event at 60Hz)
     function updateRecPanel(data) {
         if (statFormat && data.rate) {
             const fmt = data.fmt ? data.fmt.toUpperCase() : 'WAV';
             const src = data.src ? data.src.toUpperCase() : '';
             statFormat.textContent = (data.rate/1000) + 'kHz/' + data.ch + 'ch ' + fmt + (src ? ' (' + src + ')' : '');
         }
-        if (statRuntime && data.rate) {
-            const frames = data.frames || 0;
-            statRuntime.textContent = formatRuntime(Math.floor(frames / data.rate));
-        }
-        if (recStatus) {
-            if (data.rec) {
-                recStatus.textContent = '● REC';
-                recStatus.className = 'rec-indicator recording';
-            } else {
-                recStatus.textContent = 'Standby';
-                recStatus.className = 'rec-indicator standby';
-            }
-        }
         if (statLost) {
             statLost.textContent = data.lost || 0;
-        }
-        if (statWritten) {
-            if (data.rec && data.frames && data.rate) {
-                const bytes = data.frames * data.ch * 3; /* 24-bit = 3 bytes/sample */
-                statWritten.textContent = formatBytes(bytes);
-            } else if (!data.rec) {
-                statWritten.textContent = '0';
-            }
         }
     }
 
@@ -990,9 +903,8 @@
                 const msg = JSON.parse(e.data);
                 switch (msg.event) {
                 case 'vu':
-                    updateVU(msg.l, msg.r);
-                    updateRecPanel(msg);
                     if (msg.cp) updateChMeters(msg);
+                    updateRecPanel(msg);
                     break;
                 case 'track':
                     if (msg.a || msg.t)

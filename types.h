@@ -193,29 +193,36 @@ typedef struct {
 } AsyncWriter;
 
 /* ─────────────────────────────────────────────────────────────────────────────
+ * ChannelState - Per-SLink-channel audio pipeline state
+ * ───────────────────────────────────────────────────────────────────────────── */
+typedef struct {
+    AsyncWriter aw;                /* ring buffer + async disk writes */
+    uint8_t    *cap_buf;           /* capture buffer (frames_per_read frames) */
+    uint8_t    *wrt_buf;           /* writer analysis buffer */
+    unsigned   *wrt_window;        /* writer sliding window */
+    unsigned    wrt_window_size;
+    uint8_t    *id_buf;            /* Shazam audio window */
+    int16_t    *id_buf_s16;        /* Shazam s16 conversion buffer */
+    size_t      id_buf_frames;
+    char        current_wav[512];  /* current recording filename */
+    _Atomic uint16_t vu_l;         /* VU level left (0-32767) */
+    _Atomic uint16_t vu_r;         /* VU level right (0-32767) */
+    _Atomic int is_recording;      /* 1 if actively writing to file */
+} ChannelState;
+
+/* ─────────────────────────────────────────────────────────────────────────────
  * App - Main application state
  * ───────────────────────────────────────────────────────────────────────────── */
 typedef struct {
-    Config      cfg;
-    AsyncWriter aw;                /* central audio buffer with async disk writes */
-    pthread_t   th_cap;
-    pthread_t   th_id;
-    pthread_t   th_wrt;
-    sqlite3    *db;
+    Config       cfg;
+    ChannelState ch[SLINK_MAX_CHANNELS]; /* per-channel audio pipelines */
+    pthread_t    th_cap;
+    pthread_t    th_id;
+    pthread_t    th_wrt;
+    sqlite3     *db;
     pthread_mutex_t db_mu;
-    char        current_wav[512];  /* current WAV file being recorded */
-    uint8_t    *cap_buf;           /* pre-allocated capture buffer */
-    size_t      cap_buf_size;      /* size of cap_buf in bytes */
-    uint8_t    *wrt_buf;           /* pre-allocated writer read buffer */
-    unsigned   *wrt_window;        /* pre-allocated writer sliding window */
-    unsigned    wrt_window_size;   /* size of wrt_window in elements */
-    uint8_t    *id_buf;            /* pre-allocated id_main audio window */
-    int16_t    *id_buf_s16;        /* pre-allocated id_main s16 conversion buffer */
-    size_t      id_buf_frames;     /* size of id_buf in frames */
     /* WebSocket server state */
-    pthread_t   th_ws;
-    _Atomic uint16_t vu_left;      /* current VU level left channel (0-32767) */
-    _Atomic uint16_t vu_right;     /* current VU level right channel (0-32767) */
+    pthread_t    th_ws;
     _Atomic uint32_t track_seq;    /* monotonic counter, bumps on new track */
     char        last_artist[256];  /* protected by db_mu */
     char        last_title[256];   /* protected by db_mu */
@@ -233,14 +240,9 @@ typedef struct {
     int last_confidence;           /* protected by db_mu: confidence of last match */
     char last_isrc[64];            /* protected by db_mu: ISRC code if available */
     int last_deck;                 /* protected by db_mu: CDJ deck number (0 if none) */
-    /* Audio statistics (for web UI nerd info) */
-    _Atomic int      slink_active_ch;  /* index into cfg.slink_channels[] (-1 = none) */
-    _Atomic uint16_t slink_ch_peak_l[SLINK_MAX_CHANNELS]; /* per-channel L peak (for UI meters) */
-    _Atomic uint16_t slink_ch_peak_r[SLINK_MAX_CHANNELS]; /* per-channel R peak (for UI meters) */
-    _Atomic uint32_t audio_rms;    /* current RMS level */
+    /* Audio statistics */
     _Atomic uint64_t audio_lost;   /* total lost samples (sequence discontinuities) */
     _Atomic uint64_t audio_frames; /* total frames captured */
-    _Atomic int is_recording;      /* 1 if actively writing to file */
     /* Session counters */
     time_t start_time;             /* set once in main() */
     _Atomic uint32_t shazam_queries;  /* total Shazam API calls */

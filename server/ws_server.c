@@ -408,37 +408,29 @@ void *ws_main(void *arg) {
 
         /* ── VU meter + audio stats (every cycle, ~60 Hz) ──────────────── */
         {
-            uint16_t vu_l = atomic_load_explicit(&app->vu_left, memory_order_relaxed);
-            uint16_t vu_r = atomic_load_explicit(&app->vu_right, memory_order_relaxed);
             uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
-            uint64_t frames = atomic_load_explicit(&app->aw.total_written, memory_order_relaxed);
-            int is_rec = atomic_load_explicit(&app->is_recording, memory_order_relaxed);
-            int active_ch = atomic_load_explicit(&app->slink_active_ch, memory_order_relaxed);
+            uint64_t frames = atomic_load_explicit(&app->audio_frames, memory_order_relaxed);
 
-            const char *ch_name = "";
-            if (active_ch >= 0 && active_ch < app->cfg.slink_channel_count)
-                ch_name = app->cfg.slink_channels[active_ch].name;
-
-            /* Build per-channel peaks inline */
             int nch = app->cfg.slink_channel_count;
             char msg[512];
             int len = snprintf(msg, sizeof(msg),
-                "{\"event\":\"vu\",\"l\":%u,\"r\":%u,"
+                "{\"event\":\"vu\","
                 "\"lost\":%llu,\"frames\":%llu,"
-                "\"rate\":%u,\"ch\":%u,\"rec\":%d,"
+                "\"rate\":%u,\"ch\":%u,"
                 "\"fmt\":\"%s\",\"src\":\"%s\","
-                "\"ach\":%d,\"cp\":[",
-                vu_l, vu_r,
+                "\"cp\":[",
                 (unsigned long long)lost, (unsigned long long)frames,
-                app->aw.rate, app->aw.channels, is_rec,
+                app->cfg.rate, app->cfg.channels,
                 app->cfg.format ? app->cfg.format : "wav",
-                app->cfg.source ? app->cfg.source : "unknown",
-                active_ch);
-            for (int c = 0; c < nch && len < (int)sizeof(msg) - 80; c++) {
-                uint16_t pl = atomic_load_explicit(&app->slink_ch_peak_l[c], memory_order_relaxed);
-                uint16_t pr = atomic_load_explicit(&app->slink_ch_peak_r[c], memory_order_relaxed);
-                len += snprintf(msg + len, sizeof(msg) - len, "%s{\"n\":\"%s\",\"l\":%u,\"r\":%u}",
-                                c ? "," : "", app->cfg.slink_channels[c].name, pl, pr);
+                app->cfg.source ? app->cfg.source : "unknown");
+            for (int c = 0; c < nch && len < (int)sizeof(msg) - 100; c++) {
+                ChannelState *cs = &app->ch[c];
+                uint16_t pl = atomic_load_explicit(&cs->vu_l, memory_order_relaxed);
+                uint16_t pr = atomic_load_explicit(&cs->vu_r, memory_order_relaxed);
+                int rec = atomic_load_explicit(&cs->is_recording, memory_order_relaxed);
+                len += snprintf(msg + len, sizeof(msg) - len,
+                                "%s{\"n\":\"%s\",\"l\":%u,\"r\":%u,\"rec\":%d}",
+                                c ? "," : "", app->cfg.slink_channels[c].name, pl, pr, rec);
             }
             len += snprintf(msg + len, sizeof(msg) - len, "]}");
             if (len < (int)sizeof(msg))
@@ -653,10 +645,11 @@ void *ws_main(void *arg) {
                 /* Uptime */
                 int uptime = (int)(now - app->start_time);
 
-                /* Ring buffer usage (seconds buffered) */
-                uint64_t ring_written = atomic_load_explicit(&app->aw.total_written, memory_order_relaxed);
-                unsigned ring_cap = app->aw.capacity;
-                unsigned ring_rate = app->aw.rate;
+                /* Ring buffer usage (from first channel) */
+                uint64_t ring_written = app->cfg.slink_channel_count > 0
+                    ? atomic_load_explicit(&app->ch[0].aw.total_written, memory_order_relaxed) : 0;
+                unsigned ring_cap = app->cfg.slink_channel_count > 0 ? app->ch[0].aw.capacity : 0;
+                unsigned ring_rate = app->cfg.rate;
                 int ring_sec = ring_rate > 0 ? (int)(ring_cap / ring_rate) : 0;
                 int ring_filled = (ring_rate > 0 && ring_cap > 0)
                     ? (int)((ring_written % ring_cap) * 100 / ring_cap) : 0;

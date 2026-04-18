@@ -1,5 +1,8 @@
 /*
  * writer_thread.c - Async audio file writer thread
+ *
+ * Monitors all configured SLink channels independently.
+ * Each channel has its own ring buffer, recording state, and output files.
  */
 #include "writer_thread.h"
 #include "async_writer.h"
@@ -14,212 +17,175 @@
 #include <time.h>
 #include <unistd.h>
 
+/* Per-channel writer state (stack-allocated in writer_main) */
+typedef struct {
+    bool     recording;
+    unsigned below_cnt;
+    size_t   write_cursor;
+    time_t   segment_start_time;
+    unsigned window_pos;
+    unsigned window_above;
+    bool     window_full;
+    unsigned last_trigger_pct;
+} WriterChState;
+
 void *writer_main(void *arg) {
     App *app = (App *)arg;
     Config *cfg = &app->cfg;
 
     const size_t FR = cfg->frames_per_read;
-    uint8_t *chunk = app->wrt_buf;
-
+    const int nch = cfg->slink_channel_count;
     const unsigned silence_chunks_needed = (unsigned)((cfg->silence_sec * cfg->rate + (FR - 1)) / FR);
-
-    /* Sliding window for trigger detection - require 60% of chunks above threshold */
-    unsigned window_size = app->wrt_window_size;
-    unsigned *window = app->wrt_window;
-    unsigned window_pos = 0;
-    unsigned window_above = 0;
-    bool window_full = false;
     const unsigned trigger_pct = 60;
-
-    unsigned below_cnt = 0;
-    bool recording = false;
-
-    /* Position-based tracking */
-    size_t write_cursor = 0;       /* absolute frame we've written up to */
-    time_t segment_start_time = 0; /* timestamp of write_cursor */
-
-    /* Active SLink channel tracking */
-    int rec_channel = -1;          /* channel index being recorded (-1 = none) */
-    char rec_channel_name[32] = "";
-
     const size_t max_file_frames = cfg->max_file_sec > 0 ? (size_t)cfg->max_file_sec * cfg->rate : 0;
 
     const char *fmt_str = cfg->format ? cfg->format : "wav";
-    logmsg("wrt", "started: thr=%u sustain=%.2fs silence=%.2fs format=%s outdir=%s",
+    logmsg("wrt", "started: thr=%u sustain=%.2fs silence=%.2fs format=%s outdir=%s channels=%d",
            cfg->threshold, cfg->sustain_sec, cfg->silence_sec,
-           fmt_str, cfg->outdir ? cfg->outdir : ".");
+           fmt_str, cfg->outdir ? cfg->outdir : ".", nch);
+
+    /* Initialize per-channel state */
+    WriterChState chs[SLINK_MAX_CHANNELS] = {{0}};
 
     while (g_running) {
-        size_t peek = asyncwr_copy_last(&app->aw, chunk, FR);
-        unsigned peak = 0;
-        unsigned avg = analyze_samples(chunk, peek, cfg->channels, cfg->bytes_per_sample, &peak);
+        for (int c = 0; c < nch; c++) {
+            ChannelState *cs = &app->ch[c];
+            WriterChState *ws = &chs[c];
+            const char *ch_name = cfg->slink_channels[c].name;
 
-        /* Update VU meter values for SSE server */
-        if (cfg->channels == 2 && peek > 0) {
-            uint16_t vu_l, vu_r;
-            analyze_peaks_stereo(chunk, peek, cfg->bytes_per_sample, &vu_l, &vu_r);
-            atomic_store_explicit(&app->vu_left, vu_l, memory_order_relaxed);
-            atomic_store_explicit(&app->vu_right, vu_r, memory_order_relaxed);
-        }
+            size_t peek = asyncwr_copy_last(&cs->aw, cs->wrt_buf, FR);
+            unsigned peak = 0;
+            unsigned avg = analyze_samples(cs->wrt_buf, peek, cfg->channels, cfg->bytes_per_sample, &peak);
 
-        /* Music detection */
-        const unsigned min_peak = 400;
-        const unsigned min_avg = 60;
-        int is_musical = (peak >= min_peak) && (avg >= min_avg) && (avg >= cfg->threshold);
-
-        vlogmsg("wrt", "avg=%u peak=%u musical=%d recording=%d", avg, peak, is_musical, (int)recording);
-
-        if (!recording) {
-            /* Update sliding window */
-            unsigned is_above = is_musical ? 1 : 0;
-            if (window_full) {
-                window_above -= window[window_pos];
+            /* Update VU meter values */
+            if (cfg->channels == 2 && peek > 0) {
+                uint16_t vu_l, vu_r;
+                analyze_peaks_stereo(cs->wrt_buf, peek, cfg->bytes_per_sample, &vu_l, &vu_r);
+                atomic_store_explicit(&cs->vu_l, vu_l, memory_order_relaxed);
+                atomic_store_explicit(&cs->vu_r, vu_r, memory_order_relaxed);
             }
-            window[window_pos] = is_above;
-            window_above += is_above;
-            window_pos = (window_pos + 1) % window_size;
-            if (window_pos == 0) window_full = true;
 
-            unsigned effective_size = window_full ? window_size : window_pos;
-            unsigned required = (effective_size * trigger_pct) / 100;
+            /* Music detection */
+            const unsigned min_peak = 400;
+            const unsigned min_avg = 60;
+            int is_musical = (peak >= min_peak) && (avg >= min_avg) && (avg >= cfg->threshold);
 
-            /* Log progress towards trigger */
-            static unsigned last_pct = 0;
-            unsigned current_pct = effective_size > 0 ? (window_above * 100) / effective_size : 0;
-            if (current_pct >= 50 && (current_pct / 10 != last_pct / 10)) {
-                logmsg("wrt", "trigger progress: %u%% above threshold (%u/%u) avg=%u",
-                       current_pct, window_above, effective_size, avg);
-                last_pct = current_pct;
-            }
-            if (current_pct < 50) last_pct = 0;
+            if (!ws->recording) {
+                /* Update sliding window */
+                unsigned is_above = is_musical ? 1 : 0;
+                unsigned window_size = cs->wrt_window_size;
+                unsigned *window = cs->wrt_window;
 
-            if (window_full && window_above >= required && peek > 0) {
-                /* TRIGGER: start recording from oldest available data (prebuffer) */
-                size_t current_pos = asyncwr_position(&app->aw);
+                if (ws->window_full) {
+                    ws->window_above -= window[ws->window_pos];
+                }
+                window[ws->window_pos] = is_above;
+                ws->window_above += is_above;
+                ws->window_pos = (ws->window_pos + 1) % window_size;
+                if (ws->window_pos == 0) ws->window_full = true;
 
-                /* Oldest frame still in ring buffer */
-                pthread_mutex_lock(&app->aw.mu);
-                size_t oldest = (app->aw.total_written > app->aw.capacity)
-                                    ? (app->aw.total_written - app->aw.capacity)
-                                    : 0;
+                unsigned effective_size = ws->window_full ? window_size : ws->window_pos;
+                unsigned required = (effective_size * trigger_pct) / 100;
 
-                /* Continue gapless if write_cursor still valid, else start from oldest */
-                if (write_cursor < oldest) {
-                    if (write_cursor > 0) {
-                        logmsg("wrt", "WARNING: lost %zu frames (%.1f sec), resuming from oldest",
-                               oldest - write_cursor, (double)(oldest - write_cursor) / cfg->rate);
+                /* Log progress towards trigger */
+                unsigned current_pct = effective_size > 0 ? (ws->window_above * 100) / effective_size : 0;
+                if (current_pct >= 50 && (current_pct / 10 != ws->last_trigger_pct / 10)) {
+                    logmsg("wrt", "[%s] trigger progress: %u%% above threshold (%u/%u) avg=%u",
+                           ch_name, current_pct, ws->window_above, effective_size, avg);
+                    ws->last_trigger_pct = current_pct;
+                }
+                if (current_pct < 50) ws->last_trigger_pct = 0;
+
+                if (ws->window_full && ws->window_above >= required && peek > 0) {
+                    /* TRIGGER: start recording from oldest available data (prebuffer) */
+                    size_t current_pos = asyncwr_position(&cs->aw);
+
+                    pthread_mutex_lock(&cs->aw.mu);
+                    size_t oldest = (cs->aw.total_written > cs->aw.capacity)
+                                        ? (cs->aw.total_written - cs->aw.capacity)
+                                        : 0;
+
+                    if (ws->write_cursor < oldest) {
+                        if (ws->write_cursor > 0) {
+                            logmsg("wrt", "[%s] WARNING: lost %zu frames (%.1f sec), resuming from oldest",
+                                   ch_name, oldest - ws->write_cursor,
+                                   (double)(oldest - ws->write_cursor) / cfg->rate);
+                        }
+                        ws->write_cursor = oldest;
                     }
-                    write_cursor = oldest;
+
+                    size_t prebuffer_frames = current_pos - ws->write_cursor;
+                    ws->segment_start_time = time(NULL) - (time_t)(prebuffer_frames / cfg->rate);
+                    pthread_mutex_unlock(&cs->aw.mu);
+
+                    const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
+                    build_audio_filename(cs->current_wav, sizeof(cs->current_wav),
+                                         cfg->outdir, cfg->prefix, ch_name, ext,
+                                         ws->segment_start_time);
+
+                    ws->recording = true;
+                    ws->below_cnt = 0;
+                    atomic_store_explicit(&cs->is_recording, 1, memory_order_relaxed);
+
+                    logmsg("wrt", "[%s] TRIGGER avg=%u (prebuffer %.1f sec, cursor=%zu)",
+                           ch_name, avg,
+                           (double)prebuffer_frames / cfg->rate, ws->write_cursor);
+
+                    /* Reset sliding window */
+                    memset(cs->wrt_window, 0, cs->wrt_window_size * sizeof(unsigned));
+                    ws->window_pos = 0;
+                    ws->window_above = 0;
+                    ws->window_full = false;
                 }
-                /* else: continuing gapless from write_cursor */
-
-                size_t prebuffer_frames = current_pos - write_cursor;
-                segment_start_time = time(NULL) - (time_t)(prebuffer_frames / cfg->rate);
-                pthread_mutex_unlock(&app->aw.mu);
-
-                /* Capture active SLink channel for filename */
-                rec_channel = atomic_load_explicit(&app->slink_active_ch, memory_order_relaxed);
-                if (rec_channel >= 0 && rec_channel < cfg->slink_channel_count) {
-                    strncpy(rec_channel_name, cfg->slink_channels[rec_channel].name,
-                            sizeof(rec_channel_name) - 1);
-                    rec_channel_name[sizeof(rec_channel_name) - 1] = '\0';
-                } else {
-                    rec_channel_name[0] = '\0';
-                }
-
-                const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
-                build_audio_filename(app->current_wav, sizeof(app->current_wav),
-                                     cfg->outdir, cfg->prefix, rec_channel_name, ext,
-                                     segment_start_time);
-
-                recording = true;
-                below_cnt = 0;
-                atomic_store_explicit(&app->is_recording, 1, memory_order_relaxed);
-
-                logmsg("wrt", "TRIGGER avg=%u ch=%s (prebuffer %.1f sec, cursor=%zu)",
-                       avg, rec_channel_name[0] ? rec_channel_name : "-",
-                       (double)prebuffer_frames / cfg->rate, write_cursor);
-
-                /* Reset sliding window */
-                memset(window, 0, window_size * sizeof(unsigned));
-                window_pos = 0;
-                window_above = 0;
-                window_full = false;
-            }
-        } else {
-            /* Recording: check for channel change, split, or silence */
-            size_t current_pos = asyncwr_position(&app->aw);
-            size_t frames_since_cursor = current_pos - write_cursor;
-
-            /* Check if active SLink channel changed → split */
-            int cur_ch = atomic_load_explicit(&app->slink_active_ch, memory_order_relaxed);
-            if (cur_ch != rec_channel && cur_ch >= 0 && cfg->slink_channel_count > 1) {
-                if (current_pos > write_cursor) {
-                    logmsg("wrt", "CHANNEL CHANGE %s→%s: writing frames %zu-%zu",
-                           rec_channel_name[0] ? rec_channel_name : "-",
-                           cfg->slink_channels[cur_ch].name,
-                           write_cursor, current_pos);
-                    asyncwr_write_range(&app->aw, write_cursor, current_pos,
-                                        segment_start_time, rec_channel_name);
-                    write_cursor = current_pos;
-                }
-                rec_channel = cur_ch;
-                strncpy(rec_channel_name, cfg->slink_channels[cur_ch].name,
-                        sizeof(rec_channel_name) - 1);
-                rec_channel_name[sizeof(rec_channel_name) - 1] = '\0';
-                segment_start_time = time(NULL);
-
-                const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
-                build_audio_filename(app->current_wav, sizeof(app->current_wav),
-                                     cfg->outdir, cfg->prefix, rec_channel_name, ext,
-                                     segment_start_time);
-                frames_since_cursor = 0;
-            }
-
-            /* Check if we need to split (max file size) */
-            if (max_file_frames > 0 && frames_since_cursor >= max_file_frames) {
-                logmsg("wrt", "SPLIT: writing frames %zu-%zu (%.1f min)",
-                       write_cursor, current_pos, (double)frames_since_cursor / cfg->rate / 60.0);
-
-                asyncwr_write_range(&app->aw, write_cursor, current_pos,
-                                    segment_start_time, rec_channel_name);
-
-                /* Advance cursor */
-                write_cursor = current_pos;
-                segment_start_time = time(NULL);
-
-                const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
-                build_audio_filename(app->current_wav, sizeof(app->current_wav),
-                                     cfg->outdir, cfg->prefix, rec_channel_name, ext,
-                                     segment_start_time);
-            }
-
-            /* Check for silence */
-            const unsigned silence_peak_thr = 150;
-            const unsigned silence_avg_thr = 25;
-            int is_silence = (peak < silence_peak_thr) && (avg < silence_avg_thr);
-            if (is_silence) {
-                if (below_cnt < 0x7fffffff) below_cnt++;
             } else {
-                below_cnt = 0;
-            }
+                /* Recording: check for file split or silence */
+                size_t current_pos = asyncwr_position(&cs->aw);
+                size_t frames_since_cursor = current_pos - ws->write_cursor;
 
-            if (below_cnt >= silence_chunks_needed) {
-                /* STOP: write remaining audio */
-                size_t final_pos = asyncwr_position(&app->aw);
-                if (final_pos > write_cursor) {
-                    logmsg("wrt", "STOP: writing frames %zu-%zu", write_cursor, final_pos);
-                    asyncwr_write_range(&app->aw, write_cursor, final_pos,
-                                        segment_start_time, rec_channel_name);
-                    write_cursor = final_pos;
+                /* Check if we need to split (max file size) */
+                if (max_file_frames > 0 && frames_since_cursor >= max_file_frames) {
+                    logmsg("wrt", "[%s] SPLIT: writing frames %zu-%zu (%.1f min)",
+                           ch_name, ws->write_cursor, current_pos,
+                           (double)frames_since_cursor / cfg->rate / 60.0);
+
+                    asyncwr_write_range(&cs->aw, ws->write_cursor, current_pos,
+                                        ws->segment_start_time, ch_name);
+
+                    ws->write_cursor = current_pos;
+                    ws->segment_start_time = time(NULL);
+
+                    const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
+                    build_audio_filename(cs->current_wav, sizeof(cs->current_wav),
+                                         cfg->outdir, cfg->prefix, ch_name, ext,
+                                         ws->segment_start_time);
                 }
-                recording = false;
-                below_cnt = 0;
-                rec_channel = -1;
-                rec_channel_name[0] = '\0';
-                atomic_store_explicit(&app->is_recording, 0, memory_order_relaxed);
-                app->current_wav[0] = '\0';
-                logmsg("wrt", "STOP (silence)");
+
+                /* Check for silence */
+                const unsigned silence_peak_thr = 150;
+                const unsigned silence_avg_thr = 25;
+                int is_silence = (peak < silence_peak_thr) && (avg < silence_avg_thr);
+                if (is_silence) {
+                    if (ws->below_cnt < 0x7fffffff) ws->below_cnt++;
+                } else {
+                    ws->below_cnt = 0;
+                }
+
+                if (ws->below_cnt >= silence_chunks_needed) {
+                    /* STOP: write remaining audio */
+                    size_t final_pos = asyncwr_position(&cs->aw);
+                    if (final_pos > ws->write_cursor) {
+                        logmsg("wrt", "[%s] STOP: writing frames %zu-%zu",
+                               ch_name, ws->write_cursor, final_pos);
+                        asyncwr_write_range(&cs->aw, ws->write_cursor, final_pos,
+                                            ws->segment_start_time, ch_name);
+                        ws->write_cursor = final_pos;
+                    }
+                    ws->recording = false;
+                    ws->below_cnt = 0;
+                    atomic_store_explicit(&cs->is_recording, 0, memory_order_relaxed);
+                    cs->current_wav[0] = '\0';
+                    logmsg("wrt", "[%s] STOP (silence)", ch_name);
+                }
             }
         }
 
@@ -228,15 +194,20 @@ void *writer_main(void *arg) {
     }
 
     /* Flush any remaining audio on shutdown */
-    if (recording) {
-        size_t final_pos = asyncwr_position(&app->aw);
-        if (final_pos > write_cursor) {
-            logmsg("wrt", "SHUTDOWN: writing frames %zu-%zu", write_cursor, final_pos);
-            asyncwr_write_range(&app->aw, write_cursor, final_pos,
-                                segment_start_time, rec_channel_name);
+    for (int c = 0; c < nch; c++) {
+        WriterChState *ws = &chs[c];
+        if (!ws->recording) continue;
+        ChannelState *cs = &app->ch[c];
+        const char *ch_name = cfg->slink_channels[c].name;
+
+        size_t final_pos = asyncwr_position(&cs->aw);
+        if (final_pos > ws->write_cursor) {
+            logmsg("wrt", "[%s] SHUTDOWN: writing frames %zu-%zu",
+                   ch_name, ws->write_cursor, final_pos);
+            asyncwr_write_range(&cs->aw, ws->write_cursor, final_pos,
+                                ws->segment_start_time, ch_name);
         }
-        /* Wait for async write to complete */
-        asyncwr_wait_pending(&app->aw);
+        asyncwr_wait_pending(&cs->aw);
     }
     logmsg("wrt", "exit");
     return NULL;

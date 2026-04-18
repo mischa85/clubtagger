@@ -78,7 +78,12 @@ void db_insert_play(App *app, const char *timestamp, const char *artist,
     sqlite3_bind_text(stmt, 2, artist, -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 3, title, -1, SQLITE_STATIC);
     sqlite3_bind_text(stmt, 4, isrc[0] ? isrc : NULL, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 5, app->current_wav[0] ? app->current_wav : NULL, -1, SQLITE_STATIC);
+    /* Find first channel currently recording for the filename */
+    const char *wav = NULL;
+    for (int c = 0; c < app->cfg.slink_channel_count; c++) {
+        if (app->ch[c].current_wav[0]) { wav = app->ch[c].current_wav; break; }
+    }
+    sqlite3_bind_text(stmt, 5, wav, -1, SQLITE_STATIC);
     sqlite3_bind_int(stmt, 6, confidence);
     sqlite3_bind_text(stmt, 7, source, -1, SQLITE_STATIC);
 
