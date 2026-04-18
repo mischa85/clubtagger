@@ -70,11 +70,15 @@
     }
     
     // Update per-channel meters (from 'vu' event, cp array)
-    // Uses same mask technique as the L/R VU bars
+    // Each channel gets L + R bars side by side, same size as global VU
     let chMetersInit = false;
+    function valToPct(val) {
+        if (val <= 0) return 0;
+        const db = 20 * Math.log10(val / 65535);
+        return Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+    }
     function updateChMeters(msg) {
         if (!chMeters || !msg.cp) return;
-        // First time: hide L/R VU, create channel meters
         if (!chMetersInit) {
             const vuContainer = document.querySelector('.vu-container');
             if (vuContainer) vuContainer.style.display = 'none';
@@ -82,27 +86,28 @@
             for (const ch of msg.cp) {
                 const div = document.createElement('div');
                 div.className = 'ch-meter';
-                div.innerHTML = '<div class="ch-meter-bar"><div class="ch-meter-bg"></div><div class="ch-meter-mask"></div></div>' +
-                                '<span class="ch-meter-name">' + ch.n + '</span>';
+                div.innerHTML =
+                    '<div class="ch-meter-bars">' +
+                      '<div class="ch-meter-bar"><div class="ch-meter-bg"></div><div class="ch-meter-mask" data-ch="l"></div></div>' +
+                      '<div class="ch-meter-bar"><div class="ch-meter-bg"></div><div class="ch-meter-mask" data-ch="r"></div></div>' +
+                    '</div>' +
+                    '<span class="ch-meter-name">' + ch.n + '</span>';
                 chMeters.appendChild(div);
             }
             chMetersInit = true;
         }
         const meters = chMeters.children;
         for (let i = 0; i < msg.cp.length && i < meters.length; i++) {
-            const mask = meters[i].querySelector('.ch-meter-mask');
-            const bar = meters[i].querySelector('.ch-meter-bar');
-            const val = msg.cp[i].p;
-            let pct = 0;
-            if (val > 0) {
-                const db = 20 * Math.log10(val / 65535);
-                pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
-            }
-            mask.style.height = (100 - pct) + '%';
+            const maskL = meters[i].querySelector('[data-ch="l"]');
+            const maskR = meters[i].querySelector('[data-ch="r"]');
+            if (maskL) maskL.style.height = (100 - valToPct(msg.cp[i].l)) + '%';
+            if (maskR) maskR.style.height = (100 - valToPct(msg.cp[i].r)) + '%';
             const isActive = (i === msg.ach);
             const isRec = isActive && msg.rec;
-            bar.className = 'ch-meter-bar' + (isRec ? ' recording' : isActive ? ' active' : '');
-            meters[i].className = 'ch-meter' + (isRec ? ' recording' : isActive ? ' active' : '');
+            const cls = isRec ? ' recording' : isActive ? ' active' : '';
+            meters[i].className = 'ch-meter' + cls;
+            const bars = meters[i].querySelectorAll('.ch-meter-bar');
+            bars.forEach(b => b.className = 'ch-meter-bar' + cls);
         }
     }
 
@@ -686,11 +691,11 @@
             const progEl = document.getElementById('progress-' + devNum);
             if (progEl && (!wf || !wf.detail)) {
                 const bar = progEl.firstElementChild;
-                if (bar && tl > 0) bar.style.width = pct.toFixed(1) + '%';
+                if (bar && durSec > 0) bar.style.width = pct.toFixed(1) + '%';
                 const elapsedEl = progEl.querySelector('.deck-progress-elapsed');
                 if (elapsedEl) elapsedEl.textContent = formatPosMs(ms);
                 const remainEl = progEl.querySelector('.deck-progress-remain');
-                if (remainEl && tl > 0) remainEl.textContent = '-' + formatPosMs(Math.max(0, tl * 1000 - ms));
+                if (remainEl && durSec > 0) remainEl.textContent = '-' + formatPosMs(Math.max(0, durMs - ms));
             }
         }
     }

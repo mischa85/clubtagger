@@ -67,12 +67,33 @@ static ssize_t ws_send_frame(int fd, uint8_t opcode, const void *data, size_t le
         header[9] = (uint8_t)(len & 0xFF);
         hlen = 10;
     }
-    struct iovec iov[2] = {
-        { .iov_base = header, .iov_len = hlen },
-        { .iov_base = (void *)data, .iov_len = len }
-    };
-    struct msghdr msg = { .msg_iov = iov, .msg_iovlen = 2 };
-    return sendmsg(fd, &msg, MSG_NOSIGNAL);
+
+    /* Flatten header + payload into one buffer, then loop until fully sent.
+     * sendmsg with iovec can short-write on large frames (e.g. 254KB waveforms),
+     * corrupting the WebSocket stream with partial frames. */
+    size_t total = hlen + len;
+    uint8_t stackbuf[512];
+    uint8_t *buf = (total <= sizeof(stackbuf)) ? stackbuf : malloc(total);
+    if (!buf) return -1;
+    memcpy(buf, header, hlen);
+    memcpy(buf + hlen, data, len);
+
+    size_t sent = 0;
+    while (sent < total) {
+        ssize_t n = send(fd, buf + sent, total - sent, MSG_NOSIGNAL);
+        if (n > 0) {
+            sent += n;
+        } else if (n < 0) {
+            if (errno == EINTR) continue;
+            if (buf != stackbuf) free(buf);
+            return -1;
+        } else {
+            if (buf != stackbuf) free(buf);
+            return -1;
+        }
+    }
+    if (buf != stackbuf) free(buf);
+    return (ssize_t)total;
 }
 
 static ssize_t ws_text(int fd, const char *data, size_t len) {
@@ -413,10 +434,11 @@ void *ws_main(void *arg) {
                 app->cfg.format ? app->cfg.format : "wav",
                 app->cfg.source ? app->cfg.source : "unknown",
                 active_ch);
-            for (int c = 0; c < nch && len < (int)sizeof(msg) - 50; c++) {
-                uint16_t pk = atomic_load_explicit(&app->slink_ch_peak[c], memory_order_relaxed);
-                len += snprintf(msg + len, sizeof(msg) - len, "%s{\"n\":\"%s\",\"p\":%u}",
-                                c ? "," : "", app->cfg.slink_channels[c].name, pk);
+            for (int c = 0; c < nch && len < (int)sizeof(msg) - 80; c++) {
+                uint16_t pl = atomic_load_explicit(&app->slink_ch_peak_l[c], memory_order_relaxed);
+                uint16_t pr = atomic_load_explicit(&app->slink_ch_peak_r[c], memory_order_relaxed);
+                len += snprintf(msg + len, sizeof(msg) - len, "%s{\"n\":\"%s\",\"l\":%u,\"r\":%u}",
+                                c ? "," : "", app->cfg.slink_channels[c].name, pl, pr);
             }
             len += snprintf(msg + len, sizeof(msg) - len, "]}");
             if (len < (int)sizeof(msg))

@@ -223,7 +223,8 @@ void *capture_afxdp(void *arg) {
     uint32_t buf_idx = 0;
     int last_seq = -1; /* Sequence counter tracking */
     int prev_active = -1;
-    uint32_t ch_peaks[SLINK_MAX_CHANNELS] = {0};
+    uint32_t ch_peak_l[SLINK_MAX_CHANNELS] = {0};
+    uint32_t ch_peak_r[SLINK_MAX_CHANNELS] = {0};
 
     /* Noise floor for channel activity detection (24-bit sample absolute value) */
     const int32_t noise_floor = 8000;
@@ -283,8 +284,10 @@ void *capture_afxdp(void *arg) {
                     uint8_t tmp[6];
                     slink_to_le24_lr(pkt, cfg->slink_channels[0].left,
                                      cfg->slink_channels[0].right, tmp);
-                    uint32_t p = abs(le24_to_int(tmp)) + abs(le24_to_int(tmp + 3));
-                    if (p > ch_peaks[0]) ch_peaks[0] = p;
+                    uint32_t pl = abs(le24_to_int(tmp));
+                    uint32_t pr = abs(le24_to_int(tmp + 3));
+                    if (pl > ch_peak_l[0]) ch_peak_l[0] = pl;
+                    if (pr > ch_peak_r[0]) ch_peak_r[0] = pr;
                 } else {
                     for (int c = 0; c < nch; c++) {
                         int li = cfg->slink_channels[c].left;
@@ -293,8 +296,11 @@ void *capture_afxdp(void *arg) {
                             continue;
                         uint8_t tmp[6];
                         slink_to_le24_lr(pkt, li, ri, tmp);
-                        int32_t peak = abs(le24_to_int(tmp)) + abs(le24_to_int(tmp + 3));
-                        if ((uint32_t)peak > ch_peaks[c]) ch_peaks[c] = (uint32_t)peak;
+                        int32_t pl = abs(le24_to_int(tmp));
+                        int32_t pr = abs(le24_to_int(tmp + 3));
+                        if ((uint32_t)pl > ch_peak_l[c]) ch_peak_l[c] = (uint32_t)pl;
+                        if ((uint32_t)pr > ch_peak_r[c]) ch_peak_r[c] = (uint32_t)pr;
+                        int32_t peak = pl + pr;
                         if (peak > best_peak && peak > noise_floor) {
                             best_peak = peak;
                             active = c;
@@ -326,9 +332,12 @@ void *capture_afxdp(void *arg) {
                 if (buf_idx >= cfg->frames_per_read) {
                     asyncwr_append(&app->aw, audio_buf, cfg->frames_per_read);
                     for (int c = 0; c < nch; c++) {
-                        uint16_t v = ch_peaks[c] > 0xFFFF ? 0xFFFF : (uint16_t)ch_peaks[c];
-                        atomic_store_explicit(&app->slink_ch_peak[c], v, memory_order_relaxed);
-                        ch_peaks[c] = 0;
+                        uint16_t vl = ch_peak_l[c] > 0xFFFF ? 0xFFFF : (uint16_t)ch_peak_l[c];
+                        uint16_t vr = ch_peak_r[c] > 0xFFFF ? 0xFFFF : (uint16_t)ch_peak_r[c];
+                        atomic_store_explicit(&app->slink_ch_peak_l[c], vl, memory_order_relaxed);
+                        atomic_store_explicit(&app->slink_ch_peak_r[c], vr, memory_order_relaxed);
+                        ch_peak_l[c] = 0;
+                        ch_peak_r[c] = 0;
                     }
                     buf_idx = 0;
                 }
