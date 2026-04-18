@@ -51,7 +51,7 @@ void *capture_pcap(void *arg) {
     const int nch = cfg->slink_channel_count;
 
     /* Noise floor for channel activity detection (24-bit sample absolute value) */
-    const int32_t noise_floor = 400;
+    const int32_t noise_floor = 8000;
 
     struct pcap_pkthdr hdr;
     const u_char *pkt;
@@ -109,19 +109,17 @@ void *capture_pcap(void *arg) {
                 slink_to_le24_lr(pkt, cfg->slink_channels[active].left,
                                  cfg->slink_channels[active].right, &buf[buf_idx * fb]);
             } else {
-                /* Silence on all channels — write zeros */
                 memset(&buf[buf_idx * fb], 0, fb);
             }
 
-            /* Track active channel changes */
             if (active != prev_active) {
                 if (active >= 0)
-                    logmsg("cap", "active channel: %s (L=%d R=%d)",
-                           cfg->slink_channels[active].name,
-                           cfg->slink_channels[active].left,
-                           cfg->slink_channels[active].right);
+                    vlogmsg("cap", "active channel: %s (L=%d R=%d)",
+                            cfg->slink_channels[active].name,
+                            cfg->slink_channels[active].left,
+                            cfg->slink_channels[active].right);
                 else if (prev_active >= 0)
-                    logmsg("cap", "all channels silent");
+                    vlogmsg("cap", "all channels silent");
                 atomic_store_explicit(&app->slink_active_ch, active, memory_order_relaxed);
                 prev_active = active;
             }
