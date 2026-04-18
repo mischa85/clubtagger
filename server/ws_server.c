@@ -398,22 +398,29 @@ void *ws_main(void *arg) {
             if (active_ch >= 0 && active_ch < app->cfg.slink_channel_count)
                 ch_name = app->cfg.slink_channels[active_ch].name;
 
+            /* Build per-channel peaks inline */
+            int nch = app->cfg.slink_channel_count;
             char msg[512];
             int len = snprintf(msg, sizeof(msg),
                 "{\"event\":\"vu\",\"l\":%u,\"r\":%u,"
                 "\"lost\":%llu,\"frames\":%llu,"
                 "\"rate\":%u,\"ch\":%u,\"rec\":%d,"
                 "\"fmt\":\"%s\",\"src\":\"%s\","
-                "\"active_ch\":\"%s\",\"active_ch_idx\":%d,"
-                "\"slink_channels\":%d}",
+                "\"ach\":%d,\"cp\":[",
                 vu_l, vu_r,
                 (unsigned long long)lost, (unsigned long long)frames,
                 app->aw.rate, app->aw.channels, is_rec,
                 app->cfg.format ? app->cfg.format : "wav",
                 app->cfg.source ? app->cfg.source : "unknown",
-                ch_name, active_ch,
-                app->cfg.slink_channel_count);
-            ws_broadcast_text(msg, len);
+                active_ch);
+            for (int c = 0; c < nch && len < (int)sizeof(msg) - 50; c++) {
+                uint16_t pk = atomic_load_explicit(&app->slink_ch_peak[c], memory_order_relaxed);
+                len += snprintf(msg + len, sizeof(msg) - len, "%s{\"n\":\"%s\",\"p\":%u}",
+                                c ? "," : "", app->cfg.slink_channels[c].name, pk);
+            }
+            len += snprintf(msg + len, sizeof(msg) - len, "]}");
+            if (len < (int)sizeof(msg))
+                ws_broadcast_text(msg, len);
         }
 
         /* ── Track change notification ──────────────────────────────────── */

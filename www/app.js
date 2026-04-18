@@ -27,7 +27,7 @@
     const statLoad = document.getElementById('stat-load');
     const statMem = document.getElementById('stat-mem');
     const statDisk = document.getElementById('stat-disk');
-    const vuActiveCh = document.getElementById('vu-active-ch');
+    const chMeters = document.getElementById('ch-meters');
     
     // Slot names
     const SLOTS = { 0: '', 1: 'CD', 2: 'SD', 3: 'USB', 4: 'Link', 6: 'Stream', 9: 'Beatport' };
@@ -69,6 +69,37 @@
         peakRight.style.bottom = peakRVal + '%';
     }
     
+    // Update per-channel meters (from 'vu' event, cp array)
+    function updateChMeters(msg) {
+        if (!chMeters || !msg.cp) return;
+        if (chMeters.children.length !== msg.cp.length) {
+            chMeters.innerHTML = '';
+            for (const ch of msg.cp) {
+                const div = document.createElement('div');
+                div.className = 'ch-meter';
+                div.innerHTML = '<div class="ch-meter-bar"><div class="ch-meter-fill"></div></div>' +
+                                '<div class="ch-meter-name">' + ch.n + '</div>';
+                chMeters.appendChild(div);
+            }
+        }
+        const meters = chMeters.children;
+        for (let i = 0; i < msg.cp.length && i < meters.length; i++) {
+            const fill = meters[i].querySelector('.ch-meter-fill');
+            const bar = meters[i].querySelector('.ch-meter-bar');
+            const val = msg.cp[i].p;
+            let pct = 0;
+            if (val > 0) {
+                const db = 20 * Math.log10(val / 65535);
+                pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
+            }
+            fill.style.height = pct + '%';
+            const isActive = (i === msg.ach);
+            const isRec = isActive && msg.rec;
+            bar.className = 'ch-meter-bar' + (isRec ? ' recording' : isActive ? ' active' : '');
+            meters[i].className = 'ch-meter' + (isRec ? ' recording' : isActive ? ' active' : '');
+        }
+    }
+
     // Decay peaks
     function decayPeaks() {
         if (peakLDecay > 0) {
@@ -950,9 +981,7 @@
                 case 'vu':
                     updateVU(msg.l, msg.r);
                     updateRecPanel(msg);
-                    if (vuActiveCh && msg.slink_channels > 0) {
-                        vuActiveCh.textContent = msg.active_ch || '—';
-                    }
+                    if (msg.cp) updateChMeters(msg);
                     break;
                 case 'track':
                     if (msg.a || msg.t)
