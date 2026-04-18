@@ -409,17 +409,23 @@ void *ws_main(void *arg) {
         /* ── VU meter + audio stats (every cycle, ~60 Hz) ──────────────── */
         {
             uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
-            uint64_t frames = atomic_load_explicit(&app->audio_frames, memory_order_relaxed);
 
             int nch = app->cfg.slink_channel_count;
+            /* Sum bytes written to disk across all channels */
+            uint64_t written_bytes = 0;
+            for (int c = 0; c < nch; c++) {
+                size_t tw = atomic_load_explicit(&app->ch[c].aw.total_written, memory_order_relaxed);
+                written_bytes += tw * app->cfg.channels * app->cfg.bytes_per_sample;
+            }
+
             char msg[512];
             int len = snprintf(msg, sizeof(msg),
                 "{\"event\":\"vu\","
-                "\"lost\":%llu,\"frames\":%llu,"
+                "\"lost\":%llu,\"written\":%llu,"
                 "\"rate\":%u,\"ch\":%u,"
                 "\"fmt\":\"%s\",\"src\":\"%s\","
                 "\"cp\":[",
-                (unsigned long long)lost, (unsigned long long)frames,
+                (unsigned long long)lost, (unsigned long long)written_bytes,
                 app->cfg.rate, app->cfg.channels,
                 app->cfg.format ? app->cfg.format : "wav",
                 app->cfg.source ? app->cfg.source : "unknown");
