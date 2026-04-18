@@ -69,7 +69,7 @@ void build_audio_filename(char *out, size_t out_sz, const char *outdir,
  * WAV writing
  * ───────────────────────────────────────────────────────────────────────────── */
 
-int audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *prefix) {
+int64_t audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *prefix) {
     if (!ab->data || ab->frames == 0) return -1;
 
     ensure_dir(outdir);
@@ -118,9 +118,12 @@ int audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *pr
         return -1;
     }
 
+    struct stat st;
+    int64_t file_size = (stat(final_name, &st) == 0) ? (int64_t)st.st_size : (int64_t)(36 + data_bytes);
+
     logmsg("wav", "wrote %s (%.1f sec, %.1f MB)", final_name,
-           (double)ab->frames / ab->rate, (double)data_bytes / (1024 * 1024));
-    return 0;
+           (double)ab->frames / ab->rate, (double)file_size / (1024 * 1024));
+    return file_size;
 }
 
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -128,7 +131,7 @@ int audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *pr
  * ───────────────────────────────────────────────────────────────────────────── */
 
 #ifdef HAVE_FLAC
-int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *prefix) {
+int64_t audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *prefix) {
     if (!ab->data || ab->frames == 0) return -1;
 
     ensure_dir(outdir);
@@ -219,14 +222,14 @@ int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *p
         return -1;
     }
 
-    /* Get file size for logging */
+    /* Get actual file size */
     struct stat st;
-    double file_mb = 0;
-    if (stat(final_name, &st) == 0) file_mb = (double)st.st_size / (1024 * 1024);
+    int64_t file_size = 0;
+    if (stat(final_name, &st) == 0) file_size = (int64_t)st.st_size;
 
     logmsg("flac", "wrote %s (%.1f sec, %.1f MB)", final_name,
-           (double)ab->frames / ab->rate, file_mb);
-    return 0;
+           (double)ab->frames / ab->rate, (double)file_size / (1024 * 1024));
+    return file_size;
 }
 #endif /* HAVE_FLAC */
 
@@ -234,7 +237,7 @@ int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *p
  * Format-agnostic writing
  * ───────────────────────────────────────────────────────────────────────────── */
 
-int audiobuf_write(const AudioBuffer *ab, const char *outdir, const char *prefix, const char *format) {
+int64_t audiobuf_write(const AudioBuffer *ab, const char *outdir, const char *prefix, const char *format) {
 #ifdef HAVE_FLAC
     if (format && strcmp(format, "flac") == 0) {
         return audiobuf_write_flac(ab, outdir, prefix);
