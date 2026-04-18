@@ -1179,13 +1179,11 @@ int try_resolve_track_name(cdj_device_t *dev) {
             query_fail_count++;
             if (result == CDJ_ERR_CONNECT) {
                 if (query_fail_count <= 3) {
-                    logmsg("cdj", "DBServer connection failed for track %u (will retry)",
-                           dev->rekordbox_id);
-                } else if (query_fail_count == 5) {
-                    logmsg("cdj", "DBServer giving up after %d failures", query_fail_count);
-                    return 0;  /* Stop retrying */
+                    logmsg("cdj", "DBServer connection failed for track %u (will retry, backoff %ds)",
+                           dev->rekordbox_id,
+                           query_fail_count <= 2 ? 5 : query_fail_count <= 5 ? 10 : query_fail_count <= 8 ? 20 : query_fail_count <= 12 ? 40 : 60);
                 }
-                return 1;  /* Temporary — retry later */
+                return 1;  /* Temporary — retry later with increasing backoff */
             }
             if (query_fail_count <= 3) {
                 logmsg("cdj", "DBServer query failed for track %u (attempt %d)",
