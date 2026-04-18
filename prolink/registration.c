@@ -333,7 +333,7 @@ int send_prolink_keepalive(const char *interface) {
     if (announce_socket < 0) {
         announce_socket = socket(AF_INET, SOCK_DGRAM, 0);
         if (announce_socket < 0) {
-            vlogmsg("cdj", "[ANNOUNCE] Socket creation failed: %s", strerror(errno));
+            logmsg("cdj", "[ANNOUNCE] Socket creation failed: %s", strerror(errno));
             return -1;
         }
         
@@ -355,7 +355,7 @@ int send_prolink_keepalive(const char *interface) {
         bind_addr.sin_addr.s_addr = our_ip;
         
         if (bind(announce_socket, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-            vlogmsg("cdj", "[ANNOUNCE] Bind failed: %s", strerror(errno));
+            logmsg("cdj", "[ANNOUNCE] Bind failed: %s", strerror(errno));
             close(announce_socket);
             announce_socket = -1;
             return -3;
@@ -615,7 +615,7 @@ int ensure_registration_active(void) {
         /* Send a burst of keepalives to re-establish presence */
         for (int i = 0; i < REACTIVATION_BURST_COUNT; i++) {
             if (send_prolink_keepalive(capture_interface) < 0) {
-                vlogmsg("cdj", "[REG] Re-activation keepalive failed");
+                logmsg("cdj", "[REG] Re-activation keepalive failed");
                 our_device_num = 0;
                 return 0;
             }

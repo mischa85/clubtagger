@@ -248,7 +248,7 @@ int nfs_mount_to_port(uint32_t server_ip, uint16_t mount_port, const char *expor
     
     if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(mount_mnt_reply_t))) {
         if (verbose) {
-            vlogmsg("cdj", "[NFS] Mount failed - no response");
+            logmsg("cdj", "[NFS] Mount failed - no response");
         }
         return -1;
     }

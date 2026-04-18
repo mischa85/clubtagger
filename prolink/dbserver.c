@@ -191,7 +191,7 @@ int dbserver_connect(uint32_t server_ip) {
     bind_addr.sin_addr.s_addr = our_ip;
     bind_addr.sin_port = 0;
     if (bind(sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-        vlogmsg("cdj", "[DBSERVER] Failed to bind to our IP: %s", strerror(errno));
+        logmsg("cdj", "DBServer: bind to %s failed: %s", ip_to_str(our_ip), strerror(errno));
         close(sock);
         return -1;
     }
@@ -209,6 +209,7 @@ int dbserver_connect(uint32_t server_ip) {
     
     int ret = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
     if (ret < 0 && errno != EINPROGRESS) {
+        logmsg("cdj", "DBServer: connect to %s:%d failed: %s", ip_to_str(server_ip), db_port, strerror(errno));
         close(sock);
         return -1;
     }
@@ -218,7 +219,7 @@ int dbserver_connect(uint32_t server_ip) {
     pfd.events = POLLOUT;
     
     if (poll(&pfd, 1, 3000) <= 0) {
-        if (verbose) vlogmsg("cdj", "[DBSERVER] Connect timeout to %s", ip_to_str(server_ip));
+        logmsg("cdj", "DBServer: connect timeout to %s:%d", ip_to_str(server_ip), db_port);
         close(sock);
         return -1;
     }
@@ -226,8 +227,7 @@ int dbserver_connect(uint32_t server_ip) {
     int error = 0;
     socklen_t len = sizeof(error);
     if (getsockopt(sock, SOL_SOCKET, SO_ERROR, &error, &len) != 0 || error != 0) {
-        vlogmsg("cdj", "[DBSERVER] Connect error to %s: %s (errno=%d)", 
-                    ip_to_str(server_ip), strerror(error), error);
+        logmsg("cdj", "DBServer: connect to %s:%d: %s", ip_to_str(server_ip), db_port, strerror(error));
         close(sock);
         return -1;
     }
@@ -579,24 +579,13 @@ int dbserver_query_metadata(uint32_t device_ip, uint8_t our_device_param, uint8_
     uint8_t our_device = get_our_device_num();
     (void)our_device_param;  /* Suppress unused warning */
     
-    /* Check if we're on a valid slot for dbserver queries.
-     * Slots above max_players won't work with dbserver (non-standard player number).
-     * In this case, rely on NFS/PDB for metadata instead. */
-    if (our_device > get_max_players()) {
-        vlogmsg("DBSERVER", "Skipping query - slot %d incompatible with dbserver (use NFS)", our_device);
-        return CDJ_ERR_CONNECT;
-    }
     
-    vlogmsg("cdj", "[DBSERVER] Connecting to %s...", ip_to_str(device_ip));
     int sock = dbserver_connect(device_ip);
-    if (sock < 0) {
-        vlogmsg("cdj", "[DBSERVER] Connect failed to %s", ip_to_str(device_ip));
+    if (sock < 0)
         return CDJ_ERR_CONNECT;
-    }
-    vlogmsg("cdj", "[DBSERVER] Connected, setting up as device %d...", our_device);
-    
+
     if (dbserver_setup(sock, our_device) != 0) {
-        vlogmsg("cdj", "[DBSERVER] Setup failed");
+        logmsg("cdj", "DBServer: setup failed on %s (device %d)", ip_to_str(device_ip), our_device);
         close(sock);
         return CDJ_ERR_CONNECT;
     }
