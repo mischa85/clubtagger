@@ -54,6 +54,7 @@ static void usage(const char *argv0) {
             "  --slink-backend TYPE   Slink capture backend: 'pcap' or 'afxdp' (default: pcap)\n"
 #endif
             "  --slink-channels MAP   Channel mapping: \"main:0,1/booth:4,5\" (name:L,R)\n"
+            "  --shazam-channels LIST Shazam only these channels (default: all). e.g. \"master,dj1\"\n"
             "\n"
 #ifdef HAVE_VIBRA
             "Audio parameters (for --record / --audio-tag):\n"
@@ -119,6 +120,7 @@ static void usage(const char *argv0) {
 }
 
 static int parse_cli(int argc, char **argv, Config *cfg) {
+    const char *shazam_channels = NULL;
     for (int i = 1; i < argc; ++i) {
         const char *a = argv[i];
         if (!strcmp(a, "--device") && i + 1 < argc)
@@ -203,9 +205,12 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
                 ch->name[sizeof(ch->name) - 1] = '\0';
                 ch->left = atoi(lr);
                 ch->right = atoi(comma + 1);
+                ch->shazam = 1; /* default: Shazam enabled */
                 cfg->slink_channel_count++;
             }
         }
+        else if (!strcmp(a, "--shazam-channels") && i + 1 < argc)
+            shazam_channels = argv[++i];
         else if (!strcmp(a, "--match-threshold") && i + 1 < argc)
             cfg->match_threshold = (unsigned)strtoul(argv[++i], NULL, 10);
         /* Feature enable flags */
@@ -222,6 +227,31 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             return -1;
         }
     }
+
+    /* Apply --shazam-channels filter: disable shazam on channels not in the list */
+    if (shazam_channels && cfg->slink_channel_count > 0) {
+        /* First, disable all */
+        for (int c = 0; c < cfg->slink_channel_count; c++)
+            cfg->slink_channels[c].shazam = 0;
+        /* Enable named channels */
+        char buf[256];
+        strncpy(buf, shazam_channels, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *saveptr = NULL;
+        for (char *tok = strtok_r(buf, ",", &saveptr); tok; tok = strtok_r(NULL, ",", &saveptr)) {
+            int found = 0;
+            for (int c = 0; c < cfg->slink_channel_count; c++) {
+                if (strcmp(cfg->slink_channels[c].name, tok) == 0) {
+                    cfg->slink_channels[c].shazam = 1;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found)
+                logmsg("main", "WARNING: --shazam-channels: unknown channel '%s'", tok);
+        }
+    }
+
     return 0;
 }
 
@@ -381,10 +411,11 @@ int main(int argc, char **argv) {
             return 2;
         }
         for (int i = 0; i < cfg.slink_channel_count; i++) {
-            logmsg("main", "SLink channel '%s': L=%d R=%d",
+            logmsg("main", "SLink channel '%s': L=%d R=%d%s",
                    cfg.slink_channels[i].name,
                    cfg.slink_channels[i].left,
-                   cfg.slink_channels[i].right);
+                   cfg.slink_channels[i].right,
+                   cfg.slink_channels[i].shazam ? "" : " (no shazam)");
         }
     }
 
@@ -438,7 +469,7 @@ int main(int argc, char **argv) {
                 cs->wrt_window = (unsigned *)calloc(wrt_window_size, sizeof(unsigned));
                 if (!cs->wrt_window) { logmsg("main", "wrt_window alloc failed"); goto cleanup; }
             }
-            if (cfg.enable_audio_tag) {
+            if (cfg.enable_audio_tag && cfg.slink_channels[c].shazam) {
                 cs->id_buf_frames = id_buf_frames;
                 cs->id_buf = (uint8_t *)malloc(id_buf_frames * id_fb);
                 if (!cs->id_buf) { logmsg("main", "id_buf alloc failed"); goto cleanup; }
