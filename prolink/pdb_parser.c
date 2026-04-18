@@ -504,7 +504,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     int mount_port = rpc_portmap_getport(device_ip, MOUNT_PROGRAM, MOUNT_VERSION);
     
     if (mount_port <= 0) {
-        vlogmsg("cdj", "❌ Portmapper query failed - no mount service");
+        logmsg("cdj", "❌ Portmapper query failed - no mount service");
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
         return -1;
@@ -524,7 +524,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     /* Step 2: Mount the export */
     if (nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path, 
                           root_fh, &root_fh_len) != 0) {
-        vlogmsg("cdj", "❌ Mount failed - USB may not have rekordbox export");
+        logmsg("cdj", "❌ Mount failed - USB may not have rekordbox export");
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
         return -1;
@@ -569,7 +569,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     
     size_t total_read = 0;
     if (nfs_read_file(device_ip, g_nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read) != 0) {
-        vlogmsg("cdj", "❌ Read error");
+        logmsg("cdj", "❌ Read error");
         nfs_close_socket();
         free(pdb_data);
         db->fetch_in_progress = 0;

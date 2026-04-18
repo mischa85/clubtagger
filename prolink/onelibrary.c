@@ -123,7 +123,7 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
     if (!PKCS5_PBKDF2_HMAC(olib_passphrase, strlen(olib_passphrase),
                             salt, OLIB_SALT_SIZE, OLIB_KDF_ITER,
                             EVP_sha512(), OLIB_KEY_SIZE, enc_key)) {
-        vlogmsg("cdj", "[OLIB] PBKDF2 key derivation failed");
+        logmsg("cdj", "[OLIB] PBKDF2 key derivation failed");
         return NULL;
     }
 
@@ -160,7 +160,7 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
 
     /* Verify output has valid SQLite header */
     if (memcmp(output, SQLITE_MAGIC, 15) != 0) {
-        vlogmsg("cdj", "[OLIB] Decryption failed - invalid SQLite header (wrong key?)");
+        logmsg("cdj", "[OLIB] Decryption failed - invalid SQLite header (wrong key?)");
         free(output);
         return NULL;
     }
@@ -194,7 +194,7 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
     /* Open in-memory database and deserialize the decrypted data into it */
     int rc = sqlite3_open(":memory:", &db);
     if (rc != SQLITE_OK) {
-        vlogmsg("cdj", "[OLIB] sqlite3_open failed: %s", sqlite3_errmsg(db));
+        logmsg("cdj", "[OLIB] sqlite3_open failed: %s", sqlite3_errmsg(db));
         sqlite3_close(db);
         free(decrypted_data);
         return -1;
@@ -206,7 +206,7 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
     rc = sqlite3_deserialize(db, "main", decrypted_data, (sqlite3_int64)data_len,
                              (sqlite3_int64)data_len, 0);
     if (rc != SQLITE_OK) {
-        vlogmsg("cdj", "[OLIB] sqlite3_deserialize failed: %s", sqlite3_errmsg(db));
+        logmsg("cdj", "[OLIB] sqlite3_deserialize failed: %s", sqlite3_errmsg(db));
         sqlite3_close(db);
         free(decrypted_data);
         return -1;
@@ -430,7 +430,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     /* Step 1: Query portmapper for mount port */
     int mount_port = rpc_portmap_getport(device_ip, MOUNT_PROGRAM, MOUNT_VERSION);
     if (mount_port <= 0) {
-        vlogmsg("cdj", "[OLIB] Portmapper query failed");
+        logmsg("cdj", "[OLIB] Portmapper query failed");
         return -1;
     }
 
@@ -444,7 +444,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     /* Step 2: Mount the export */
     if (nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path,
                           root_fh, &root_fh_len) != 0) {
-        vlogmsg("cdj", "[OLIB] Mount failed");
+        logmsg("cdj", "[OLIB] Mount failed");
         return -1;
     }
 
@@ -471,7 +471,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     size_t total_read = 0;
     if (nfs_read_file(device_ip, g_nfs_port, olib_fh, encrypted,
                       OLIB_MAX_FILE_SIZE, &total_read) != 0) {
-        vlogmsg("cdj", "[OLIB] Read error");
+        logmsg("cdj", "[OLIB] Read error");
         nfs_close_socket();
         free(encrypted);
         return -1;
@@ -486,7 +486,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     free(encrypted);
 
     if (!decrypted) {
-        vlogmsg("cdj", "[OLIB] Decryption failed");
+        logmsg("cdj", "[OLIB] Decryption failed");
         return -1;
     }
 
