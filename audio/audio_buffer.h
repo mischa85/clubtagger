@@ -16,15 +16,15 @@ void build_audio_filename(char *out, size_t out_sz, const char *outdir,
                           const char *prefix, const char *channel,
                           const char *ext, time_t ts);
 
-/* Write AudioBuffer to WAV file atomically */
-int audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *prefix);
+/* Write AudioBuffer to WAV file atomically. Returns file size in bytes, or -1 on error. */
+int64_t audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *prefix);
 
 #ifdef HAVE_FLAC
-/* Write AudioBuffer to FLAC file atomically */
-int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *prefix);
+/* Write AudioBuffer to FLAC file atomically. Returns file size in bytes, or -1 on error. */
+int64_t audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *prefix);
 #endif
 
-/* Write AudioBuffer to file (WAV or FLAC based on format) */
-int audiobuf_write(const AudioBuffer *ab, const char *outdir, const char *prefix, const char *format);
+/* Write AudioBuffer to file (WAV or FLAC based on format). Returns file size in bytes, or -1 on error. */
+int64_t audiobuf_write(const AudioBuffer *ab, const char *outdir, const char *prefix, const char *format);
 
 #endif /* CLUBTAGGER_AUDIO_BUFFER_H */

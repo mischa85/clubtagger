@@ -12,9 +12,10 @@
  * Internal helper
  * ───────────────────────────────────────────────────────────────────────────── */
 
-static void asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframes,
-                             size_t from, size_t to, time_t start_time,
-                             const char *channel) {
+/* Returns actual bytes written to disk, or 0 on failure */
+static int64_t asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframes,
+                                size_t from, size_t to, time_t start_time,
+                                const char *channel) {
     AudioBuffer ab = {
         .data = (uint8_t *)data,
         .frames = nframes,
@@ -34,9 +35,10 @@ static void asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframe
     } else {
         snprintf(eff_prefix, sizeof(eff_prefix), "%s", aw->prefix);
     }
-    audiobuf_write(&ab, aw->outdir, eff_prefix, aw->format);
+    int64_t file_size = audiobuf_write(&ab, aw->outdir, eff_prefix, aw->format);
     logmsg("wrt", "wrote frames %zu-%zu (%zu frames, %.1f sec)",
            from, to, nframes, (double)nframes / aw->rate);
+    return file_size > 0 ? file_size : 0;
 }
 
 static void *asyncwr_thread_main(void *arg) {
@@ -59,9 +61,8 @@ static void *asyncwr_thread_main(void *arg) {
         pthread_mutex_unlock(&aw->mu);
 
         if (nframes > 0) {
-            asyncwr_do_write(aw, data, nframes, from, to, start_time, channel);
-            /* Track bytes written to disk */
-            atomic_fetch_add_explicit(&aw->bytes_on_disk, nframes * aw->frame_bytes, memory_order_relaxed);
+            int64_t written = asyncwr_do_write(aw, data, nframes, from, to, start_time, channel);
+            atomic_fetch_add_explicit(&aw->bytes_on_disk, (uint64_t)written, memory_order_relaxed);
         }
 
         pthread_mutex_lock(&aw->mu);
