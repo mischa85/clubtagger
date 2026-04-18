@@ -53,6 +53,7 @@ static void usage(const char *argv0) {
 #if defined(HAVE_PCAP) && defined(HAVE_AF_XDP)
             "  --slink-backend TYPE   Slink capture backend: 'pcap' or 'afxdp' (default: pcap)\n"
 #endif
+            "  --slink-channels MAP   Channel mapping: \"main:0,1 booth:4,5\" (name:L,R)\n"
             "\n"
 #ifdef HAVE_VIBRA
             "Audio parameters (for --record / --audio-tag):\n"
@@ -177,6 +178,33 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             cfg->prolink_passive = 1;
         else if (!strcmp(a, "--olib-key") && i + 1 < argc)
             cfg->olib_key = argv[++i];
+        else if (!strcmp(a, "--slink-channels") && i + 1 < argc) {
+            /* Parse "main:0,1 booth:4,5" → slink_channels[] */
+            const char *s = argv[++i];
+            char buf[512];
+            strncpy(buf, s, sizeof(buf) - 1);
+            buf[sizeof(buf) - 1] = '\0';
+            cfg->slink_channel_count = 0;
+            char *saveptr = NULL;
+            for (char *tok = strtok_r(buf, " ", &saveptr);
+                 tok && cfg->slink_channel_count < SLINK_MAX_CHANNELS;
+                 tok = strtok_r(NULL, " ", &saveptr)) {
+                /* tok = "main:0,1" */
+                char *colon = strchr(tok, ':');
+                if (!colon) { logmsg("main", "bad slink-channel: %s (expected name:L,R)", tok); continue; }
+                *colon = '\0';
+                char *lr = colon + 1;
+                char *comma = strchr(lr, ',');
+                if (!comma) { logmsg("main", "bad slink-channel: %s (expected L,R)", lr); continue; }
+                *comma = '\0';
+                slink_channel_t *ch = &cfg->slink_channels[cfg->slink_channel_count];
+                strncpy(ch->name, tok, sizeof(ch->name) - 1);
+                ch->name[sizeof(ch->name) - 1] = '\0';
+                ch->left = atoi(lr);
+                ch->right = atoi(comma + 1);
+                cfg->slink_channel_count++;
+            }
+        }
         else if (!strcmp(a, "--match-threshold") && i + 1 < argc)
             cfg->match_threshold = (unsigned)strtoul(argv[++i], NULL, 10);
         /* Feature enable flags */
@@ -346,6 +374,17 @@ int main(int argc, char **argv) {
             return 2;
         }
 #endif
+        /* Require --slink-channels for slink source */
+        if (cfg.slink_channel_count == 0) {
+            logmsg("main", "--slink-channels required for slink source (e.g., \"main:0,1 booth:4,5\")");
+            return 2;
+        }
+        for (int i = 0; i < cfg.slink_channel_count; i++) {
+            logmsg("main", "SLink channel '%s': L=%d R=%d",
+                   cfg.slink_channels[i].name,
+                   cfg.slink_channels[i].left,
+                   cfg.slink_channels[i].right);
+        }
     }
 
     /* Ring buffer sizing */

@@ -157,10 +157,10 @@ typedef struct {
     uint8_t  sd_db_fetched;     /* Have we fetched SD database? */
     uint8_t  usb_olib_fetched;  /* Have we fetched USB OneLibrary? */
     uint8_t  sd_olib_fetched;   /* Have we fetched SD OneLibrary? */
-    time_t   usb_fetch_attempt; /* Last USB fetch attempt (throttle retries) */
-    time_t   sd_fetch_attempt;  /* Last SD fetch attempt (throttle retries) */
-    uint8_t  usb_fetch_fails;   /* Consecutive USB NFS fetch failures */
-    uint8_t  sd_fetch_fails;    /* Consecutive SD NFS fetch failures */
+    time_t   usb_fetch_attempt; /* Last USB fetch attempt time */
+    time_t   sd_fetch_attempt;  /* Last SD fetch attempt time */
+    uint16_t usb_fetch_interval; /* Current retry interval in seconds (doubles on failure, caps at 300) */
+    uint16_t sd_fetch_interval;  /* Current retry interval in seconds */
     
     /* On-air and playback tracking (for CDJ-only tagging) */
     uint8_t  on_air;            /* Currently on-air (from DJM) */

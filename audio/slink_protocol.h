@@ -71,4 +71,30 @@ static inline void slink_to_le24_stereo(const slink_packet_t *pkt, uint8_t *out)
     out[5] = pkt->ch1[0];
 }
 
+/* Audio data starts at byte 24 in the Ethernet frame */
+#define SLINK_AUDIO_OFFSET  24
+#define SLINK_SAMPLE_BYTES  3
+
+/* Extract stereo from explicit L/R sample indices, convert BE→LE.
+ * Indices are 0-based into the array of 3-byte samples starting at byte 24.
+ * out must point to a 6-byte buffer. */
+static inline void slink_to_le24_lr(const uint8_t *pkt, int left, int right, uint8_t *out) {
+    const uint8_t *l = pkt + SLINK_AUDIO_OFFSET + left * SLINK_SAMPLE_BYTES;
+    const uint8_t *r = pkt + SLINK_AUDIO_OFFSET + right * SLINK_SAMPLE_BYTES;
+    out[0] = l[2]; out[1] = l[1]; out[2] = l[0];  /* L: BE→LE */
+    out[3] = r[2]; out[4] = r[1]; out[5] = r[0];  /* R: BE→LE */
+}
+
+/* Convert 24-bit LE sample to signed int32 (for peak detection) */
+static inline int32_t le24_to_int(const uint8_t *s) {
+    int32_t v = s[0] | (s[1] << 8) | (s[2] << 16);
+    if (v & 0x800000) v |= 0xFF000000;  /* sign extend */
+    return v;
+}
+
+/* Minimum packet length for multi-channel access */
+static inline int slink_has_channel(uint32_t pkt_len, int sample_index) {
+    return pkt_len >= (uint32_t)(SLINK_AUDIO_OFFSET + (sample_index + 1) * SLINK_SAMPLE_BYTES);
+}
+
 #endif /* SLINK_PROTOCOL_H */

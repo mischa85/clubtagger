@@ -38,6 +38,10 @@ void *writer_main(void *arg) {
     size_t write_cursor = 0;       /* absolute frame we've written up to */
     time_t segment_start_time = 0; /* timestamp of write_cursor */
 
+    /* Active SLink channel tracking */
+    int rec_channel = -1;          /* channel index being recorded (-1 = none) */
+    char rec_channel_name[32] = "";
+
     const size_t max_file_frames = cfg->max_file_sec > 0 ? (size_t)cfg->max_file_sec * cfg->rate : 0;
 
     const char *fmt_str = cfg->format ? cfg->format : "wav";
@@ -113,16 +117,28 @@ void *writer_main(void *arg) {
                 segment_start_time = time(NULL) - (time_t)(prebuffer_frames / cfg->rate);
                 pthread_mutex_unlock(&app->aw.mu);
 
+                /* Capture active SLink channel for filename */
+                rec_channel = atomic_load_explicit(&app->slink_active_ch, memory_order_relaxed);
+                if (rec_channel >= 0 && rec_channel < cfg->slink_channel_count) {
+                    strncpy(rec_channel_name, cfg->slink_channels[rec_channel].name,
+                            sizeof(rec_channel_name) - 1);
+                    rec_channel_name[sizeof(rec_channel_name) - 1] = '\0';
+                } else {
+                    rec_channel_name[0] = '\0';
+                }
+
                 const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
                 build_audio_filename(app->current_wav, sizeof(app->current_wav),
-                                     cfg->outdir, cfg->prefix, ext, segment_start_time);
+                                     cfg->outdir, cfg->prefix, rec_channel_name, ext,
+                                     segment_start_time);
 
                 recording = true;
                 below_cnt = 0;
                 atomic_store_explicit(&app->is_recording, 1, memory_order_relaxed);
 
-                logmsg("wrt", "TRIGGER avg=%u (prebuffer %.1f sec, cursor=%zu)",
-                       avg, (double)prebuffer_frames / cfg->rate, write_cursor);
+                logmsg("wrt", "TRIGGER avg=%u ch=%s (prebuffer %.1f sec, cursor=%zu)",
+                       avg, rec_channel_name[0] ? rec_channel_name : "-",
+                       (double)prebuffer_frames / cfg->rate, write_cursor);
 
                 /* Reset sliding window */
                 memset(window, 0, window_size * sizeof(unsigned));
@@ -131,16 +147,42 @@ void *writer_main(void *arg) {
                 window_full = false;
             }
         } else {
-            /* Recording: check for split or silence */
+            /* Recording: check for channel change, split, or silence */
             size_t current_pos = asyncwr_position(&app->aw);
             size_t frames_since_cursor = current_pos - write_cursor;
 
-            /* Check if we need to split */
+            /* Check if active SLink channel changed → split */
+            int cur_ch = atomic_load_explicit(&app->slink_active_ch, memory_order_relaxed);
+            if (cur_ch != rec_channel && cur_ch >= 0 && cfg->slink_channel_count > 1) {
+                if (current_pos > write_cursor) {
+                    logmsg("wrt", "CHANNEL CHANGE %s→%s: writing frames %zu-%zu",
+                           rec_channel_name[0] ? rec_channel_name : "-",
+                           cfg->slink_channels[cur_ch].name,
+                           write_cursor, current_pos);
+                    asyncwr_write_range(&app->aw, write_cursor, current_pos,
+                                        segment_start_time, rec_channel_name);
+                    write_cursor = current_pos;
+                }
+                rec_channel = cur_ch;
+                strncpy(rec_channel_name, cfg->slink_channels[cur_ch].name,
+                        sizeof(rec_channel_name) - 1);
+                rec_channel_name[sizeof(rec_channel_name) - 1] = '\0';
+                segment_start_time = time(NULL);
+
+                const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
+                build_audio_filename(app->current_wav, sizeof(app->current_wav),
+                                     cfg->outdir, cfg->prefix, rec_channel_name, ext,
+                                     segment_start_time);
+                frames_since_cursor = 0;
+            }
+
+            /* Check if we need to split (max file size) */
             if (max_file_frames > 0 && frames_since_cursor >= max_file_frames) {
                 logmsg("wrt", "SPLIT: writing frames %zu-%zu (%.1f min)",
                        write_cursor, current_pos, (double)frames_since_cursor / cfg->rate / 60.0);
 
-                asyncwr_write_range(&app->aw, write_cursor, current_pos, segment_start_time);
+                asyncwr_write_range(&app->aw, write_cursor, current_pos,
+                                    segment_start_time, rec_channel_name);
 
                 /* Advance cursor */
                 write_cursor = current_pos;
@@ -148,7 +190,8 @@ void *writer_main(void *arg) {
 
                 const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
                 build_audio_filename(app->current_wav, sizeof(app->current_wav),
-                                     cfg->outdir, cfg->prefix, ext, segment_start_time);
+                                     cfg->outdir, cfg->prefix, rec_channel_name, ext,
+                                     segment_start_time);
             }
 
             /* Check for silence */
@@ -166,11 +209,14 @@ void *writer_main(void *arg) {
                 size_t final_pos = asyncwr_position(&app->aw);
                 if (final_pos > write_cursor) {
                     logmsg("wrt", "STOP: writing frames %zu-%zu", write_cursor, final_pos);
-                    asyncwr_write_range(&app->aw, write_cursor, final_pos, segment_start_time);
+                    asyncwr_write_range(&app->aw, write_cursor, final_pos,
+                                        segment_start_time, rec_channel_name);
                     write_cursor = final_pos;
                 }
                 recording = false;
                 below_cnt = 0;
+                rec_channel = -1;
+                rec_channel_name[0] = '\0';
                 atomic_store_explicit(&app->is_recording, 0, memory_order_relaxed);
                 app->current_wav[0] = '\0';
                 logmsg("wrt", "STOP (silence)");
@@ -186,7 +232,8 @@ void *writer_main(void *arg) {
         size_t final_pos = asyncwr_position(&app->aw);
         if (final_pos > write_cursor) {
             logmsg("wrt", "SHUTDOWN: writing frames %zu-%zu", write_cursor, final_pos);
-            asyncwr_write_range(&app->aw, write_cursor, final_pos, segment_start_time);
+            asyncwr_write_range(&app->aw, write_cursor, final_pos,
+                                segment_start_time, rec_channel_name);
         }
         /* Wait for async write to complete */
         asyncwr_wait_pending(&app->aw);

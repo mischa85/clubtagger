@@ -25,8 +25,10 @@ size_t asyncwr_position(AsyncWriter *aw);
 /* Copy last N frames for level detection / fingerprinting (LOCK-FREE) */
 size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes);
 
-/* Write frames [from, to) to disk asynchronously */
-void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time);
+/* Write frames [from, to) to disk asynchronously.
+ * channel: SLink channel name for filename (NULL = no channel suffix) */
+void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time,
+                         const char *channel);
 
 /* Wait for any pending async write to complete */
 void asyncwr_wait_pending(AsyncWriter *aw);

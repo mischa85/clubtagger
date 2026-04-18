@@ -430,7 +430,14 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
                                  track->isrc, sizeof(track->isrc));
                 track->has_isrc = (track->isrc[0] != '\0');
             }
-            
+
+            /* Read ANLZ path from string_offsets[PDB_STR_ANALYZE_PATH] (index 14) */
+            uint16_t anlz_offset = row->string_offsets[PDB_STR_ANALYZE_PATH];
+            if (anlz_offset > 0 && anlz_offset < 500) {
+                parse_devicesql_string(data, len, pos + anlz_offset,
+                                       track->anlz_path, sizeof(track->anlz_path));
+            }
+
             if (track->title[0] == '\0') {
                 snprintf(track->title, sizeof(track->title), "Track %u", row->id);
             }

@@ -65,7 +65,8 @@ typedef struct TrackID {
     uint8_t  sample_depth;   /* bits per sample (0 = unknown) */
     uint8_t  file_type;      /* cdj_file_format_t */
     char filename[256];      /* Original filename (from rekordbox) */
-    
+    char anlz_path[256];     /* ANLZ analysis file path (from PDB or OneLibrary) */
+
     /* Source tracking */
     uint8_t sources;         /* Bitmask of track_source_t */
     int confidence;          /* 0-100 confidence percentage */
@@ -74,6 +75,17 @@ typedef struct TrackID {
     int valid;               /* Is this a valid identification? */
     int has_isrc;            /* Does this have an ISRC code? */
 } TrackID;
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SLink channel mapping - maps named stereo channels to packet sample indices
+ * ───────────────────────────────────────────────────────────────────────────── */
+#define SLINK_MAX_CHANNELS 8
+
+typedef struct {
+    char name[32];       /* Logical name (e.g., "main", "booth") */
+    int  left;           /* SLink sample index for L */
+    int  right;          /* SLink sample index for R */
+} slink_channel_t;
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * Config - Application configuration from CLI
@@ -108,6 +120,8 @@ typedef struct {
     int         prolink_passive;   /* SPAN port mode: no registration, eavesdrop only */
     const char *olib_key;          /* OneLibrary decryption passphrase (NULL = disabled) */
     unsigned    match_threshold;    /* 0-100 similarity % for fuzzy track matching */
+    slink_channel_t slink_channels[SLINK_MAX_CHANNELS];
+    int             slink_channel_count;  /* number of configured SLink channels */
 
     /* Mode flags - which features to enable (default: all off) */
     int         enable_record;     /* Enable audio recording */
@@ -155,6 +169,7 @@ typedef struct {
     size_t          write_from;
     size_t          write_to;
     time_t          write_start_time;
+    char            write_channel[32]; /* SLink channel name for filename */
     int             write_pending;
     
     /* Pre-allocated FLAC conversion buffer */
@@ -219,6 +234,7 @@ typedef struct {
     char last_isrc[64];            /* protected by db_mu: ISRC code if available */
     int last_deck;                 /* protected by db_mu: CDJ deck number (0 if none) */
     /* Audio statistics (for web UI nerd info) */
+    _Atomic int      slink_active_ch;  /* index into cfg.slink_channels[] (-1 = none) */
     _Atomic uint32_t audio_rms;    /* current RMS level */
     _Atomic uint64_t audio_lost;   /* total lost samples (sequence discontinuities) */
     _Atomic uint64_t audio_frames; /* total frames captured */

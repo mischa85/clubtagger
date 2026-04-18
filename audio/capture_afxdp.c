@@ -214,14 +214,18 @@ void *capture_afxdp(void *arg) {
     /* Populate fill ring */
     xsk_populate_fill_ring(&umem);
 
-    logmsg("cap", "started: rate=%u ch=%u (AF_XDP source, 24-bit)", cfg->rate, cfg->channels);
+    logmsg("cap", "started: rate=%u ch=%u (AF_XDP source, 24-bit, %d channels configured)",
+           cfg->rate, cfg->channels, cfg->slink_channel_count);
 
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
     uint8_t *audio_buf = app->cap_buf;
+    const int nch = cfg->slink_channel_count;
     uint32_t buf_idx = 0;
     int last_seq = -1; /* Sequence counter tracking */
-    uint64_t loss_events = 0;
-    (void)loss_events; /* TODO: report this */
+    int prev_active = -1;
+
+    /* Noise floor for channel activity detection (24-bit sample absolute value) */
+    const int32_t noise_floor = 400;
 
     struct pollfd fds = {
         .fd = xsk_socket__fd(xsk.xsk),
@@ -255,23 +259,64 @@ void *capture_afxdp(void *arg) {
             /* Process SLink packet - ethertype already filtered by BPF */
             if (len >= SLINK_MIN_LEN) {
                 const slink_packet_t *slink = (const slink_packet_t *)pkt;
-                
+
                 /* Check sequence counter (cycles 0x00-0x1F) */
                 int seq = slink_get_seq(slink);
                 if (last_seq >= 0) {
                     int expected = (last_seq + 1) & SLINK_SEQ_MASK;
                     if (seq != expected) {
-                        loss_events++;
-                        logmsg("cap", "sequence discontinuity: expected %02X got %02X",
-                               expected, seq);
+                        int lost = (seq - expected) & SLINK_SEQ_MASK;
+                        atomic_fetch_add_explicit(&app->audio_lost, lost, memory_order_relaxed);
+                        logmsg("cap", "sequence discontinuity: expected %02X got %02X (%d lost)",
+                               expected, seq, lost);
                     }
                 }
                 last_seq = seq;
 
-                /* Convert 24-bit big-endian to little-endian */
-                slink_to_le24_stereo(slink, &audio_buf[buf_idx * fb]);
+                /* Monitor all configured channels, pick the one with audio */
+                int active = -1;
+                int32_t best_peak = 0;
+
+                if (nch == 1) {
+                    active = 0;
+                } else {
+                    for (int c = 0; c < nch; c++) {
+                        int li = cfg->slink_channels[c].left;
+                        int ri = cfg->slink_channels[c].right;
+                        if (!slink_has_channel(len, li) || !slink_has_channel(len, ri))
+                            continue;
+                        uint8_t tmp[6];
+                        slink_to_le24_lr(pkt, li, ri, tmp);
+                        int32_t peak = abs(le24_to_int(tmp)) + abs(le24_to_int(tmp + 3));
+                        if (peak > best_peak && peak > noise_floor) {
+                            best_peak = peak;
+                            active = c;
+                        }
+                    }
+                }
+
+                if (active >= 0) {
+                    slink_to_le24_lr(pkt, cfg->slink_channels[active].left,
+                                     cfg->slink_channels[active].right, &audio_buf[buf_idx * fb]);
+                } else {
+                    memset(&audio_buf[buf_idx * fb], 0, fb);
+                }
+
+                /* Track active channel changes */
+                if (active != prev_active) {
+                    if (active >= 0)
+                        logmsg("cap", "active channel: %s (L=%d R=%d)",
+                               cfg->slink_channels[active].name,
+                               cfg->slink_channels[active].left,
+                               cfg->slink_channels[active].right);
+                    else if (prev_active >= 0)
+                        logmsg("cap", "all channels silent");
+                    atomic_store_explicit(&app->slink_active_ch, active, memory_order_relaxed);
+                    prev_active = active;
+                }
 
                 buf_idx++;
+                atomic_fetch_add_explicit(&app->audio_frames, 1, memory_order_relaxed);
                 if (buf_idx >= cfg->frames_per_read) {
                     asyncwr_append(&app->aw, audio_buf, cfg->frames_per_read);
                     buf_idx = 0;
