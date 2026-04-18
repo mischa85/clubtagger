@@ -52,7 +52,15 @@
             gap: 3px;
         }
         .vu-label { font-size: 10px; color: #666; }
-        .vu-active-ch { font-size: 10px; color: #0f0; text-align: center; margin-top: 2px; white-space: nowrap; }
+        .ch-meters { display: flex; gap: 6px; margin-top: 6px; justify-content: center; }
+        .ch-meter { text-align: center; }
+        .ch-meter-bar { width: 28px; height: 40px; background: #1a1a1a; border: 1px solid #333; border-radius: 2px; position: relative; overflow: hidden; }
+        .ch-meter-fill { position: absolute; bottom: 0; left: 0; right: 0; background: #444; transition: height 0.05s; }
+        .ch-meter-bar.active .ch-meter-fill { background: #0f0; }
+        .ch-meter-bar.recording .ch-meter-fill { background: #f44; }
+        .ch-meter-name { font-size: 9px; color: #888; margin-top: 2px; }
+        .ch-meter-bar.active .ch-meter-name, .ch-meter.active .ch-meter-name { color: #0f0; }
+        .ch-meter.recording .ch-meter-name { color: #f44; }
         .vu-bar-container {
             width: 24px;
             height: 120px;
@@ -512,7 +520,7 @@
                         <span class="vu-label">R</span>
                     </div>
                 </div>
-                <div class="vu-active-ch" id="vu-active-ch"></div>
+                <div class="ch-meters" id="ch-meters"></div>
             </div>
 
             <div class="rec-panel">

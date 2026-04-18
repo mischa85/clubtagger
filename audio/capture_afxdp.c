@@ -223,6 +223,7 @@ void *capture_afxdp(void *arg) {
     uint32_t buf_idx = 0;
     int last_seq = -1; /* Sequence counter tracking */
     int prev_active = -1;
+    uint32_t ch_peaks[SLINK_MAX_CHANNELS] = {0};
 
     /* Noise floor for channel activity detection (24-bit sample absolute value) */
     const int32_t noise_floor = 8000;
@@ -279,6 +280,11 @@ void *capture_afxdp(void *arg) {
 
                 if (nch == 1) {
                     active = 0;
+                    uint8_t tmp[6];
+                    slink_to_le24_lr(pkt, cfg->slink_channels[0].left,
+                                     cfg->slink_channels[0].right, tmp);
+                    uint32_t p = abs(le24_to_int(tmp)) + abs(le24_to_int(tmp + 3));
+                    if (p > ch_peaks[0]) ch_peaks[0] = p;
                 } else {
                     for (int c = 0; c < nch; c++) {
                         int li = cfg->slink_channels[c].left;
@@ -288,6 +294,7 @@ void *capture_afxdp(void *arg) {
                         uint8_t tmp[6];
                         slink_to_le24_lr(pkt, li, ri, tmp);
                         int32_t peak = abs(le24_to_int(tmp)) + abs(le24_to_int(tmp + 3));
+                        if ((uint32_t)peak > ch_peaks[c]) ch_peaks[c] = (uint32_t)peak;
                         if (peak > best_peak && peak > noise_floor) {
                             best_peak = peak;
                             active = c;
@@ -318,6 +325,11 @@ void *capture_afxdp(void *arg) {
                 atomic_fetch_add_explicit(&app->audio_frames, 1, memory_order_relaxed);
                 if (buf_idx >= cfg->frames_per_read) {
                     asyncwr_append(&app->aw, audio_buf, cfg->frames_per_read);
+                    for (int c = 0; c < nch; c++) {
+                        uint16_t v = ch_peaks[c] > 0xFFFF ? 0xFFFF : (uint16_t)ch_peaks[c];
+                        atomic_store_explicit(&app->slink_ch_peak[c], v, memory_order_relaxed);
+                        ch_peaks[c] = 0;
+                    }
                     buf_idx = 0;
                 }
             }
