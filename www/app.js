@@ -70,21 +70,27 @@
     }
     
     // Update per-channel meters (from 'vu' event, cp array)
+    // Uses same mask technique as the L/R VU bars
+    let chMetersInit = false;
     function updateChMeters(msg) {
         if (!chMeters || !msg.cp) return;
-        if (chMeters.children.length !== msg.cp.length) {
+        // First time: hide L/R VU, create channel meters
+        if (!chMetersInit) {
+            const vuContainer = document.querySelector('.vu-container');
+            if (vuContainer) vuContainer.style.display = 'none';
             chMeters.innerHTML = '';
             for (const ch of msg.cp) {
                 const div = document.createElement('div');
                 div.className = 'ch-meter';
-                div.innerHTML = '<div class="ch-meter-bar"><div class="ch-meter-fill"></div></div>' +
-                                '<div class="ch-meter-name">' + ch.n + '</div>';
+                div.innerHTML = '<div class="ch-meter-bar"><div class="ch-meter-bg"></div><div class="ch-meter-mask"></div></div>' +
+                                '<span class="ch-meter-name">' + ch.n + '</span>';
                 chMeters.appendChild(div);
             }
+            chMetersInit = true;
         }
         const meters = chMeters.children;
         for (let i = 0; i < msg.cp.length && i < meters.length; i++) {
-            const fill = meters[i].querySelector('.ch-meter-fill');
+            const mask = meters[i].querySelector('.ch-meter-mask');
             const bar = meters[i].querySelector('.ch-meter-bar');
             const val = msg.cp[i].p;
             let pct = 0;
@@ -92,7 +98,7 @@
                 const db = 20 * Math.log10(val / 65535);
                 pct = Math.max(0, Math.min(100, (db + 60) / 60 * 100));
             }
-            fill.style.height = pct + '%';
+            mask.style.height = (100 - pct) + '%';
             const isActive = (i === msg.ach);
             const isRec = isActive && msg.rec;
             bar.className = 'ch-meter-bar' + (isRec ? ' recording' : isActive ? ' active' : '');

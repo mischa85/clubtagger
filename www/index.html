@@ -52,14 +52,15 @@
             gap: 3px;
         }
         .vu-label { font-size: 10px; color: #666; }
-        .ch-meters { display: flex; gap: 6px; margin-top: 6px; justify-content: center; }
-        .ch-meter { text-align: center; }
-        .ch-meter-bar { width: 28px; height: 40px; background: #1a1a1a; border: 1px solid #333; border-radius: 2px; position: relative; overflow: hidden; }
-        .ch-meter-fill { position: absolute; bottom: 0; left: 0; right: 0; background: #444; transition: height 0.05s; }
-        .ch-meter-bar.active .ch-meter-fill { background: #0f0; }
-        .ch-meter-bar.recording .ch-meter-fill { background: #f44; }
-        .ch-meter-name { font-size: 9px; color: #888; margin-top: 2px; }
-        .ch-meter-bar.active .ch-meter-name, .ch-meter.active .ch-meter-name { color: #0f0; }
+        .ch-meters { display: flex; gap: 8px; }
+        .ch-meter { display: flex; flex-direction: column; align-items: center; gap: 3px; }
+        .ch-meter-bar { width: 24px; height: 120px; background: #222; border-radius: 4px; position: relative; overflow: hidden; }
+        .ch-meter-bg { position: absolute; bottom: 0; width: 100%; height: 100%; background: linear-gradient(to top, #444 0%, #444 60%, #666 75%, #888 85%, #aaa 95%); border-radius: 4px; }
+        .ch-meter-bar.active .ch-meter-bg { background: linear-gradient(to top, #00ff00 0%, #00ff00 60%, #ffff00 75%, #ff8800 85%, #ff0000 95%); }
+        .ch-meter-bar.recording .ch-meter-bg { background: linear-gradient(to top, #ff4444 0%, #ff4444 60%, #ff8800 75%, #ffff00 85%, #ff0000 95%); }
+        .ch-meter-mask { position: absolute; top: 0; width: 100%; background: #222; transition: height 50ms ease-out; }
+        .ch-meter-name { font-size: 10px; color: #666; }
+        .ch-meter.active .ch-meter-name { color: #0f0; }
         .ch-meter.recording .ch-meter-name { color: #f44; }
         .vu-bar-container {
             width: 24px;
