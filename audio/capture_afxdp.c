@@ -218,16 +218,9 @@ void *capture_afxdp(void *arg) {
            cfg->rate, cfg->channels, cfg->slink_channel_count);
 
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
-    uint8_t *audio_buf = app->cap_buf;
     const int nch = cfg->slink_channel_count;
-    uint32_t buf_idx = 0;
-    int last_seq = -1; /* Sequence counter tracking */
-    int prev_active = -1;
-    uint32_t ch_peak_l[SLINK_MAX_CHANNELS] = {0};
-    uint32_t ch_peak_r[SLINK_MAX_CHANNELS] = {0};
-
-    /* Noise floor for channel activity detection (24-bit sample absolute value) */
-    const int32_t noise_floor = 8000;
+    uint32_t buf_idx[SLINK_MAX_CHANNELS] = {0};
+    int last_seq = -1;
 
     struct pollfd fds = {
         .fd = xsk_socket__fd(xsk.xsk),
@@ -275,72 +268,24 @@ void *capture_afxdp(void *arg) {
                 }
                 last_seq = seq;
 
-                /* Monitor all configured channels, pick the one with audio */
-                int active = -1;
-                int32_t best_peak = 0;
+                /* Extract every configured channel into its own ring buffer */
+                for (int c = 0; c < nch; c++) {
+                    int li = cfg->slink_channels[c].left;
+                    int ri = cfg->slink_channels[c].right;
+                    if (!slink_has_channel(len, li) || !slink_has_channel(len, ri))
+                        continue;
 
-                if (nch == 1) {
-                    active = 0;
-                    uint8_t tmp[6];
-                    slink_to_le24_lr(pkt, cfg->slink_channels[0].left,
-                                     cfg->slink_channels[0].right, tmp);
-                    uint32_t pl = abs(le24_to_int(tmp));
-                    uint32_t pr = abs(le24_to_int(tmp + 3));
-                    if (pl > ch_peak_l[0]) ch_peak_l[0] = pl;
-                    if (pr > ch_peak_r[0]) ch_peak_r[0] = pr;
-                } else {
-                    for (int c = 0; c < nch; c++) {
-                        int li = cfg->slink_channels[c].left;
-                        int ri = cfg->slink_channels[c].right;
-                        if (!slink_has_channel(len, li) || !slink_has_channel(len, ri))
-                            continue;
-                        uint8_t tmp[6];
-                        slink_to_le24_lr(pkt, li, ri, tmp);
-                        int32_t pl = abs(le24_to_int(tmp));
-                        int32_t pr = abs(le24_to_int(tmp + 3));
-                        if ((uint32_t)pl > ch_peak_l[c]) ch_peak_l[c] = (uint32_t)pl;
-                        if ((uint32_t)pr > ch_peak_r[c]) ch_peak_r[c] = (uint32_t)pr;
-                        int32_t peak = pl + pr;
-                        if (peak > best_peak && peak > noise_floor) {
-                            best_peak = peak;
-                            active = c;
-                        }
+                    ChannelState *cs = &app->ch[c];
+                    slink_to_le24_lr(pkt, li, ri, &cs->cap_buf[buf_idx[c] * fb]);
+                    buf_idx[c]++;
+
+                    if (buf_idx[c] >= cfg->frames_per_read) {
+                        asyncwr_append(&cs->aw, cs->cap_buf, cfg->frames_per_read);
+                        buf_idx[c] = 0;
                     }
                 }
 
-                if (active >= 0) {
-                    slink_to_le24_lr(pkt, cfg->slink_channels[active].left,
-                                     cfg->slink_channels[active].right, &audio_buf[buf_idx * fb]);
-                } else {
-                    memset(&audio_buf[buf_idx * fb], 0, fb);
-                }
-
-                if (active != prev_active) {
-                    if (active >= 0)
-                        vlogmsg("cap", "active channel: %s (L=%d R=%d)",
-                                cfg->slink_channels[active].name,
-                                cfg->slink_channels[active].left,
-                                cfg->slink_channels[active].right);
-                    else if (prev_active >= 0)
-                        vlogmsg("cap", "all channels silent");
-                    atomic_store_explicit(&app->slink_active_ch, active, memory_order_relaxed);
-                    prev_active = active;
-                }
-
-                buf_idx++;
                 atomic_fetch_add_explicit(&app->audio_frames, 1, memory_order_relaxed);
-                if (buf_idx >= cfg->frames_per_read) {
-                    asyncwr_append(&app->aw, audio_buf, cfg->frames_per_read);
-                    for (int c = 0; c < nch; c++) {
-                        uint16_t vl = ch_peak_l[c] > 0xFFFF ? 0xFFFF : (uint16_t)ch_peak_l[c];
-                        uint16_t vr = ch_peak_r[c] > 0xFFFF ? 0xFFFF : (uint16_t)ch_peak_r[c];
-                        atomic_store_explicit(&app->slink_ch_peak_l[c], vl, memory_order_relaxed);
-                        atomic_store_explicit(&app->slink_ch_peak_r[c], vr, memory_order_relaxed);
-                        ch_peak_l[c] = 0;
-                        ch_peak_r[c] = 0;
-                    }
-                    buf_idx = 0;
-                }
             }
         }
         xsk_ring_cons__release(&xsk.rx, rcvd);

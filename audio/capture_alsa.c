@@ -52,7 +52,7 @@ void *capture_alsa(void *arg) {
     const size_t FR = cfg->frames_per_read;
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
     (void)fb;
-    uint8_t *buf = app->cap_buf;
+    uint8_t *buf = app->ch[0].cap_buf;
 
     logmsg("cap", "started: rate=%u ch=%u period=%lu bits=%d (ALSA)", cfg->rate, cfg->channels, (unsigned long)period, cfg->bytes_per_sample * 8);
     while (g_running) {
@@ -66,7 +66,7 @@ void *capture_alsa(void *arg) {
             }
             continue;
         }
-        if (got > 0) asyncwr_append(&app->aw, buf, (size_t)got);
+        if (got > 0) asyncwr_append(&app->ch[0].aw, buf, (size_t)got);
     }
 
     g_alsa_handle = NULL; /* prevent signal handler from using closed handle */

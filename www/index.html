@@ -40,76 +40,18 @@
             border-radius: 10px;
         }
         
-        /* VU Meter */
-        .vu-container {
-            display: flex;
-            gap: 8px;
-        }
-        .vu-channel {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            gap: 3px;
-        }
-        .vu-label { font-size: 10px; color: #666; }
+        /* Channel meters (L/R per channel) */
         .ch-meters { display: flex; gap: 12px; }
         .ch-meter { display: flex; flex-direction: column; align-items: center; gap: 3px; }
         .ch-meter-bars { display: flex; gap: 2px; }
         .ch-meter-bar { width: 24px; height: 120px; background: #222; border-radius: 4px; position: relative; overflow: hidden; }
         .ch-meter-bg { position: absolute; bottom: 0; width: 100%; height: 100%; background: linear-gradient(to top, #444 0%, #444 60%, #666 75%, #888 85%, #aaa 95%); border-radius: 4px; }
-        .ch-meter-bar.active .ch-meter-bg { background: linear-gradient(to top, #00ff00 0%, #00ff00 60%, #ffff00 75%, #ff8800 85%, #ff0000 95%); }
         .ch-meter-bar.recording .ch-meter-bg { background: linear-gradient(to top, #ff4444 0%, #ff4444 60%, #ff8800 75%, #ffff00 85%, #ff0000 95%); }
         .ch-meter-mask { position: absolute; top: 0; width: 100%; background: #222; transition: height 50ms ease-out; }
         .ch-meter-name { font-size: 10px; color: #666; }
-        .ch-meter.active .ch-meter-name { color: #0f0; }
         .ch-meter.recording .ch-meter-name { color: #f44; }
-        .vu-bar-container {
-            width: 24px;
-            height: 120px;
-            background: #222;
-            border-radius: 4px;
-            position: relative;
-            overflow: hidden;
-        }
-        .vu-bar-bg {
-            position: absolute;
-            bottom: 0;
-            width: 100%;
-            height: 100%;
-            background: linear-gradient(to top, #00ff00 0%, #00ff00 60%, #ffff00 75%, #ff8800 85%, #ff0000 95%);
-            border-radius: 4px;
-        }
-        .vu-bar-mask {
-            position: absolute;
-            top: 0;
-            width: 100%;
-            background: #222;
-            transition: height 50ms ease-out;
-        }
-        .vu-peak {
-            position: absolute;
-            width: 100%;
-            height: 2px;
-            background: #fff;
-            transition: bottom 50ms ease-out;
-        }
-        
-        /* Recording status */
-        .rec-status {
-            font-size: 14px;
-            font-weight: bold;
-            padding: 8px 16px;
-            border-radius: 6px;
-            background: #222;
-        }
-        .rec-status.recording {
-            background: #4d1a1a;
-            color: #f44336;
-            animation: blink 1s infinite;
-        }
-        .rec-status.standby {
-            color: #666;
-        }
+        .audio-stats { font-size: 11px; color: #666; display: flex; flex-direction: column; gap: 4px; }
+        .audio-stats span { color: #aaa; }
         @keyframes blink { 50% { opacity: 0.5; } }
         
         /* Nerd Stats Panel (collapsible) */
@@ -146,32 +88,6 @@
         .nerd-stat .value.warn { color: #ff9800; }
         .nerd-stat .value.ok { color: #4caf50; }
         
-        /* Recording panel */
-        .rec-panel {
-            background: #0f0f1a;
-            border-radius: 8px;
-            padding: 10px 15px;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            font-size: 11px;
-        }
-        .rec-panel .rec-indicator {
-            font-size: 14px;
-            font-weight: bold;
-            padding: 4px 10px;
-            border-radius: 4px;
-            background: #222;
-        }
-        .rec-panel .rec-indicator.recording {
-            background: #4d1a1a;
-            color: #f44336;
-            animation: blink 1s infinite;
-        }
-        .rec-panel .rec-indicator.standby { color: #666; }
-        .rec-panel .rec-detail { color: #666; }
-        .rec-panel .rec-detail span { color: #aaa; }
 
         /* ═══════════ CDJ-2000 Style Deck Cards ═══════════ */
         @font-face {
@@ -489,7 +405,7 @@
             body { padding: 8px; }
             h1 { font-size: 1.3em; margin-bottom: 10px; }
             .audio-section { padding: 10px; gap: 15px; }
-            .vu-bar-container { height: 100px; width: 20px; }
+            .ch-meter-bar { height: 100px; width: 20px; }
             .nerd-stats-grid { grid-template-columns: 1fr 1fr; }
         }
     </style>
@@ -504,33 +420,11 @@
 
         <div class="sidebar">
             <div class="audio-section">
-                <div class="vu-container">
-                    <div class="vu-channel">
-                        <div class="vu-bar-container">
-                            <div class="vu-bar-bg"></div>
-                            <div class="vu-bar-mask" id="vu-left"></div>
-                            <div class="vu-peak" id="peak-left"></div>
-                        </div>
-                        <span class="vu-label">L</span>
-                    </div>
-                    <div class="vu-channel">
-                        <div class="vu-bar-container">
-                            <div class="vu-bar-bg"></div>
-                            <div class="vu-bar-mask" id="vu-right"></div>
-                            <div class="vu-peak" id="peak-right"></div>
-                        </div>
-                        <span class="vu-label">R</span>
-                    </div>
-                </div>
                 <div class="ch-meters" id="ch-meters"></div>
-            </div>
-
-            <div class="rec-panel">
-                <div class="rec-indicator standby" id="rec-status">Standby</div>
-                <div class="rec-detail"><span id="stat-format">—</span></div>
-                <div class="rec-detail">Runtime: <span id="stat-runtime">0s</span></div>
-                <div class="rec-detail">Written: <span id="stat-written">0</span></div>
-                <div class="rec-detail">Lost: <span id="stat-lost">0</span></div>
+                <div class="audio-stats">
+                    <div><span id="stat-format">—</span></div>
+                    <div>Lost: <span id="stat-lost">0</span></div>
+                </div>
             </div>
 
             <div class="identification-panel" id="identification">
