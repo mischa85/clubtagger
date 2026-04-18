@@ -27,6 +27,7 @@
     const statLoad = document.getElementById('stat-load');
     const statMem = document.getElementById('stat-mem');
     const statDisk = document.getElementById('stat-disk');
+    const vuActiveCh = document.getElementById('vu-active-ch');
     
     // Slot names
     const SLOTS = { 0: '', 1: 'CD', 2: 'SD', 3: 'USB', 4: 'Link', 6: 'Stream', 9: 'Beatport' };
@@ -949,6 +950,9 @@
                 case 'vu':
                     updateVU(msg.l, msg.r);
                     updateRecPanel(msg);
+                    if (vuActiveCh && msg.slink_channels > 0) {
+                        vuActiveCh.textContent = msg.active_ch || '—';
+                    }
                     break;
                 case 'track':
                     if (msg.a || msg.t)

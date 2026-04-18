@@ -10,9 +10,11 @@
 /* Ensure directory exists (mkdir -p style, single level only) */
 void ensure_dir(const char *path);
 
-/* Build a filename for audio output */
+/* Build a filename for audio output.
+ * channel: if non-NULL and non-empty, inserted as {prefix}_{channel}_{date}_{time}.{ext} */
 void build_audio_filename(char *out, size_t out_sz, const char *outdir,
-                          const char *prefix, const char *ext, time_t ts);
+                          const char *prefix, const char *channel,
+                          const char *ext, time_t ts);
 
 /* Write AudioBuffer to WAV file atomically */
 int audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *prefix);

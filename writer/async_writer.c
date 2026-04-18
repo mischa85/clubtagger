@@ -13,7 +13,8 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 static void asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframes,
-                             size_t from, size_t to, time_t start_time) {
+                             size_t from, size_t to, time_t start_time,
+                             const char *channel) {
     AudioBuffer ab = {
         .data = (uint8_t *)data,
         .frames = nframes,
@@ -26,7 +27,14 @@ static void asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframe
         .flac_buf = aw->flac_buf,
         .flac_buf_samples = aw->flac_buf_samples};
 
-    audiobuf_write(&ab, aw->outdir, aw->prefix, aw->format);
+    /* Build effective prefix with channel name */
+    char eff_prefix[128];
+    if (channel && channel[0]) {
+        snprintf(eff_prefix, sizeof(eff_prefix), "%s_%s", aw->prefix, channel);
+    } else {
+        snprintf(eff_prefix, sizeof(eff_prefix), "%s", aw->prefix);
+    }
+    audiobuf_write(&ab, aw->outdir, eff_prefix, aw->format);
     logmsg("wrt", "wrote frames %zu-%zu (%zu frames, %.1f sec)",
            from, to, nframes, (double)nframes / aw->rate);
 }
@@ -46,10 +54,12 @@ static void *asyncwr_thread_main(void *arg) {
         size_t from = aw->write_from;
         size_t to = aw->write_to;
         time_t start_time = aw->write_start_time;
+        char channel[32];
+        memcpy(channel, aw->write_channel, sizeof(channel));
         pthread_mutex_unlock(&aw->mu);
 
         if (nframes > 0) {
-            asyncwr_do_write(aw, data, nframes, from, to, start_time);
+            asyncwr_do_write(aw, data, nframes, from, to, start_time, channel);
             /* Track bytes written to disk */
             atomic_fetch_add_explicit(&aw->bytes_on_disk, nframes * aw->frame_bytes, memory_order_relaxed);
         }
@@ -199,7 +209,8 @@ size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes) {
     return take;
 }
 
-void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time) {
+void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time,
+                         const char *channel) {
     /* Read total_written atomically first */
     size_t tw = atomic_load_explicit(&aw->total_written, memory_order_acquire);
     size_t head = tw % aw->capacity;
@@ -261,6 +272,12 @@ void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_t
     aw->write_from = from;
     aw->write_to = to;
     aw->write_start_time = start_time;
+    if (channel && channel[0]) {
+        strncpy(aw->write_channel, channel, sizeof(aw->write_channel) - 1);
+        aw->write_channel[sizeof(aw->write_channel) - 1] = '\0';
+    } else {
+        aw->write_channel[0] = '\0';
+    }
     aw->write_pending = 1;
 
     pthread_cond_signal(&aw->cv);

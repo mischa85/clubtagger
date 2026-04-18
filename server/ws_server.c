@@ -392,18 +392,27 @@ void *ws_main(void *arg) {
             uint64_t lost = atomic_load_explicit(&app->audio_lost, memory_order_relaxed);
             uint64_t frames = atomic_load_explicit(&app->aw.total_written, memory_order_relaxed);
             int is_rec = atomic_load_explicit(&app->is_recording, memory_order_relaxed);
+            int active_ch = atomic_load_explicit(&app->slink_active_ch, memory_order_relaxed);
+
+            const char *ch_name = "";
+            if (active_ch >= 0 && active_ch < app->cfg.slink_channel_count)
+                ch_name = app->cfg.slink_channels[active_ch].name;
 
             char msg[512];
             int len = snprintf(msg, sizeof(msg),
                 "{\"event\":\"vu\",\"l\":%u,\"r\":%u,"
                 "\"lost\":%llu,\"frames\":%llu,"
                 "\"rate\":%u,\"ch\":%u,\"rec\":%d,"
-                "\"fmt\":\"%s\",\"src\":\"%s\"}",
+                "\"fmt\":\"%s\",\"src\":\"%s\","
+                "\"active_ch\":\"%s\",\"active_ch_idx\":%d,"
+                "\"slink_channels\":%d}",
                 vu_l, vu_r,
                 (unsigned long long)lost, (unsigned long long)frames,
                 app->aw.rate, app->aw.channels, is_rec,
                 app->cfg.format ? app->cfg.format : "wav",
-                app->cfg.source ? app->cfg.source : "unknown");
+                app->cfg.source ? app->cfg.source : "unknown",
+                ch_name, active_ch,
+                app->cfg.slink_channel_count);
             ws_broadcast_text(msg, len);
         }
 

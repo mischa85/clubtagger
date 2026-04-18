@@ -17,6 +17,7 @@
 #include "../server/ws_server.h"
 #include "../common.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -332,7 +333,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     dev2->usb_db_fetched = 0;
                     dev2->usb_olib_fetched = 0;
                     dev2->usb_fetch_attempt = 0;
-                    dev2->usb_fetch_fails = 0;
+                    dev2->usb_fetch_interval = 10;
                     dbserver_reset_retry();
                 }
                 if (!dev2->usb_present && old_usb2) {
@@ -340,7 +341,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     dev2->usb_db_fetched = 0;
                     dev2->usb_olib_fetched = 0;
                     dev2->usb_fetch_attempt = 0;
-                    dev2->usb_fetch_fails = 0;
+                    dev2->usb_fetch_interval = 10;
                     remove_pdb_database(dev2->ip_addr, SLOT_USB);
                     remove_onelibrary(dev2->ip_addr, SLOT_USB);
                 }
@@ -349,7 +350,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     dev2->sd_db_fetched = 0;
                     dev2->sd_olib_fetched = 0;
                     dev2->sd_fetch_attempt = 0;
-                    dev2->sd_fetch_fails = 0;
+                    dev2->sd_fetch_interval = 10;
                     dbserver_reset_retry();
                 }
                 if (!dev2->sd_present && old_sd2) {
@@ -357,7 +358,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     dev2->sd_db_fetched = 0;
                     dev2->sd_olib_fetched = 0;
                     dev2->sd_fetch_attempt = 0;
-                    dev2->sd_fetch_fails = 0;
+                    dev2->sd_fetch_interval = 10;
                     remove_pdb_database(dev2->ip_addr, SLOT_SD);
                     remove_onelibrary(dev2->ip_addr, SLOT_SD);
                 }
@@ -461,7 +462,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->usb_db_fetched = 0;
             dev->usb_olib_fetched = 0;
             dev->usb_fetch_attempt = 0;
-            dev->usb_fetch_fails = 0;
+            dev->usb_fetch_interval = 10;
             dbserver_reset_retry();
         }
         /* USB removed */
@@ -470,7 +471,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->usb_db_fetched = 0;
             dev->usb_olib_fetched = 0;
             dev->usb_fetch_attempt = 0;
-            dev->usb_fetch_fails = 0;
+            dev->usb_fetch_interval = 10;
             remove_pdb_database(dev->ip_addr, SLOT_USB);
             remove_onelibrary(dev->ip_addr, SLOT_USB);
         }
@@ -480,7 +481,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->sd_db_fetched = 0;
             dev->sd_olib_fetched = 0;
             dev->sd_fetch_attempt = 0;
-            dev->sd_fetch_fails = 0;
+            dev->sd_fetch_interval = 10;
             dbserver_reset_retry();
         }
         /* SD removed */
@@ -489,7 +490,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->sd_db_fetched = 0;
             dev->sd_olib_fetched = 0;
             dev->sd_fetch_attempt = 0;
-            dev->sd_fetch_fails = 0;
+            dev->sd_fetch_interval = 10;
             remove_pdb_database(dev->ip_addr, SLOT_SD);
             remove_onelibrary(dev->ip_addr, SLOT_SD);
         }
@@ -504,27 +505,32 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             /* Fetch USB databases if USB is present locally (not via Link).
              * Byte 0x3a == 0x01 indicates Link client — no local media.
              * usb_state 0x00 (MEDIA_STATE_LOADED) = real media present.
-             * Give up after 3 NFS failures. */
+             * OneLibrary first, PDB only if OneLibrary done/unavailable.
+             * Never give up — exponential backoff capped at 5 min. */
             if (dev->usb_local_raw == MEDIA_STATE_LOADED &&
-                dev->usb_fetch_fails < 3 &&
                 (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
-                fetch_now - dev->usb_fetch_attempt >= 10) {
+                fetch_now - dev->usb_fetch_attempt >= dev->usb_fetch_interval) {
 
-                int usb_fetched_something = 0;
+                int usb_fetched = 0;
+                dev->usb_fetch_attempt = fetch_now;
+
+                /* OneLibrary first (has ANLZ paths, richer metadata) */
                 if (!dev->usb_olib_fetched && onelibrary_key_available()) {
-                    dev->usb_fetch_attempt = fetch_now;
                     logmsg("cdj", "📥 Device %d: Fetching USB OneLibrary...", device_num);
                     if (fetch_onelibrary_database(dev->ip_addr, SLOT_USB) == 0) {
                         dev->usb_olib_fetched = 1;
-                        dev->usb_db_fetched = 1;
-                        dev->usb_fetch_fails = 0;
-                        usb_fetched_something = 1;
+                        dev->usb_db_fetched = 1;  /* OneLibrary is superset */
+                        dev->usb_fetch_interval = 10;
+                        usb_fetched = 1;
                         if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0')
                             dev->lookup_failed_id = 0;
+                    } else {
+                        /* OneLibrary failed — mark done, fall through to PDB next cycle */
+                        dev->usb_olib_fetched = 1;
                     }
                 }
-                if (!dev->usb_db_fetched) {
-                    dev->usb_fetch_attempt = fetch_now;
+                /* PDB only after OneLibrary is done or key unavailable */
+                else if (!dev->usb_db_fetched) {
                     logmsg("cdj", "📥 Device %d: Fetching USB PDB...", device_num);
                     pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_USB);
                     if (db) {
@@ -532,42 +538,43 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             logmsg("cdj", "✅ Device %d: USB PDB loaded (%d tracks)",
                                    device_num, db->track_count);
                             dev->usb_db_fetched = 1;
-                            dev->usb_olib_fetched = 1; /* PDB success → skip OneLibrary */
-                            dev->usb_fetch_fails = 0;
-                            usb_fetched_something = 1;
+                            dev->usb_fetch_interval = 10;
+                            usb_fetched = 1;
                             if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0')
                                 dev->lookup_failed_id = 0;
                         }
                     }
                 }
-                if (!usb_fetched_something) {
-                    dev->usb_fetch_fails++;
-                    if (dev->usb_fetch_fails >= 3)
-                        logmsg("cdj", "📥 Device %d: USB NFS failed 3x — no physical media?", device_num);
+                if (!usb_fetched) {
+                    /* Exponential backoff: 10s, 20s, 40s, 80s, 160s, 300s cap */
+                    if (dev->usb_fetch_interval < 300)
+                        dev->usb_fetch_interval = (dev->usb_fetch_interval * 2 > 300) ? 300 : dev->usb_fetch_interval * 2;
+                    logmsg("cdj", "📥 Device %d: USB fetch failed, retry in %ds", device_num, dev->usb_fetch_interval);
                 }
             }
 
-            /* Fetch SD databases - same strategy */
+            /* Fetch SD databases — same strategy as USB */
             if (dev->sd_local_raw == MEDIA_STATE_LOADED &&
-                dev->sd_fetch_fails < 3 &&
                 (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
-                fetch_now - dev->sd_fetch_attempt >= 10) {
+                fetch_now - dev->sd_fetch_attempt >= dev->sd_fetch_interval) {
 
-                int sd_fetched_something = 0;
+                int sd_fetched = 0;
+                dev->sd_fetch_attempt = fetch_now;
+
                 if (!dev->sd_olib_fetched && onelibrary_key_available()) {
-                    dev->sd_fetch_attempt = fetch_now;
                     logmsg("cdj", "📥 Device %d: Fetching SD OneLibrary...", device_num);
                     if (fetch_onelibrary_database(dev->ip_addr, SLOT_SD) == 0) {
                         dev->sd_olib_fetched = 1;
                         dev->sd_db_fetched = 1;
-                        dev->sd_fetch_fails = 0;
-                        sd_fetched_something = 1;
+                        dev->sd_fetch_interval = 10;
+                        sd_fetched = 1;
                         if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0')
                             dev->lookup_failed_id = 0;
+                    } else {
+                        dev->sd_olib_fetched = 1;
                     }
                 }
-                if (!dev->sd_db_fetched) {
-                    dev->sd_fetch_attempt = fetch_now;
+                else if (!dev->sd_db_fetched) {
                     logmsg("cdj", "📥 Device %d: Fetching SD PDB...", device_num);
                     pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_SD);
                     if (db) {
@@ -575,18 +582,17 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             logmsg("cdj", "✅ Device %d: SD PDB loaded (%d tracks)",
                                    device_num, db->track_count);
                             dev->sd_db_fetched = 1;
-                            dev->sd_olib_fetched = 1; /* PDB success → skip OneLibrary */
-                            dev->sd_fetch_fails = 0;
-                            sd_fetched_something = 1;
+                            dev->sd_fetch_interval = 10;
+                            sd_fetched = 1;
                             if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0')
                                 dev->lookup_failed_id = 0;
                         }
                     }
                 }
-                if (!sd_fetched_something) {
-                    dev->sd_fetch_fails++;
-                    if (dev->sd_fetch_fails >= 3)
-                        logmsg("cdj", "📥 Device %d: SD NFS failed 3x — no physical media?", device_num);
+                if (!sd_fetched) {
+                    if (dev->sd_fetch_interval < 300)
+                        dev->sd_fetch_interval = (dev->sd_fetch_interval * 2 > 300) ? 300 : dev->sd_fetch_interval * 2;
+                    logmsg("cdj", "📥 Device %d: SD fetch failed, retry in %ds", device_num, dev->sd_fetch_interval);
                 }
             }
         }
@@ -839,6 +845,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             dev->track_format = pdb->file_type;
                             dev->track_samplerate = pdb->sample_rate;
                             dev->track_depth = pdb->sample_depth;
+                            if (pdb->anlz_path[0])
+                                strncpy(dev->track_anlz_path, pdb->anlz_path, sizeof(dev->track_anlz_path) - 1);
                             found = 1;
                             dev->track_db_src = DB_SRC_PDB;
                         }

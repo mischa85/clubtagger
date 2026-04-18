@@ -11,6 +11,8 @@
 
 #include <pcap.h>
 #include <stdatomic.h>
+#include <stdlib.h>
+#include <string.h>
 
 void *capture_pcap(void *arg) {
     App *app = (App *)arg;
@@ -41,33 +43,37 @@ void *capture_pcap(void *arg) {
     }
     g_pcap_handle = handle; /* allow signal handler to call breakloop */
 
-    logmsg("cap", "started: rate=%u ch=%u (SLink source, 24-bit)", cfg->rate, cfg->channels);
+    logmsg("cap", "started: rate=%u ch=%u (SLink source, 24-bit, %d channels configured)",
+           cfg->rate, cfg->channels, cfg->slink_channel_count);
 
     const size_t fb = cfg->channels * cfg->bytes_per_sample;
     uint8_t *buf = app->cap_buf;
+    const int nch = cfg->slink_channel_count;
+
+    /* Noise floor for channel activity detection (24-bit sample absolute value) */
+    const int32_t noise_floor = 400;
 
     struct pcap_pkthdr hdr;
     const u_char *pkt;
     uint32_t buf_idx = 0;
-    int last_seq = -1; /* Sequence counter tracking */
+    int last_seq = -1;
+    int prev_active = -1;
 
     while (g_running) {
         pkt = pcap_next(handle, &hdr);
         if (!pkt) {
-            /* Check if broken by signal or just timeout */
             if (!g_running) break;
             continue;
         }
 
         if (slink_is_valid(pkt, hdr.caplen)) {
             const slink_packet_t *slink = (const slink_packet_t *)pkt;
-            
-            /* Check sequence counter (cycles 0x00-0x1F) */
+
+            /* Sequence counter check */
             int seq = slink_get_seq(slink);
             if (last_seq >= 0) {
                 int expected = (last_seq + 1) & SLINK_SEQ_MASK;
                 if (seq != expected) {
-                    /* Calculate how many packets were lost */
                     int lost = (seq - expected) & SLINK_SEQ_MASK;
                     atomic_fetch_add_explicit(&app->audio_lost, lost, memory_order_relaxed);
                     logmsg("cap", "sequence discontinuity: expected %02X got %02X (%d lost)",
@@ -76,8 +82,49 @@ void *capture_pcap(void *arg) {
             }
             last_seq = seq;
 
-            /* Convert 24-bit big-endian to little-endian */
-            slink_to_le24_stereo(slink, &buf[buf_idx * fb]);
+            /* Monitor all configured channels, pick the one with audio */
+            int active = -1;
+            int32_t best_peak = 0;
+
+            if (nch == 1) {
+                /* Single channel — no scanning needed */
+                active = 0;
+            } else {
+                for (int i = 0; i < nch; i++) {
+                    int li = cfg->slink_channels[i].left;
+                    int ri = cfg->slink_channels[i].right;
+                    if (!slink_has_channel(hdr.caplen, li) || !slink_has_channel(hdr.caplen, ri))
+                        continue;
+                    uint8_t tmp[6];
+                    slink_to_le24_lr(pkt, li, ri, tmp);
+                    int32_t peak = abs(le24_to_int(tmp)) + abs(le24_to_int(tmp + 3));
+                    if (peak > best_peak && peak > noise_floor) {
+                        best_peak = peak;
+                        active = i;
+                    }
+                }
+            }
+
+            if (active >= 0) {
+                slink_to_le24_lr(pkt, cfg->slink_channels[active].left,
+                                 cfg->slink_channels[active].right, &buf[buf_idx * fb]);
+            } else {
+                /* Silence on all channels — write zeros */
+                memset(&buf[buf_idx * fb], 0, fb);
+            }
+
+            /* Track active channel changes */
+            if (active != prev_active) {
+                if (active >= 0)
+                    logmsg("cap", "active channel: %s (L=%d R=%d)",
+                           cfg->slink_channels[active].name,
+                           cfg->slink_channels[active].left,
+                           cfg->slink_channels[active].right);
+                else if (prev_active >= 0)
+                    logmsg("cap", "all channels silent");
+                atomic_store_explicit(&app->slink_active_ch, active, memory_order_relaxed);
+                prev_active = active;
+            }
 
             buf_idx++;
             atomic_fetch_add_explicit(&app->audio_frames, 1, memory_order_relaxed);

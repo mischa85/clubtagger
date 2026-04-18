@@ -43,16 +43,24 @@ void ensure_dir(const char *path) {
 }
 
 void build_audio_filename(char *out, size_t out_sz, const char *outdir,
-                          const char *prefix, const char *ext, time_t ts) {
+                          const char *prefix, const char *channel,
+                          const char *ext, time_t ts) {
     struct tm tm;
     localtime_r(&ts, &tm);
+    /* Build effective prefix: "{prefix}_{channel}" or just "{prefix}" */
+    char eff[128];
+    if (channel && channel[0]) {
+        snprintf(eff, sizeof(eff), "%s_%s", prefix, channel);
+    } else {
+        snprintf(eff, sizeof(eff), "%s", prefix);
+    }
     if (outdir && outdir[0]) {
         snprintf(out, out_sz, "%s/%s_%04d%02d%02d_%02d%02d%02d.%s",
-                 outdir, prefix, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                 outdir, eff, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                  tm.tm_hour, tm.tm_min, tm.tm_sec, ext);
     } else {
         snprintf(out, out_sz, "%s_%04d%02d%02d_%02d%02d%02d.%s",
-                 prefix, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+                 eff, tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                  tm.tm_hour, tm.tm_min, tm.tm_sec, ext);
     }
 }
@@ -67,7 +75,7 @@ int audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *pr
     ensure_dir(outdir);
 
     char final_name[512], tmp_name[520];
-    build_audio_filename(final_name, sizeof(final_name), outdir, prefix, "wav", ab->start_time);
+    build_audio_filename(final_name, sizeof(final_name), outdir, prefix, NULL, "wav", ab->start_time);
     snprintf(tmp_name, sizeof(tmp_name), "%s.tmp", final_name);
 
     FILE *fp = fopen(tmp_name, "wb");
@@ -126,7 +134,7 @@ int audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *p
     ensure_dir(outdir);
 
     char final_name[512], tmp_name[520];
-    build_audio_filename(final_name, sizeof(final_name), outdir, prefix, "flac", ab->start_time);
+    build_audio_filename(final_name, sizeof(final_name), outdir, prefix, NULL, "flac", ab->start_time);
     snprintf(tmp_name, sizeof(tmp_name), "%s.tmp", final_name);
 
     FLAC__StreamEncoder *encoder = FLAC__stream_encoder_new();
