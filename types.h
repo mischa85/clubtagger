@@ -85,6 +85,7 @@ typedef struct {
     char name[32];       /* Logical name (e.g., "main", "booth") */
     int  left;           /* SLink sample index for L */
     int  right;          /* SLink sample index for R */
+    int  shazam;         /* Enable Shazam on this channel (default: 1) */
 } slink_channel_t;
 
 /* ─────────────────────────────────────────────────────────────────────────────

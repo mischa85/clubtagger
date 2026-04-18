@@ -731,6 +731,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_anlz_path[0] = '\0';
             if (dev->waveform_data) { free(dev->waveform_data); dev->waveform_data = NULL; }
             dev->waveform_len = 0;
+            ws_broadcast_waveform(dev->device_num, NULL, 0); /* Clear UI waveform */
             dev->track_db_src = DB_SRC_NONE;
             dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
             dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
@@ -850,7 +851,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             found = 1;
                             dev->track_db_src = DB_SRC_PDB;
                         }
-                    } /* end if (!found) - OneLibrary/DBServer/PDB chain */
+                    }
+
                 }
             }
             

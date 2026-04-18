@@ -120,7 +120,7 @@ static void ws_broadcast_text(const char *data, size_t len) {
 /* ── Waveform broadcast (called from prolink thread) ────────────────────── */
 
 void ws_broadcast_waveform(uint8_t device_num, const uint8_t *data, size_t len) {
-    if (len == 0 || len > 300000) return; /* ANLZ files are typically 50-200KB */
+    if (len > 300000) return; /* ANLZ files are typically 50-200KB */
 
     /* Header: [0xFF][device_num][len2][len1][len0] — 5 bytes, 24-bit length */
     uint8_t hdr[5] = {
@@ -130,11 +130,11 @@ void ws_broadcast_waveform(uint8_t device_num, const uint8_t *data, size_t len) 
         (uint8_t)(len & 0xFF)
     };
 
-    /* Build frame: header + payload. Use heap for large files. */
+    /* Build frame: header + payload (len==0 clears waveform in UI) */
     uint8_t *frame = malloc(5 + len);
     if (!frame) return;
     memcpy(frame, hdr, 5);
-    memcpy(frame + 5, data, len);
+    if (len > 0 && data) memcpy(frame + 5, data, len);
 
     pthread_mutex_lock(&ws_send_mu);
     for (int i = 0; i < WS_MAX_CLIENTS; i++) {

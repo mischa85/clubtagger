@@ -800,7 +800,13 @@
         if (portId === 0xFF && data.byteLength >= 5) {
             const devNum = header.getUint8(1);
             const anlzLen = (header.getUint8(2) << 16) | (header.getUint8(3) << 8) | header.getUint8(4);
-            if (5 + anlzLen <= data.byteLength) {
+            if (anlzLen === 0) {
+                /* Clear waveform (track changed to one without ANLZ) */
+                if (rawDecks[devNum]) {
+                    delete rawDecks[devNum].waveform;
+                    delete rawDecks[devNum].track_length_ms;
+                }
+            } else if (5 + anlzLen <= data.byteLength) {
                 const anlzBuf = data.slice(5, 5 + anlzLen);
                 const wf = parseANLZ(anlzBuf);
                 if (wf && !rawDecks[devNum]) rawDecks[devNum] = {};
