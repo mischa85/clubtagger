@@ -120,7 +120,7 @@ static void ws_broadcast_text(const char *data, size_t len) {
 /* ── Waveform broadcast (called from prolink thread) ────────────────────── */
 
 void ws_broadcast_waveform(uint8_t device_num, const uint8_t *data, size_t len) {
-    if (len > 300000) return; /* ANLZ files are typically 50-200KB */
+    if (len > ANLZ_MAX_SIZE) return;
 
     /* Header: [0xFF][device_num][len2][len1][len0] — 5 bytes, 24-bit length */
     uint8_t hdr[5] = {
