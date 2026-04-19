@@ -109,7 +109,7 @@ static void ws_broadcast_text(const char *data, size_t len) {
         int fd = atomic_load(&ws_fds[i]);
         if (fd < 0) continue;
         ssize_t s = ws_send_frame(fd, 0x01, data, len);
-        if (s < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
+        if (s < 0) {
             close(fd);
             atomic_store(&ws_fds[i], -1);
         }
@@ -337,12 +337,15 @@ void *ws_main(void *arg) {
                 int one = 1;
                 setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-                /* Handshake on blocking socket — must receive full HTTP upgrade
-                 * request before responding.  Set non-blocking only afterwards. */
+                /* Socket stays blocking — send() must complete entire frames.
+                 * Non-blocking send() can partial-write large frames (waveforms),
+                 * corrupting the WebSocket stream.  recv uses MSG_DONTWAIT. */
+                struct timeval snd_tv = { .tv_sec = 2, .tv_usec = 0 };
+                setsockopt(cfd, SOL_SOCKET, SO_SNDTIMEO, &snd_tv, sizeof(snd_tv));
+
                 if (do_handshake(cfd) != 0) {
                     close(cfd);
                 } else {
-                    fcntl(cfd, F_SETFL, O_NONBLOCK);
                     int added = 0;
                     for (int i = 0; i < WS_MAX_CLIENTS; i++) {
                         if (atomic_load(&ws_fds[i]) < 0) {
