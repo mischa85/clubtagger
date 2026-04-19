@@ -171,10 +171,26 @@ void ws_broadcast_packet(uint8_t port_id, uint32_t src_ip,
 /* ── Handshake ──────────────────────────────────────────────────────────── */
 
 static int do_handshake(int fd) {
+    /* Set a 2s recv timeout for the handshake */
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
     char buf[4096];
-    ssize_t n = recv(fd, buf, sizeof(buf)-1, 0);
-    if (n <= 0) return -1;
-    buf[n] = '\0';
+    size_t total = 0;
+    /* Read until we see \r\n\r\n (end of HTTP headers) or buffer full */
+    while (total < sizeof(buf) - 1) {
+        ssize_t n = recv(fd, buf + total, sizeof(buf) - 1 - total, 0);
+        if (n <= 0) break;
+        total += n;
+        buf[total] = '\0';
+        if (strstr(buf, "\r\n\r\n")) break;
+    }
+
+    /* Clear the recv timeout */
+    tv.tv_sec = 0; tv.tv_usec = 0;
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (total == 0) return -1;
 
     char *kp = strcasestr(buf, "sec-websocket-key:");
     if (!kp) return -1;
@@ -243,11 +259,16 @@ static int ws_handle_client_frame(int fd) {
         for (size_t i = 0; i < payload_len; i++) payload[i] ^= mask[i % 4];
 
     if (opcode == 0x08) { /* Close */
+        pthread_mutex_lock(&ws_send_mu);
         ws_send_frame(fd, 0x08, payload, payload_len > 2 ? 2 : payload_len);
+        pthread_mutex_unlock(&ws_send_mu);
         return -1;
     }
-    if (opcode == 0x09) /* Ping → Pong */
+    if (opcode == 0x09) { /* Ping → Pong */
+        pthread_mutex_lock(&ws_send_mu);
         ws_send_frame(fd, 0x0A, payload, payload_len);
+        pthread_mutex_unlock(&ws_send_mu);
+    }
     return 0;
 }
 
@@ -315,11 +336,13 @@ void *ws_main(void *arg) {
             if (cfd >= 0) {
                 int one = 1;
                 setsockopt(cfd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
-                fcntl(cfd, F_SETFL, O_NONBLOCK);
 
+                /* Handshake on blocking socket — must receive full HTTP upgrade
+                 * request before responding.  Set non-blocking only afterwards. */
                 if (do_handshake(cfd) != 0) {
                     close(cfd);
                 } else {
+                    fcntl(cfd, F_SETFL, O_NONBLOCK);
                     int added = 0;
                     for (int i = 0; i < WS_MAX_CLIENTS; i++) {
                         if (atomic_load(&ws_fds[i]) < 0) {
