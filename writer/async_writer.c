@@ -1,5 +1,9 @@
 /*
  * async_writer.c - Ring buffer with async disk writes
+ *
+ * Writer thread encodes directly from the ring buffer — no intermediate
+ * memcpy.  The ring data is safe for (ring_sec - max_file_sec) seconds
+ * after a SPLIT, which gives ~60s of headroom vs ~10-15s encoding time.
  */
 #include "async_writer.h"
 #include "../audio/audio_buffer.h"
@@ -9,24 +13,13 @@
 #include <string.h>
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * Internal helper
+ * Internal helper — encode directly from ring
  * ───────────────────────────────────────────────────────────────────────────── */
 
-/* Returns actual bytes written to disk, or 0 on failure */
-static int64_t asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nframes,
-                                size_t from, size_t to, time_t start_time,
-                                const char *channel) {
-    AudioBuffer ab = {
-        .data = (uint8_t *)data,
-        .frames = nframes,
-        .capacity_frames = nframes,
-        .frame_bytes = aw->frame_bytes,
-        .channels = aw->channels,
-        .rate = aw->rate,
-        .bytes_per_sample = aw->bytes_per_sample,
-        .start_time = start_time,
-        .flac_buf = aw->flac_buf,
-        .flac_buf_samples = aw->flac_buf_samples};
+static int64_t asyncwr_do_write(AsyncWriter *aw, size_t from, size_t to,
+                                time_t start_time, const char *channel) {
+    size_t nframes = to - from;
+    size_t ring_start = from % aw->capacity;
 
     /* Build effective prefix with channel name */
     char eff_prefix[128];
@@ -35,7 +28,13 @@ static int64_t asyncwr_do_write(AsyncWriter *aw, const uint8_t *data, size_t nfr
     } else {
         snprintf(eff_prefix, sizeof(eff_prefix), "%s", aw->prefix);
     }
-    int64_t file_size = audiobuf_write(&ab, aw->outdir, eff_prefix, aw->format);
+
+    int64_t file_size = audiobuf_write_ring(
+        aw->data, aw->capacity, ring_start, nframes,
+        aw->channels, aw->rate, aw->bytes_per_sample,
+        aw->flac_buf, aw->flac_buf_samples,
+        aw->outdir, eff_prefix, aw->format, start_time);
+
     logmsg("wrt", "wrote frames %zu-%zu (%zu frames, %.1f sec)",
            from, to, nframes, (double)nframes / aw->rate);
     return file_size > 0 ? file_size : 0;
@@ -51,8 +50,6 @@ static void *asyncwr_thread_main(void *arg) {
         }
         if (aw->shutdown && !aw->write_pending) break;
 
-        uint8_t *data = aw->write_buf;
-        size_t nframes = aw->write_frames;
         size_t from = aw->write_from;
         size_t to = aw->write_to;
         time_t start_time = aw->write_start_time;
@@ -60,9 +57,18 @@ static void *asyncwr_thread_main(void *arg) {
         memcpy(channel, aw->write_channel, sizeof(channel));
         pthread_mutex_unlock(&aw->mu);
 
+        size_t nframes = to - from;
         if (nframes > 0) {
-            int64_t written = asyncwr_do_write(aw, data, nframes, from, to, start_time, channel);
-            atomic_fetch_add_explicit(&aw->bytes_on_disk, (uint64_t)written, memory_order_relaxed);
+            /* Verify data is still in ring before encoding */
+            size_t tw = atomic_load_explicit(&aw->total_written, memory_order_acquire);
+            size_t oldest = (tw > aw->capacity) ? (tw - aw->capacity) : 0;
+            if (from >= oldest) {
+                int64_t written = asyncwr_do_write(aw, from, to, start_time, channel);
+                atomic_fetch_add_explicit(&aw->bytes_on_disk, (uint64_t)written, memory_order_relaxed);
+            } else {
+                logmsg("wrt", "ERROR: ring overwritten before encode (from=%zu oldest=%zu, lost %.1f sec)",
+                       from, oldest, (double)(oldest - from) / aw->rate);
+            }
         }
 
         pthread_mutex_lock(&aw->mu);
@@ -81,6 +87,7 @@ static void *asyncwr_thread_main(void *arg) {
 
 int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
                  int bytes_per_sample, size_t capacity_frames,
+                 size_t max_write_frames,
                  const char *outdir, const char *prefix, const char *format) {
     memset(aw, 0, sizeof(*aw));
 
@@ -89,25 +96,18 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     aw->rate = rate;
     aw->bytes_per_sample = bytes_per_sample;
     aw->capacity = capacity_frames;
+    aw->max_write_frames = max_write_frames;
     atomic_init(&aw->total_written, 0);
     atomic_init(&aw->bytes_on_disk, 0);
 
     aw->data = (uint8_t *)malloc(capacity_frames * aw->frame_bytes);
     if (!aw->data) return -1;
 
-    /* Write buffer sized for max_file_sec worth of data */
-    aw->write_buf = (uint8_t *)malloc(capacity_frames * aw->frame_bytes);
-    aw->write_capacity = capacity_frames;
-    if (!aw->write_buf) {
-        free(aw->data);
-        return -1;
-    }
-
-    /* Pre-allocate FLAC conversion buffer (capacity_frames * channels samples) */
-    aw->flac_buf_samples = capacity_frames * channels;
+    /* FLAC conversion buffer sized to max_write_frames (not ring capacity).
+     * With 6 channels this saves gigabytes vs the old ring-sized allocation. */
+    aw->flac_buf_samples = max_write_frames * channels;
     aw->flac_buf = (int32_t *)malloc(aw->flac_buf_samples * sizeof(int32_t));
     if (!aw->flac_buf) {
-        free(aw->write_buf);
         free(aw->data);
         return -1;
     }
@@ -123,7 +123,6 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
 
     if (pthread_create(&aw->thread, NULL, asyncwr_thread_main, aw) != 0) {
         free(aw->data);
-        free(aw->write_buf);
         free(aw->flac_buf);
         pthread_mutex_destroy(&aw->mu);
         pthread_cond_destroy(&aw->cv);
@@ -131,8 +130,9 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     }
     aw->initialized = 1;
 
-    logmsg("ring", "initialized: %.1f sec capacity (%zu frames)",
-           (double)capacity_frames / rate, capacity_frames);
+    logmsg("ring", "initialized: %.1f sec capacity (%zu frames), max write %.1f sec (%zu frames)",
+           (double)capacity_frames / rate, capacity_frames,
+           (double)max_write_frames / rate, max_write_frames);
     return 0;
 }
 
@@ -147,7 +147,6 @@ void asyncwr_free(AsyncWriter *aw) {
     pthread_join(aw->thread, NULL);
 
     free(aw->data);
-    free(aw->write_buf);
     free(aw->flac_buf);
     pthread_mutex_destroy(&aw->mu);
     pthread_cond_destroy(&aw->cv);
@@ -214,7 +213,6 @@ void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_t
                          const char *channel) {
     /* Read total_written atomically first */
     size_t tw = atomic_load_explicit(&aw->total_written, memory_order_acquire);
-    size_t head = tw % aw->capacity;
 
     pthread_mutex_lock(&aw->mu);
 
@@ -241,35 +239,7 @@ void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_t
         return;
     }
 
-    size_t nframes = to - from;
-    const size_t fb = aw->frame_bytes;
-
-    /* Resize write buffer if needed */
-    if (nframes > aw->write_capacity) {
-        uint8_t *new_buf = (uint8_t *)realloc(aw->write_buf, nframes * fb);
-        if (new_buf) {
-            aw->write_buf = new_buf;
-            aw->write_capacity = nframes;
-        } else {
-            logmsg("wrt", "ERROR: can't allocate %zu bytes for write buffer", nframes * fb);
-            pthread_mutex_unlock(&aw->mu);
-            return;
-        }
-    }
-
-    /* Copy from ring to write buffer - safe because capture thread only writes ahead */
-    size_t offset_from_head = tw - from;
-    size_t start = (head + aw->capacity - offset_from_head) % aw->capacity;
-
-    if (start + nframes <= aw->capacity) {
-        memcpy(aw->write_buf, aw->data + start * fb, nframes * fb);
-    } else {
-        size_t first_part = aw->capacity - start;
-        memcpy(aw->write_buf, aw->data + start * fb, first_part * fb);
-        memcpy(aw->write_buf + first_part * fb, aw->data, (nframes - first_part) * fb);
-    }
-
-    aw->write_frames = nframes;
+    /* Store range for writer thread — no data copy */
     aw->write_from = from;
     aw->write_to = to;
     aw->write_start_time = start_time;

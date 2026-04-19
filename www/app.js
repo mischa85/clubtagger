@@ -351,7 +351,8 @@
                     <div class="cdj-beat-strip">
                         ${d.isrc ? '<span class="cdj-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}
                         ${beatDots}
-                        <span class="cdj-source">${escapeHtml(slotName)}${d.db_src ? ' · ' + escapeHtml(d.db_src) : ''}</span>
+                        <span class="cdj-source">${escapeHtml(slotName)}</span>
+                        ${d.db_src ? '<span class="db-src-badge db-src-' + d.db_src.toLowerCase().replace(' ', '') + '">' + escapeHtml(d.db_src) + '</span>' : ''}
                     </div>
                     ${hasWf
                         ? `<div class="cdj-detail-wrap">

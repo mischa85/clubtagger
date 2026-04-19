@@ -48,7 +48,7 @@ typedef enum {
 #define W_CDJ_ON_AIR        100
 #define W_CDJ_ON_AIR_EDGE   100   /* Fader up — important but needs duration to confirm */
 #define W_SHAZAM_MATCH      100   /* Single hit is just a hint (may be false positive) */
-#define W_SHAZAM_CONFIRM    200   /* Consistency is the real signal */
+#define W_SHAZAM_CONFIRM    250   /* Consistency is the real signal — needs to reach threshold for audio-only */
 #define W_ISRC_MATCH        300   /* CDJ + Shazam ISRC agree — very strong */
 #define W_FUZZY_MATCH       200   /* CDJ + Shazam title/artist match */
 #define W_SHAZAM_DISAGREE   -75   /* Mild penalty — Shazam often hears the other deck during transitions */
@@ -59,7 +59,7 @@ typedef enum {
 #define DURATION_MAX_TICKS   15   /* Cap total duration ticks */
 
 #define CONF_MAX_SCORE     1000
-#define CONF_DEFAULT_ACCEPT 550
+#define CONF_DEFAULT_ACCEPT 450
 #define CONF_DEFAULT_DECAY    1   /* Score units lost per second of no signals */
 #define CONF_DEFAULT_COOLDOWN 120 /* Seconds after accept before re-accept */
 

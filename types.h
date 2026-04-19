@@ -151,7 +151,7 @@ typedef struct {
  * AsyncWriter - fixed-size ring buffer with async disk writes
  * 
  * Capture thread continuously writes samples (overwrites oldest when full).
- * Writer thread copies ranges from ring and writes to disk asynchronously.
+ * Writer thread encodes directly from the ring buffer (no intermediate copy).
  * ───────────────────────────────────────────────────────────────────────────── */
 typedef struct {
     /* Ring buffer (fixed size, lock-free for capture thread) */
@@ -162,20 +162,18 @@ typedef struct {
     unsigned        channels;
     unsigned        rate;
     int             bytes_per_sample;
-    
-    /* Async write state */
-    uint8_t        *write_buf;      /* snapshot buffer for async writes */
-    size_t          write_capacity;
-    size_t          write_frames;
+
+    /* Async write state (writer thread reads directly from ring) */
     size_t          write_from;
     size_t          write_to;
     time_t          write_start_time;
     char            write_channel[32]; /* SLink channel name for filename */
     int             write_pending;
-    
-    /* Pre-allocated FLAC conversion buffer */
+
+    /* Pre-allocated FLAC conversion buffer (sized to max_write_frames) */
     int32_t        *flac_buf;
     size_t          flac_buf_samples;
+    size_t          max_write_frames; /* max frames per write (= max_file_sec * rate) */
     
     /* Config */
     const char     *outdir;
