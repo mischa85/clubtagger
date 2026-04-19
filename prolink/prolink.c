@@ -756,7 +756,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             uint8_t  wf_slot;
             resolve_source_device(dev, &wf_ip, &wf_slot);
 
-            uint8_t *tmp = malloc(300000);
+            #define ANLZ_BUF_SIZE 1048576  /* 1 MB — ANLZ files can exceed 300KB for long tracks */
+            uint8_t *tmp = malloc(ANLZ_BUF_SIZE);
             if (tmp) {
                 size_t anlz_read = 0;
                 char ext_path[256];
@@ -770,7 +771,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
 
                     if (nfs_fetch_path(wf_ip, wf_slot, ext_path, tmp,
-                                       300000, &anlz_read) == 0 && anlz_read > 0) {
+                                       ANLZ_BUF_SIZE, &anlz_read) == 0 && anlz_read > 0) {
                         logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
                         dev->waveform_data = realloc(tmp, anlz_read);
                         if (!dev->waveform_data) dev->waveform_data = tmp;
