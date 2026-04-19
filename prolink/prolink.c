@@ -522,8 +522,13 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         dev->usb_db_fetched = 1;  /* OneLibrary is superset */
                         dev->usb_fetch_interval = 10;
                         usb_fetched = 1;
-                        if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0')
-                            dev->lookup_failed_id = 0;
+                        /* Re-trigger lookup for ALL decks playing from this device's USB */
+                        for (int r = 0; r < MAX_DEVICES; r++) {
+                            cdj_device_t *rd = &devices[r];
+                            if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_USB &&
+                                (rd->device_num == device_num || rd->track_source_player == device_num))
+                                rd->lookup_failed_id = 0;
+                        }
                     } else {
                         /* OneLibrary failed — mark done, fall through to PDB next cycle */
                         dev->usb_olib_fetched = 1;
@@ -540,8 +545,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             dev->usb_db_fetched = 1;
                             dev->usb_fetch_interval = 10;
                             usb_fetched = 1;
-                            if (dev->track_slot == SLOT_USB && dev->track_title[0] == '\0')
-                                dev->lookup_failed_id = 0;
+                            for (int r = 0; r < MAX_DEVICES; r++) {
+                                cdj_device_t *rd = &devices[r];
+                                if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_USB &&
+                                    (rd->device_num == device_num || rd->track_source_player == device_num))
+                                    rd->lookup_failed_id = 0;
+                            }
                         }
                     }
                 }
@@ -568,8 +577,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         dev->sd_db_fetched = 1;
                         dev->sd_fetch_interval = 10;
                         sd_fetched = 1;
-                        if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0')
-                            dev->lookup_failed_id = 0;
+                        for (int r = 0; r < MAX_DEVICES; r++) {
+                            cdj_device_t *rd = &devices[r];
+                            if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_SD &&
+                                (rd->device_num == device_num || rd->track_source_player == device_num))
+                                rd->lookup_failed_id = 0;
+                        }
                     } else {
                         dev->sd_olib_fetched = 1;
                     }
@@ -584,8 +597,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             dev->sd_db_fetched = 1;
                             dev->sd_fetch_interval = 10;
                             sd_fetched = 1;
-                            if (dev->track_slot == SLOT_SD && dev->track_title[0] == '\0')
-                                dev->lookup_failed_id = 0;
+                            for (int r = 0; r < MAX_DEVICES; r++) {
+                                cdj_device_t *rd = &devices[r];
+                                if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_SD &&
+                                    (rd->device_num == device_num || rd->track_source_player == device_num))
+                                    rd->lookup_failed_id = 0;
+                            }
                         }
                     }
                 }
@@ -817,13 +834,20 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     }
 
                     /* Try DBServer — but only after database fetch has been
-                     * attempted for this slot (avoids pointless startup failures) */
+                     * attempted for this slot (avoids pointless startup failures).
+                     * For Link tracks, check the SOURCE device's fetch flags. */
                     if (!found) {
+                        cdj_device_t *fetch_dev = dev;
+                        if (dev->track_source_player > 0 &&
+                            dev->track_source_player != dev->device_num) {
+                            cdj_device_t *sd = get_device(dev->track_source_player);
+                            if (sd) fetch_dev = sd;
+                        }
                         int fetch_done = 1;
                         if (src_slot == SLOT_USB)
-                            fetch_done = dev->usb_olib_fetched || dev->usb_db_fetched;
+                            fetch_done = fetch_dev->usb_olib_fetched || fetch_dev->usb_db_fetched;
                         else if (src_slot == SLOT_SD)
-                            fetch_done = dev->sd_olib_fetched || dev->sd_db_fetched;
+                            fetch_done = fetch_dev->sd_olib_fetched || fetch_dev->sd_db_fetched;
 
                         if (fetch_done) {
                             retry_later = try_resolve_track_name(dev);
