@@ -323,7 +323,8 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     nfs_lookup_reply_t *reply = (nfs_lookup_reply_t *)(response + sizeof(rpc_reply_header_t));
     uint32_t lookup_stat = RPC_GET_U32((uint8_t *)&reply->status);
     if (lookup_stat != NFS_OK) {
-        if (verbose) vlogmsg("cdj", "[NFS] LOOKUP '%s' failed: nfs_stat=%u", name, lookup_stat);
+        logmsg("nfs", "LOOKUP '%s' failed: nfs_stat=%u%s", name, lookup_stat,
+               lookup_stat == NFSERR_STALE ? " (STALE)" : "");
         return -1;
     }
     
@@ -394,7 +395,8 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         uint32_t nfs_stat = RPC_GET_U32((uint8_t *)&nfs_reply->status);
         
         if (nfs_stat != NFS_OK) {
-            if (verbose) vlogmsg("cdj", "[NFS] Read failed: nfs_stat=%u (NFSERR)", nfs_stat);
+            logmsg("nfs", "Read error: nfs_stat=%u%s", nfs_stat,
+                   nfs_stat == NFSERR_STALE ? " (STALE — filehandle expired)" : "");
             free(response);
             return -1;
         }
@@ -464,6 +466,7 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
 
     if (nfs_mount_to_port(server_ip, (uint16_t)mount_port,
                           export_path, root_fh, &fh_len) != 0) {
+        g_nfs_port = 0;
         return -1;
     }
 
@@ -481,6 +484,7 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
         char *next = strtok_r(NULL, "/", &saveptr);
         if (nfs_lookup(server_ip, g_nfs_port, dir_fh, component, file_fh) != 0) {
             logmsg("nfs", "fetch_path: lookup failed at '%s' in %s", component, path);
+            g_nfs_port = 0;
             return -1;
         }
         if (next) memcpy(dir_fh, file_fh, NFS_FHSIZE);
@@ -490,6 +494,7 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
     /* Read the file */
     int rc = nfs_read_file(server_ip, g_nfs_port, file_fh, buf, buf_len, bytes_read);
     nfs_close_socket();
+    if (rc != 0) g_nfs_port = 0;  /* Force port rediscovery on next call */
     return rc;
 }
 

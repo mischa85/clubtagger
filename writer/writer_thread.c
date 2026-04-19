@@ -142,16 +142,18 @@ void *writer_main(void *arg) {
                 size_t current_pos = asyncwr_position(&cs->aw);
                 size_t frames_since_cursor = current_pos - ws->write_cursor;
 
-                /* Check if we need to split (max file size) */
+                /* Check if we need to split (max file size).
+                 * Write exactly max_file_frames to stay within flac_buf bounds. */
                 if (max_file_frames > 0 && frames_since_cursor >= max_file_frames) {
+                    size_t split_end = ws->write_cursor + max_file_frames;
                     logmsg("wrt", "[%s] SPLIT: writing frames %zu-%zu (%.1f min)",
-                           ch_name, ws->write_cursor, current_pos,
-                           (double)frames_since_cursor / cfg->rate / 60.0);
+                           ch_name, ws->write_cursor, split_end,
+                           (double)max_file_frames / cfg->rate / 60.0);
 
-                    asyncwr_write_range(&cs->aw, ws->write_cursor, current_pos,
+                    asyncwr_write_range(&cs->aw, ws->write_cursor, split_end,
                                         ws->segment_start_time, ch_name);
 
-                    ws->write_cursor = current_pos;
+                    ws->write_cursor = split_end;
                     ws->segment_start_time = time(NULL);
 
                     const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";

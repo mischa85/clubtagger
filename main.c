@@ -67,13 +67,13 @@ static void usage(const char *argv0) {
             "  --bits 16              Sample bit depth (16 or 24)\n"
             "\n"
             "Recording options (for --record):\n"
-            "  --threshold 50         Avg abs amplitude trigger for recording\n"
+            "  --threshold 25         Avg abs amplitude trigger for recording\n"
             "  --sustain-sec 1.0      Seconds above threshold to start recording\n"
             "  --silence-sec 15       Seconds below threshold to stop recording\n"
             "  --prefix capture       Filename prefix\n"
             "  --outdir ./            Output directory for audio files\n"
             "  --format wav           Output format: 'wav' or 'flac'\n"
-            "  --max-file-sec 600     Max seconds per file (0 = no limit)\n"
+            "  --max-file-sec 120     Max seconds per file (0 = no limit)\n"
             "  --ring-sec N           Ring buffer size (default = max-file-sec + 60)\n"
             "\n"
 #ifdef HAVE_VIBRA
@@ -298,13 +298,13 @@ int main(int argc, char **argv) {
         .timezone = NULL,
         .shazam_gap_sec = 20,
         .same_track_hold_sec = 120,
-        .threshold = 50,
+        .threshold = 25,
         .sustain_sec = 1.0f,
         .silence_sec = 15.0f,
         .prefix = "capture",
         .source = NULL,         /* must be specified unless CDJ-only mode */
         .bytes_per_sample = 2,
-        .max_file_sec = 600,    /* 10 minutes */
+        .max_file_sec = 120,    /* 2 minutes */
         .ring_sec = 0,          /* 0 = auto-size to max_file_sec */
         .outdir = NULL,         /* current directory */
         .format = "wav",        /* default to WAV */
@@ -317,6 +317,14 @@ int main(int argc, char **argv) {
         .enable_cdj_tag = 0,
     };
     if (parse_cli(argc, argv, &cfg) != 0) return 2;
+
+    /* Apply timezone — affects all localtime_r calls (filenames, log timestamps).
+     * Must happen before any threads start. */
+    {
+        const char *tz = cfg.timezone ? cfg.timezone : "Europe/Amsterdam";
+        setenv("TZ", tz, 1);
+        tzset();
+    }
 
     /* Sync globals with config */
     match_threshold = cfg.match_threshold;
@@ -446,6 +454,8 @@ int main(int argc, char **argv) {
     if (nch == 0 && need_audio) nch = 1; /* ALSA: single channel */
     if (need_audio) {
         size_t ring_frames = (size_t)cfg.ring_sec * cfg.rate;
+        size_t max_write_frames = cfg.max_file_sec > 0
+            ? (size_t)cfg.max_file_sec * cfg.rate : ring_frames;
         size_t cap_buf_size = cfg.frames_per_read * cfg.channels * cfg.bytes_per_sample;
         size_t id_fb = cfg.channels * cfg.bytes_per_sample;
         size_t id_buf_frames = (size_t)cfg.fingerprint_sec * cfg.rate;
@@ -455,7 +465,8 @@ int main(int argc, char **argv) {
         for (int c = 0; c < nch; c++) {
             ChannelState *cs = &app.ch[c];
             if (asyncwr_init(&cs->aw, cfg.channels, cfg.rate, cfg.bytes_per_sample,
-                             ring_frames, cfg.outdir, cfg.prefix, cfg.format) != 0) {
+                             ring_frames, max_write_frames,
+                             cfg.outdir, cfg.prefix, cfg.format) != 0) {
                 logmsg("main", "audio buffer alloc failed (ch %d)", c);
                 goto cleanup;
             }

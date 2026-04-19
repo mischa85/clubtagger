@@ -873,6 +873,16 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         /* Fetch and cache waveform data (once per track) */
         if (dev->track_anlz_path[0] && !dev->waveform_data
             && registration_state == REG_ACTIVE) {
+            /* Resolve source device for waveform fetch (same logic as metadata) */
+            uint32_t wf_ip = dev->ip_addr;
+            uint8_t  wf_slot = dev->track_slot;
+            if (dev->track_source_player > 0 &&
+                dev->track_source_player != dev->device_num) {
+                cdj_device_t *src = get_device(dev->track_source_player);
+                if (src && src->ip_addr)
+                    wf_ip = src->ip_addr;
+            }
+
             uint8_t *tmp = malloc(300000);
             if (tmp) {
                 size_t anlz_read = 0;
@@ -886,7 +896,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     char *dot = strrchr(ext_path, '.');
                     if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
 
-                    if (nfs_fetch_path(dev->ip_addr, dev->track_slot, ext_path, tmp,
+                    if (nfs_fetch_path(wf_ip, wf_slot, ext_path, tmp,
                                        300000, &anlz_read) == 0 && anlz_read > 0) {
                         logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
                         dev->waveform_data = realloc(tmp, anlz_read);

@@ -8,9 +8,11 @@
 #include <stdint.h>
 #include <time.h>
 
-/* Initialize the async writer with ring buffer */
+/* Initialize the async writer with ring buffer.
+ * max_write_frames: largest write (= max_file_sec * rate). Sizes the FLAC buffer. */
 int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
                  int bytes_per_sample, size_t capacity_frames,
+                 size_t max_write_frames,
                  const char *outdir, const char *prefix, const char *format);
 
 /* Free resources */
