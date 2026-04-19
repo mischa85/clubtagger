@@ -286,8 +286,9 @@
             const baseBpm = d.bpm > 0 ? (d.bpm / 100) : 0;
             const pitchPct = (d.pitch || 0) / 100;
             const effectiveBpm = baseBpm > 0 ? (baseBpm * (1 + pitchPct / 100)) : 0;
-            const bpmInt = effectiveBpm > 0 ? Math.floor(effectiveBpm) : '--';
-            const bpmDec = effectiveBpm > 0 ? '.' + ((effectiveBpm % 1) * 10).toFixed(0) : '.-';
+            const bpmRound = effectiveBpm > 0 ? effectiveBpm.toFixed(1) : '--.-';
+            const bpmInt = effectiveBpm > 0 ? bpmRound.split('.')[0] : '--';
+            const bpmDec = effectiveBpm > 0 ? '.' + bpmRound.split('.')[1] : '.-';
             const pitch = formatPitchLCD(pitchPct);
 
             const slotName = SLOTS[d.track_slot] || '';

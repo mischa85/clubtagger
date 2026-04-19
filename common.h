@@ -23,6 +23,9 @@
 
 #include "types.h"
 
+/* Maximum ANLZ waveform file size (1 MB — long tracks can exceed 300KB) */
+#define ANLZ_MAX_SIZE 1048576
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * Global state
  * ───────────────────────────────────────────────────────────────────────────── */

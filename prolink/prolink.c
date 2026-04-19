@@ -756,8 +756,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             uint8_t  wf_slot;
             resolve_source_device(dev, &wf_ip, &wf_slot);
 
-            #define ANLZ_BUF_SIZE 1048576  /* 1 MB — ANLZ files can exceed 300KB for long tracks */
-            uint8_t *tmp = malloc(ANLZ_BUF_SIZE);
+            uint8_t *tmp = malloc(ANLZ_MAX_SIZE);
             if (tmp) {
                 size_t anlz_read = 0;
                 char ext_path[256];
@@ -771,7 +770,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
 
                     if (nfs_fetch_path(wf_ip, wf_slot, ext_path, tmp,
-                                       ANLZ_BUF_SIZE, &anlz_read) == 0 && anlz_read > 0) {
+                                       ANLZ_MAX_SIZE, &anlz_read) == 0 && anlz_read > 0) {
                         logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
                         dev->waveform_data = realloc(tmp, anlz_read);
                         if (!dev->waveform_data) dev->waveform_data = tmp;
@@ -889,12 +888,10 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
      * P1+P2 from status packets handle that properly). */
     dev->last_position_ms = playhead;
 
-    /* Update BPM if valid (0xffffffff means unknown) */
+    /* BPM: status packet (0x92) is the authoritative track BPM.
+     * Position packet BPM may differ (interpolated from beat timing)
+     * and overwrites at 30Hz, causing display mismatches. Don't use it. */
     uint32_t raw_bpm = BE32_TO_HOST(pkt->bpm_be);
-    if (raw_bpm != 0xffffffff && raw_bpm > 0) {
-        /* Position packet BPM is *10, our bpm_raw is *100 */
-        dev->bpm_raw = (uint16_t)(raw_bpm * 10);
-    }
 
     /* Pitch: status packet Pitch1 (0x8c) is the authoritative source using
      * the well-documented 0x100000 encoding, parsed in parse_cdj_status.
