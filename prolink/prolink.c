@@ -38,6 +38,199 @@ uint8_t get_prolink_packet_type(const uint8_t *data) {
 
 /*
  * ============================================================================
+ * Shared Helpers (used by both main and zero-data status paths)
+ * ============================================================================
+ */
+
+/* Forward declaration — defined in Track Name Resolution section below */
+void dbserver_reset_retry(void);
+
+/* Dump media-relevant bytes on change or every 5 seconds (verbose debug). */
+static void dump_media_bytes(cdj_device_t *dev, const uint8_t *data,
+                             size_t len, const char *tag)
+{
+    static time_t last_dump[MAX_DEVICES] = {0};
+    static uint8_t prev[MAX_DEVICES][16] = {{0}};
+    int idx = (int)(dev - devices);
+    time_t now = time(NULL);
+
+    uint8_t cur[16] = {0};
+    if (len > 0xb9) {
+        cur[0] = data[0x6a]; cur[1] = data[0x6b];  /* Ua, Sa */
+        cur[2] = data[0x6f]; cur[3] = data[0x73];  /* Ul, Sl */
+        cur[4] = data[0x75];                         /* L */
+        cur[5] = data[0xb7];                         /* Mp */
+        cur[6] = data[0xb8]; cur[7] = data[0xb9];  /* Ue, Se */
+        cur[8] = data[0x37];                         /* tsrc */
+        cur[9] = data[0x29];                         /* Sr */
+        cur[10] = data[0x28];                        /* Dr */
+    }
+    /* Skip Ua/Sa (index 0,1) in comparison — they toggle every packet */
+    int changed = memcmp(cur + 2, prev[idx] + 2, sizeof(cur) - 2) != 0;
+    if (changed || (verbose && now - last_dump[idx] >= 5)) {
+        vlogmsg("cdj", "Dev%d [%s] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
+                "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
+                dev->device_num, tag, cur[0], cur[1], cur[2], cur[3], cur[4],
+                cur[5], cur[6], cur[7], cur[8], cur[10], cur[9],
+                changed ? " *** CHANGED" : "");
+        memcpy(prev[idx], cur, sizeof(cur));
+        last_dump[idx] = now;
+    }
+}
+
+/* Resolve the device that owns the media for a Link track.
+ * Returns source IP and slot. For local tracks, returns dev's own IP/slot. */
+static void resolve_source_device(const cdj_device_t *dev,
+                                  uint32_t *out_ip, uint8_t *out_slot)
+{
+    *out_ip   = dev->ip_addr;
+    *out_slot = dev->track_slot;
+    if (dev->track_source_player > 0 &&
+        dev->track_source_player != dev->device_num) {
+        cdj_device_t *src = get_device(dev->track_source_player);
+        if (src && src->ip_addr)
+            *out_ip = src->ip_addr;
+    }
+}
+
+/* Update media presence for one slot (USB or SD). Handles insert/remove logging,
+ * fetch state reset, and database cleanup. */
+static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot)
+{
+    uint8_t *present   = (slot == SLOT_USB) ? &dev->usb_present : &dev->sd_present;
+    uint8_t *local_raw = (slot == SLOT_USB) ? &dev->usb_local_raw : &dev->sd_local_raw;
+    uint8_t *olib      = (slot == SLOT_USB) ? &dev->usb_olib_fetched : &dev->sd_olib_fetched;
+    uint8_t *db        = (slot == SLOT_USB) ? &dev->usb_db_fetched : &dev->sd_db_fetched;
+    time_t  *attempt   = (slot == SLOT_USB) ? &dev->usb_fetch_attempt : &dev->sd_fetch_attempt;
+    uint16_t *interval = (slot == SLOT_USB) ? &dev->usb_fetch_interval : &dev->sd_fetch_interval;
+    const char *name   = (slot == SLOT_USB) ? "USB" : "SD";
+
+    uint8_t old = *present;
+    *present   = (new_state != MEDIA_STATE_NONE);
+    *local_raw = new_state;
+
+    if (*present && !old) {
+        logmsg("cdj", "💾 Device %d: %s inserted", dev->device_num, name);
+        *olib = 0; *db = 0; *attempt = 0; *interval = 10;
+        dbserver_reset_retry();
+    }
+    if (!*present && old) {
+        logmsg("cdj", "💾 Device %d: %s removed", dev->device_num, name);
+        *olib = 0; *db = 0; *attempt = 0; *interval = 10;
+        remove_pdb_database(dev->ip_addr, slot);
+        remove_onelibrary(dev->ip_addr, slot);
+    }
+}
+
+/* Update media state for both USB and SD slots from a status packet. */
+static void update_media_state(cdj_device_t *dev, const cdj_status_packet_t *pkt)
+{
+    update_slot_media(dev, pkt->usb_state, SLOT_USB);
+    update_slot_media(dev, pkt->sd_state, SLOT_SD);
+}
+
+/* Update play state (P1+P2), on-air, and BPM from a status packet.
+ * Handles transition logging and confidence signals. */
+static void update_play_state(cdj_device_t *dev, const cdj_status_packet_t *pkt,
+                               const uint8_t *data)
+{
+    uint8_t old_playing = dev->playing;
+    uint8_t p2 = data[0x8b];
+    int p1_playing = (pkt->play_state == PLAY_STATE_PLAYING ||
+                     pkt->play_state == PLAY_STATE_LOOPING);
+    dev->playing = p1_playing && !(p2 & 0x04);  /* P2 bit 2 clear = playing */
+
+    if (dev->playing && !old_playing) {
+        dev->play_started = time(NULL);
+        if (dev->track_title[0]) {
+            logmsg("cdj", "▶ DECK %d: Playing - %s - %s",
+                   dev->device_num, dev->track_artist, dev->track_title);
+            confidence_signal((int)(dev - devices), SIG_CDJ_PLAYING, 0,
+                              NULL, NULL, NULL, 0);
+        }
+    } else if (!dev->playing && old_playing) {
+        dev->play_started = 0;
+        if (dev->track_title[0])
+            logmsg("cdj", "⏸ DECK %d: Paused", dev->device_num);
+    }
+
+    uint8_t old_on_air = dev->on_air;
+    dev->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
+    if (dev->on_air != old_on_air) {
+        dev->on_air_available = 1;
+        int didx = (int)(dev - devices);
+        if (dev->on_air) {
+            if (dev->track_title[0])
+                logmsg("cdj", "🔴 DECK %d ON AIR: %s — %s", dev->device_num,
+                       dev->track_artist, dev->track_title);
+            else
+                logmsg("cdj", "🔴 DECK %d ON AIR", dev->device_num);
+            confidence_signal(didx, SIG_CDJ_ON_AIR_EDGE, 0, NULL, NULL, NULL, 0);
+            confidence_signal(didx, SIG_CDJ_ON_AIR, 0, NULL, NULL, NULL, 0);
+        } else {
+            logmsg("cdj", "⚪ DECK %d off air", dev->device_num);
+            confidence_signal(didx, SIG_CDJ_OFF_AIR, 0, NULL, NULL, NULL, 0);
+        }
+    }
+
+    uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
+    if (bpm > 0 && bpm < 50000) dev->bpm_raw = bpm;
+}
+
+/* Fetch OneLibrary or PDB database for one slot. Handles exponential backoff. */
+static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
+{
+    uint8_t *olib     = (slot == SLOT_USB) ? &dev->usb_olib_fetched : &dev->sd_olib_fetched;
+    uint8_t *db       = (slot == SLOT_USB) ? &dev->usb_db_fetched : &dev->sd_db_fetched;
+    uint8_t  raw      = (slot == SLOT_USB) ? dev->usb_local_raw : dev->sd_local_raw;
+    time_t  *attempt  = (slot == SLOT_USB) ? &dev->usb_fetch_attempt : &dev->sd_fetch_attempt;
+    uint16_t *interval = (slot == SLOT_USB) ? &dev->usb_fetch_interval : &dev->sd_fetch_interval;
+    const char *name  = (slot == SLOT_USB) ? "USB" : "SD";
+
+    if (raw != MEDIA_STATE_LOADED || (*olib && *db)) return;
+    if (now - *attempt < *interval) return;
+
+    int fetched = 0;
+    *attempt = now;
+
+    /* OneLibrary first (has ANLZ paths, richer metadata) */
+    if (!*olib && onelibrary_key_available()) {
+        logmsg("cdj", "📥 Device %d: Fetching %s OneLibrary...", dev->device_num, name);
+        if (fetch_onelibrary_database(dev->ip_addr, slot) == 0) {
+            *olib = 1; *db = 1; *interval = 10; fetched = 1;
+            if (dev->track_slot == slot && dev->track_title[0] == '\0')
+                dev->lookup_failed_id = 0;
+        } else {
+            /* OneLibrary failed — mark done, fall through to PDB next cycle */
+            *olib = 1;
+        }
+    }
+    /* PDB only after OneLibrary is done or key unavailable */
+    else if (!*db) {
+        logmsg("cdj", "📥 Device %d: Fetching %s PDB...", dev->device_num, name);
+        pdb_database_t *pdb = create_pdb_database(dev->ip_addr, slot);
+        if (pdb) {
+            if (fetch_rekordbox_database(dev->ip_addr, slot, pdb) == 0) {
+                logmsg("cdj", "✅ Device %d: %s PDB loaded (%d tracks)",
+                       dev->device_num, name, pdb->track_count);
+                *db = 1; *interval = 10; fetched = 1;
+                if (dev->track_slot == slot && dev->track_title[0] == '\0')
+                    dev->lookup_failed_id = 0;
+            }
+        }
+    }
+
+    if (!fetched) {
+        /* Exponential backoff: 10s, 20s, 40s, 80s, 160s, 300s cap */
+        if (*interval < 300)
+            *interval = (*interval * 2 > 300) ? 300 : *interval * 2;
+        logmsg("cdj", "📥 Device %d: %s fetch failed, retry in %ds",
+               dev->device_num, name, *interval);
+    }
+}
+
+/*
+ * ============================================================================
  * Keepalive Packet Parsing (Port 50000)
  * ============================================================================
  */
@@ -164,9 +357,6 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
  * ============================================================================
  */
 
-/* Forward declaration — defined in Track Name Resolution section below */
-void dbserver_reset_retry(void);
-
 void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
     if (len < sizeof(prolink_header_t)) return;
     
@@ -275,8 +465,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
         /* CDJ-3000X sends 1152-byte packets with alternating zero-data variants
          * (rekordbox_id=0, slot=0). Track fields are unreliable in these but
-         * P1 (play_state at 0x7b) and on-air ARE consistent. Update play state,
-         * on-air, and liveness. Skip track/USB fields. */
+         * P1 (play_state at 0x7b) and on-air ARE consistent. */
         uint32_t pkt_rekordbox_id = BE32_TO_HOST(pkt->rekordbox_id_be);
         uint8_t pkt_track_slot = pkt->track_slot;
         if (pkt_rekordbox_id == 0 && pkt_track_slot == 0 && len > 300) {
@@ -284,107 +473,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             if (dev2) {
                 dev2->last_seen = time(NULL);
                 dev2->ip_addr = src_ip;
-
-                /* DEBUG: dump media bytes from zero-data variant too */
-                {
-                    static time_t last_zd_dump[MAX_DEVICES] = {0};
-                    static uint8_t prev_zd[MAX_DEVICES][16] = {{0}};
-                    int zidx = (int)(dev2 - devices);
-                    time_t now_zd = time(NULL);
-                    uint8_t zc[16] = {0};
-                    if (len > 0xb9) {
-                        zc[0] = data[0x6a]; zc[1] = data[0x6b];
-                        zc[2] = data[0x6f]; zc[3] = data[0x73];
-                        zc[4] = data[0x75]; zc[5] = data[0xb7];
-                        zc[6] = data[0xb8]; zc[7] = data[0xb9];
-                        zc[8] = data[0x37]; zc[9] = data[0x29]; zc[10] = data[0x28];
-                    }
-                    /* Skip Ua/Sa (index 0,1) in comparison — they toggle every packet */
-                    int zchanged = memcmp(zc + 2, prev_zd[zidx] + 2, sizeof(zc) - 2) != 0;
-                    if (zchanged || (verbose && now_zd - last_zd_dump[zidx] >= 5)) {
-                        vlogmsg("cdj", "Dev%d [media-zd] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
-                                "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
-                                device_num, zc[0], zc[1], zc[2], zc[3], zc[4],
-                                zc[5], zc[6], zc[7], zc[8], zc[10], zc[9],
-                                zchanged ? " *** CHANGED" : "");
-                        memcpy(prev_zd[zidx], zc, sizeof(zc));
-                        last_zd_dump[zidx] = now_zd;
-                    }
-                }
-
-                /* USB/SD presence — read from usb_state at 0x6f */
-                uint8_t old_usb2 = dev2->usb_present;
-                uint8_t old_sd2 = dev2->sd_present;
-                dev2->usb_present = (pkt->usb_state != MEDIA_STATE_NONE);
-                dev2->sd_present = (pkt->sd_state != MEDIA_STATE_NONE);
-                dev2->usb_local_raw = pkt->usb_state;
-                dev2->sd_local_raw = pkt->sd_state;
-                /* Log on change */
-                if ((dev2->usb_present != old_usb2 || dev2->sd_present != old_sd2)) {
-                    logmsg("cdj", "Dev%d media change: Ul=0x%02x Sl=0x%02x L=0x%02x Mp=0x%02x "
-                           "Dr=%d Sr=0x%02x tsrc=0x%02x",
-                           device_num,
-                           pkt->usb_state, pkt->sd_state, pkt->link_available,
-                           pkt->media_presence,
-                           pkt->source_player, pkt->track_slot, pkt->track_menu);
-                }
-                if (dev2->usb_present && !old_usb2) {
-                    logmsg("cdj", "💾 Device %d: USB inserted", device_num);
-                    dev2->usb_db_fetched = 0;
-                    dev2->usb_olib_fetched = 0;
-                    dev2->usb_fetch_attempt = 0;
-                    dev2->usb_fetch_interval = 10;
-                    dbserver_reset_retry();
-                }
-                if (!dev2->usb_present && old_usb2) {
-                    logmsg("cdj", "💾 Device %d: USB removed", device_num);
-                    dev2->usb_db_fetched = 0;
-                    dev2->usb_olib_fetched = 0;
-                    dev2->usb_fetch_attempt = 0;
-                    dev2->usb_fetch_interval = 10;
-                    remove_pdb_database(dev2->ip_addr, SLOT_USB);
-                    remove_onelibrary(dev2->ip_addr, SLOT_USB);
-                }
-                if (dev2->sd_present && !old_sd2) {
-                    logmsg("cdj", "💾 Device %d: SD inserted", device_num);
-                    dev2->sd_db_fetched = 0;
-                    dev2->sd_olib_fetched = 0;
-                    dev2->sd_fetch_attempt = 0;
-                    dev2->sd_fetch_interval = 10;
-                    dbserver_reset_retry();
-                }
-                if (!dev2->sd_present && old_sd2) {
-                    logmsg("cdj", "💾 Device %d: SD removed", device_num);
-                    dev2->sd_db_fetched = 0;
-                    dev2->sd_olib_fetched = 0;
-                    dev2->sd_fetch_attempt = 0;
-                    dev2->sd_fetch_interval = 10;
-                    remove_pdb_database(dev2->ip_addr, SLOT_SD);
-                    remove_onelibrary(dev2->ip_addr, SLOT_SD);
-                }
-                /* P1 + P2 play state — same logic as main path */
-                uint8_t old_playing = dev2->playing;
-                uint8_t p2 = data[0x8b];
-                int p1_playing = (pkt->play_state == PLAY_STATE_PLAYING ||
-                                 pkt->play_state == PLAY_STATE_LOOPING);
-                dev2->playing = p1_playing && !(p2 & 0x04);
-                if (dev2->playing && !old_playing) {
-                    dev2->play_started = time(NULL);
-                    if (dev2->track_title[0])
-                        logmsg("cdj", "▶ DECK %d: Playing - %s - %s",
-                               device_num, dev2->track_artist, dev2->track_title);
-                } else if (!dev2->playing && old_playing) {
-                    dev2->play_started = 0;
-                    if (dev2->track_title[0])
-                        logmsg("cdj", "⏸ DECK %d: Paused", device_num);
-                }
-                uint8_t old_on_air = dev2->on_air;
-                dev2->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
-                if (dev2->on_air != old_on_air) {
-                    dev2->on_air_available = 1;
-                }
-                uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
-                if (bpm > 2000 && bpm < 25000) dev2->bpm_raw = bpm;
+                dump_media_bytes(dev2, data, len, "media-zd");
+                update_media_state(dev2, pkt);
+                update_play_state(dev2, pkt, data);
                 return;
             }
         }
@@ -413,216 +504,26 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
         
-        /* DEBUG: dump media-relevant bytes on change or every 5 seconds.
-         * This helps us find which fields actually indicate USB insert/remove. */
-        {
-            static time_t last_media_dump[MAX_DEVICES] = {0};
-            static uint8_t prev_bytes[MAX_DEVICES][16] = {{0}};
-            int didx = (int)(dev - devices);
-            time_t now_dbg = time(NULL);
+        dump_media_bytes(dev, data, len, "media");
+        update_media_state(dev, pkt);
 
-            /* Collect key bytes: 0x6a-0x6b (activity), 0x6f (Ul), 0x73 (Sl),
-             * 0x75 (L), 0xb7 (Mp), 0xb8-0xb9 (unsafe eject) */
-            uint8_t cur[16] = {0};
-            if (len > 0xb9) {
-                cur[0] = data[0x6a]; cur[1] = data[0x6b];  /* Ua, Sa */
-                cur[2] = data[0x6f]; cur[3] = data[0x73];  /* Ul, Sl */
-                cur[4] = data[0x75];                         /* L */
-                cur[5] = data[0xb7];                         /* Mp */
-                cur[6] = data[0xb8]; cur[7] = data[0xb9];  /* Ue, Se */
-                cur[8] = data[0x37];                         /* tsrc */
-                cur[9] = data[0x29];                         /* Sr */
-                cur[10] = data[0x28];                        /* Dr */
-            }
-
-            /* Skip Ua/Sa (index 0,1) in comparison — they toggle every packet */
-            int changed = memcmp(cur + 2, prev_bytes[didx] + 2, sizeof(cur) - 2) != 0;
-            if (changed || (verbose && now_dbg - last_media_dump[didx] >= 5)) {
-                vlogmsg("cdj", "Dev%d [media] Ua=%02x Sa=%02x Ul=%02x Sl=%02x L=%02x "
-                        "Mp=%02x Ue=%02x Se=%02x tsrc=%02x Dr=%d Sr=%02x%s",
-                        device_num, cur[0], cur[1], cur[2], cur[3], cur[4],
-                        cur[5], cur[6], cur[7], cur[8], cur[10], cur[9],
-                        changed ? " *** CHANGED" : "");
-                memcpy(prev_bytes[didx], cur, sizeof(cur));
-                last_media_dump[didx] = now_dbg;
-            }
-        }
-
-        /* Detect media insertion and proactively fetch databases */
-        uint8_t old_usb = dev->usb_present;
-        uint8_t old_sd = dev->sd_present;
-        dev->usb_present = (pkt->usb_state != MEDIA_STATE_NONE);
-        dev->sd_present = (pkt->sd_state != MEDIA_STATE_NONE);
-        dev->usb_local_raw = pkt->usb_state;
-        dev->sd_local_raw = pkt->sd_state;
-        
-        /* USB inserted */
-        if (dev->usb_present && !old_usb) {
-            logmsg("cdj", "💾 Device %d: USB inserted", device_num);
-            dev->usb_db_fetched = 0;
-            dev->usb_olib_fetched = 0;
-            dev->usb_fetch_attempt = 0;
-            dev->usb_fetch_interval = 10;
-            dbserver_reset_retry();
-        }
-        /* USB removed */
-        if (!dev->usb_present && old_usb) {
-            logmsg("cdj", "💾 Device %d: USB removed", device_num);
-            dev->usb_db_fetched = 0;
-            dev->usb_olib_fetched = 0;
-            dev->usb_fetch_attempt = 0;
-            dev->usb_fetch_interval = 10;
-            remove_pdb_database(dev->ip_addr, SLOT_USB);
-            remove_onelibrary(dev->ip_addr, SLOT_USB);
-        }
-        /* SD inserted */
-        if (dev->sd_present && !old_sd) {
-            logmsg("cdj", "💾 Device %d: SD inserted", device_num);
-            dev->sd_db_fetched = 0;
-            dev->sd_olib_fetched = 0;
-            dev->sd_fetch_attempt = 0;
-            dev->sd_fetch_interval = 10;
-            dbserver_reset_retry();
-        }
-        /* SD removed */
-        if (!dev->sd_present && old_sd) {
-            logmsg("cdj", "💾 Device %d: SD removed", device_num);
-            dev->sd_db_fetched = 0;
-            dev->sd_olib_fetched = 0;
-            dev->sd_fetch_attempt = 0;
-            dev->sd_fetch_interval = 10;
-            remove_pdb_database(dev->ip_addr, SLOT_SD);
-            remove_onelibrary(dev->ip_addr, SLOT_SD);
-        }
-        
         /* Proactively fetch databases when media is detected.
-         * Must wait for registration to be ready (5 keepalives sent) or CDJ will refuse NFS.
-         * On failure, retry after 10s (CDJ may still be indexing after media swap). */
+         * Must wait for registration to be ready (5 keepalives sent) or CDJ will refuse NFS. */
         if (capture_interface && our_ip != 0 && dev->ip_addr != 0 &&
             keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
             time_t fetch_now = time(NULL);
-
-            /* Fetch USB databases if USB is present locally (not via Link).
-             * Byte 0x3a == 0x01 indicates Link client — no local media.
-             * usb_state 0x00 (MEDIA_STATE_LOADED) = real media present.
-             * OneLibrary first, PDB only if OneLibrary done/unavailable.
-             * Never give up — exponential backoff capped at 5 min. */
-            if (dev->usb_local_raw == MEDIA_STATE_LOADED &&
-                (!dev->usb_olib_fetched || !dev->usb_db_fetched) &&
-                fetch_now - dev->usb_fetch_attempt >= dev->usb_fetch_interval) {
-
-                int usb_fetched = 0;
-                dev->usb_fetch_attempt = fetch_now;
-
-                /* OneLibrary first (has ANLZ paths, richer metadata) */
-                if (!dev->usb_olib_fetched && onelibrary_key_available()) {
-                    logmsg("cdj", "📥 Device %d: Fetching USB OneLibrary...", device_num);
-                    if (fetch_onelibrary_database(dev->ip_addr, SLOT_USB) == 0) {
-                        dev->usb_olib_fetched = 1;
-                        dev->usb_db_fetched = 1;  /* OneLibrary is superset */
-                        dev->usb_fetch_interval = 10;
-                        usb_fetched = 1;
-                        /* Re-trigger lookup for ALL decks playing from this device's USB */
-                        for (int r = 0; r < MAX_DEVICES; r++) {
-                            cdj_device_t *rd = &devices[r];
-                            if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_USB &&
-                                (rd->device_num == device_num || rd->track_source_player == device_num))
-                                rd->lookup_failed_id = 0;
-                        }
-                    } else {
-                        /* OneLibrary failed — mark done, fall through to PDB next cycle */
-                        dev->usb_olib_fetched = 1;
-                    }
-                }
-                /* PDB only after OneLibrary is done or key unavailable */
-                else if (!dev->usb_db_fetched) {
-                    logmsg("cdj", "📥 Device %d: Fetching USB PDB...", device_num);
-                    pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_USB);
-                    if (db) {
-                        if (fetch_rekordbox_database(dev->ip_addr, SLOT_USB, db) == 0) {
-                            logmsg("cdj", "✅ Device %d: USB PDB loaded (%d tracks)",
-                                   device_num, db->track_count);
-                            dev->usb_db_fetched = 1;
-                            dev->usb_fetch_interval = 10;
-                            usb_fetched = 1;
-                            for (int r = 0; r < MAX_DEVICES; r++) {
-                                cdj_device_t *rd = &devices[r];
-                                if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_USB &&
-                                    (rd->device_num == device_num || rd->track_source_player == device_num))
-                                    rd->lookup_failed_id = 0;
-                            }
-                        }
-                    }
-                }
-                if (!usb_fetched) {
-                    /* Exponential backoff: 10s, 20s, 40s, 80s, 160s, 300s cap */
-                    if (dev->usb_fetch_interval < 300)
-                        dev->usb_fetch_interval = (dev->usb_fetch_interval * 2 > 300) ? 300 : dev->usb_fetch_interval * 2;
-                    logmsg("cdj", "📥 Device %d: USB fetch failed, retry in %ds", device_num, dev->usb_fetch_interval);
-                }
-            }
-
-            /* Fetch SD databases — same strategy as USB */
-            if (dev->sd_local_raw == MEDIA_STATE_LOADED &&
-                (!dev->sd_olib_fetched || !dev->sd_db_fetched) &&
-                fetch_now - dev->sd_fetch_attempt >= dev->sd_fetch_interval) {
-
-                int sd_fetched = 0;
-                dev->sd_fetch_attempt = fetch_now;
-
-                if (!dev->sd_olib_fetched && onelibrary_key_available()) {
-                    logmsg("cdj", "📥 Device %d: Fetching SD OneLibrary...", device_num);
-                    if (fetch_onelibrary_database(dev->ip_addr, SLOT_SD) == 0) {
-                        dev->sd_olib_fetched = 1;
-                        dev->sd_db_fetched = 1;
-                        dev->sd_fetch_interval = 10;
-                        sd_fetched = 1;
-                        for (int r = 0; r < MAX_DEVICES; r++) {
-                            cdj_device_t *rd = &devices[r];
-                            if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_SD &&
-                                (rd->device_num == device_num || rd->track_source_player == device_num))
-                                rd->lookup_failed_id = 0;
-                        }
-                    } else {
-                        dev->sd_olib_fetched = 1;
-                    }
-                }
-                else if (!dev->sd_db_fetched) {
-                    logmsg("cdj", "📥 Device %d: Fetching SD PDB...", device_num);
-                    pdb_database_t *db = create_pdb_database(dev->ip_addr, SLOT_SD);
-                    if (db) {
-                        if (fetch_rekordbox_database(dev->ip_addr, SLOT_SD, db) == 0) {
-                            logmsg("cdj", "✅ Device %d: SD PDB loaded (%d tracks)",
-                                   device_num, db->track_count);
-                            dev->sd_db_fetched = 1;
-                            dev->sd_fetch_interval = 10;
-                            sd_fetched = 1;
-                            for (int r = 0; r < MAX_DEVICES; r++) {
-                                cdj_device_t *rd = &devices[r];
-                                if (rd->active && rd->track_title[0] == '\0' && rd->track_slot == SLOT_SD &&
-                                    (rd->device_num == device_num || rd->track_source_player == device_num))
-                                    rd->lookup_failed_id = 0;
-                            }
-                        }
-                    }
-                }
-                if (!sd_fetched) {
-                    if (dev->sd_fetch_interval < 300)
-                        dev->sd_fetch_interval = (dev->sd_fetch_interval * 2 > 300) ? 300 : dev->sd_fetch_interval * 2;
-                    logmsg("cdj", "📥 Device %d: SD fetch failed, retry in %ds", device_num, dev->sd_fetch_interval);
-                }
-            }
+            fetch_slot_database(dev, SLOT_USB, fetch_now);
+            fetch_slot_database(dev, SLOT_SD, fetch_now);
         }
         
-        uint8_t old_playing = dev->playing;
         uint16_t old_track = dev->track_id;
         uint8_t old_slot = dev->track_slot;
         uint32_t old_rekordbox = dev->rekordbox_id;
-        
+
         dev->track_slot = pkt->track_slot;
         dev->track_source_player = pkt->source_player;
         dev->track_source_slot = pkt->track_slot;  /* Use track_slot, Tr is track type not slot */
-        
+
         /* Determine track type from Tr field (byte 0x2a) */
         if (pkt->track_type == TRACK_CD_AUDIO || dev->track_slot == SLOT_CD) {
             dev->track_type = TRACK_UNANALYZED;
@@ -638,71 +539,25 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_type = TRACK_REKORDBOX;
         }
         if (verbose > 1) {
-            vlogmsg("cdj", "[STATUS] Dev%d: Tr=%d slot=%d rekordbox_id=%u track_type=%s", 
-                       device_num, pkt->track_type, dev->track_slot, 
+            vlogmsg("cdj", "[STATUS] Dev%d: Tr=%d slot=%d rekordbox_id=%u track_type=%s",
+                       device_num, pkt->track_type, dev->track_slot,
                        BE32_TO_HOST(pkt->rekordbox_id_be),
                        dev->track_type == TRACK_REKORDBOX ? "REKORDBOX" : "UNANALYZED");
         }
-        
+
         dev->rekordbox_id = BE32_TO_HOST(pkt->rekordbox_id_be);
         dev->track_number = BE16_TO_HOST(pkt->track_num_be);
         dev->track_id = (uint16_t)dev->track_number;
-        
+
         if (verbose) {
             vlogmsg("cdj", "[STATUS] Parsed CDJ%d: rekordbox_id=%u track_num=%u slot=%s",
                        device_num, dev->rekordbox_id, dev->track_number, cdj_slot_name(dev->track_slot));
         }
-        
-        /* P1 (0x7b) for play state, P2 (0x8b) for jogwheel hold detection.
-         * P1 says PLAYING during jogwheel hold — P2 distinguishes it:
-         * P2=0xfa/0x7a/0x9a = actually playing, P2=0xfe/0x7e/0x9e = stopped/held.
-         * Use P1 && (P2 low bit == 0) as the "truly playing" indicator. */
-        uint8_t p2 = data[0x8b];
-        int p1_playing = (pkt->play_state == PLAY_STATE_PLAYING ||
-                         pkt->play_state == PLAY_STATE_LOOPING);
-        dev->playing = p1_playing && !(p2 & 0x04);  /* P2 bit 2 clear = playing */
+
+        /* Play state, on-air, BPM — shared with zero-data path */
+        update_play_state(dev, pkt, data);
         dev->cued = (pkt->play_state == PLAY_STATE_PAUSED ||
                     pkt->play_state == PLAY_STATE_CUED);
-        
-        /* Parse on-air status from status flags */
-        uint8_t old_on_air = dev->on_air;
-        dev->on_air = (pkt->status_flags & STATE_FLAG_ON_AIR) != 0;
-        if (dev->on_air != old_on_air) {
-            dev->on_air_available = 1;  /* We've seen on_air change, so DJM is present */
-            if (dev->on_air) {
-                if (dev->track_title[0]) {
-                    logmsg("cdj", "🔴 DECK %d ON AIR: %s — %s", device_num,
-                           dev->track_artist, dev->track_title);
-                } else {
-                    logmsg("cdj", "🔴 DECK %d ON AIR", device_num);
-                }
-                /* Signal confidence: on-air edge (strong) + sustained on-air */
-                int didx = (int)(dev - devices);
-                confidence_signal(didx, SIG_CDJ_ON_AIR_EDGE, 0, NULL, NULL, NULL, 0);
-                confidence_signal(didx, SIG_CDJ_ON_AIR, 0, NULL, NULL, NULL, 0);
-            } else {
-                logmsg("cdj", "⚪ DECK %d off air", device_num);
-                int didx = (int)(dev - devices);
-                confidence_signal(didx, SIG_CDJ_OFF_AIR, 0, NULL, NULL, NULL, 0);
-            }
-        }
-        
-        /* Track when playback started (for duration-based fallback) */
-        if (dev->playing && !old_playing) {
-            dev->play_started = time(NULL);
-            /* Signal confidence: deck started playing */
-            if (dev->track_title[0]) {
-                confidence_signal((int)(dev - devices), SIG_CDJ_PLAYING, 0,
-                                  NULL, NULL, NULL, 0);
-            }
-        } else if (!dev->playing) {
-            dev->play_started = 0;
-        }
-        
-        uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
-        if (bpm > 0 && bpm < 50000) {
-            dev->bpm_raw = bpm;
-        }
 
         /* Pitch from status packet: 0x100000 = 0%, 0x000000 = -100%, 0x200000 = +100%
          * Store as percentage * 100 (e.g. +3.26% = 326) for easy UI display */
@@ -767,61 +622,59 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
         if ((track_changed && dev->rekordbox_id > 0) || need_lookup) {
             dev->last_lookup_time = now_lookup;
-            /* Only log on track change to avoid spam during retry attempts */
-            if (verbose && track_changed) {
-                vlogmsg("cdj", "[LOOKUP] CDJ %d: Looking up rekordbox_id=%u (track_id=%d, slot=%s)",
-                           device_num, dev->rekordbox_id, dev->track_id, cdj_slot_name(dev->track_slot));
+            if (track_changed) {
+                logmsg("cdj", "DECK %d: Looking up id=%u slot=%s src_player=%d",
+                       device_num, dev->rekordbox_id, cdj_slot_name(dev->track_slot),
+                       dev->track_source_player);
             }
-            
+
             int found = 0;
             int retry_later = 0;  /* 1 = temporary skip, will retry */
-            
+
             if (dev->track_slot == SLOT_CD) {
+                logmsg("cdj", "DECK %d: Trying DBServer (CD-text)", device_num);
                 retry_later = try_resolve_track_name(dev);
                 found = (dev->track_title[0] != '\0');
             } else if (dev->track_slot > 0) {
-                /* Determine source device for database lookups.
-                 * Link tracks come from a different device's media. */
-                uint32_t src_ip = dev->ip_addr;
-                uint8_t  src_slot = dev->track_slot;
-                if (dev->track_source_player > 0 &&
-                    dev->track_source_player != dev->device_num) {
-                    cdj_device_t *src = get_device(dev->track_source_player);
-                    if (src && src->ip_addr)
-                        src_ip = src->ip_addr;
-                }
+                uint32_t src_ip;
+                uint8_t  src_slot;
+                resolve_source_device(dev, &src_ip, &src_slot);
 
-                /* First try track cache (scoped to source device) */
+                /* 1. Track cache */
                 track_cache_entry_t *tc = find_track_cache(dev->rekordbox_id, src_ip);
                 if (tc && tc->title[0]) {
                     utf8_safe_copy(dev->track_title, tc->title, sizeof(dev->track_title));
-                    if (tc->artist[0]) {
+                    if (tc->artist[0])
                         utf8_safe_copy(dev->track_artist, tc->artist, sizeof(dev->track_artist));
-                    }
-                    if (tc->isrc[0]) {
+                    if (tc->isrc[0])
                         utf8_safe_copy(dev->track_isrc, tc->isrc, sizeof(dev->track_isrc));
-                    }
                     found = 1;
-                } else {
-                    /* Try OneLibrary first (scoped to source device) */
+                    logmsg("cdj", "DECK %d: Found in cache: %s - %s",
+                           device_num, dev->track_artist, dev->track_title);
+                }
+
+                /* 2. OneLibrary */
+                if (!found) {
+                    logmsg("cdj", "DECK %d: Trying OneLibrary (id=%u src=%s slot=%s)",
+                           device_num, dev->rekordbox_id,
+                           ip_to_str(src_ip), cdj_slot_name(src_slot));
                     char ol_title[128] = {0}, ol_artist[128] = {0}, ol_isrc[64] = {0};
                     char ol_anlz[256] = {0};
                     uint32_t ol_bitrate = 0, ol_srate = 0;
                     uint8_t ol_format = 0, ol_depth = 0;
-                    if (onelibrary_lookup(dev->rekordbox_id,
+                    int ol_rc = onelibrary_lookup(dev->rekordbox_id,
                                           src_ip, src_slot,
                                           ol_title, sizeof(ol_title),
                                           ol_artist, sizeof(ol_artist),
                                           ol_isrc, sizeof(ol_isrc),
                                           &ol_bitrate, &ol_format,
                                           &ol_srate, &ol_depth,
-                                          ol_anlz, sizeof(ol_anlz)) == 0 &&
-                        ol_title[0] != '\0' && ol_artist[0] != '\0') {
+                                          ol_anlz, sizeof(ol_anlz));
+                    if (ol_rc == 0 && ol_title[0] != '\0') {
                         utf8_safe_copy(dev->track_title, ol_title, sizeof(dev->track_title));
                         utf8_safe_copy(dev->track_artist, ol_artist, sizeof(dev->track_artist));
-                        if (ol_isrc[0]) {
+                        if (ol_isrc[0])
                             utf8_safe_copy(dev->track_isrc, ol_isrc, sizeof(dev->track_isrc));
-                        }
                         found = 1;
                         dev->track_db_src = DB_SRC_ONELIBRARY;
                         dev->track_bitrate = ol_bitrate;
@@ -831,52 +684,54 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         if (ol_anlz[0])
                             strncpy(dev->track_anlz_path, ol_anlz, sizeof(dev->track_anlz_path) - 1);
                         logmsg("cdj", "🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
+                    } else {
+                        logmsg("cdj", "DECK %d: OneLibrary miss (rc=%d)", device_num, ol_rc);
                     }
+                }
 
-                    /* Try DBServer — but only after database fetch has been
-                     * attempted for this slot (avoids pointless startup failures).
-                     * For Link tracks, check the SOURCE device's fetch flags. */
-                    if (!found) {
-                        cdj_device_t *fetch_dev = dev;
-                        if (dev->track_source_player > 0 &&
-                            dev->track_source_player != dev->device_num) {
-                            cdj_device_t *sd = get_device(dev->track_source_player);
-                            if (sd) fetch_dev = sd;
-                        }
-                        int fetch_done = 1;
-                        if (src_slot == SLOT_USB)
-                            fetch_done = fetch_dev->usb_olib_fetched || fetch_dev->usb_db_fetched;
-                        else if (src_slot == SLOT_SD)
-                            fetch_done = fetch_dev->sd_olib_fetched || fetch_dev->sd_db_fetched;
+                /* 3. DBServer — only after database fetch attempted for this slot */
+                if (!found) {
+                    int fetch_done = 1;
+                    if (src_slot == SLOT_USB)
+                        fetch_done = dev->usb_olib_fetched || dev->usb_db_fetched;
+                    else if (src_slot == SLOT_SD)
+                        fetch_done = dev->sd_olib_fetched || dev->sd_db_fetched;
 
-                        if (fetch_done) {
-                            retry_later = try_resolve_track_name(dev);
-                            found = (dev->track_title[0] != '\0');
-                            if (found) dev->track_db_src = DB_SRC_DBSERVER;
-                        } else {
-                            retry_later = 1; /* Wait for fetch to complete */
-                        }
+                    if (fetch_done) {
+                        logmsg("cdj", "DECK %d: Trying DBServer (id=%u)", device_num, dev->rekordbox_id);
+                        retry_later = try_resolve_track_name(dev);
+                        found = (dev->track_title[0] != '\0');
+                        if (found) dev->track_db_src = DB_SRC_DBSERVER;
+                    } else {
+                        logmsg("cdj", "DECK %d: Waiting for %s database fetch before DBServer",
+                               device_num, cdj_slot_name(src_slot));
+                        retry_later = 1;
                     }
+                }
 
-                    /* Fall back to PDB (parsed export — may have version differences) */
-                    if (!found) {
-                        TrackID *pdb = lookup_pdb_track(dev->rekordbox_id, src_ip, src_slot);
-                        if (pdb && pdb->title[0] && pdb->artist[0]) {
-                            utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
-                            utf8_safe_copy(dev->track_artist, pdb->artist, sizeof(dev->track_artist));
-                            if (pdb->has_isrc && pdb->isrc[0])
-                                utf8_safe_copy(dev->track_isrc, pdb->isrc, sizeof(dev->track_isrc));
-                            dev->track_bitrate = pdb->bitrate;
-                            dev->track_format = pdb->file_type;
-                            dev->track_samplerate = pdb->sample_rate;
-                            dev->track_depth = pdb->sample_depth;
-                            if (pdb->anlz_path[0])
-                                strncpy(dev->track_anlz_path, pdb->anlz_path, sizeof(dev->track_anlz_path) - 1);
-                            found = 1;
-                            dev->track_db_src = DB_SRC_PDB;
-                        }
+                /* 4. PDB (parsed export) */
+                if (!found) {
+                    logmsg("cdj", "DECK %d: Trying PDB (id=%u src=%s slot=%s)",
+                           device_num, dev->rekordbox_id,
+                           ip_to_str(src_ip), cdj_slot_name(src_slot));
+                    TrackID *pdb = lookup_pdb_track(dev->rekordbox_id, src_ip, src_slot);
+                    if (pdb && pdb->title[0] && pdb->artist[0]) {
+                        utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
+                        utf8_safe_copy(dev->track_artist, pdb->artist, sizeof(dev->track_artist));
+                        if (pdb->has_isrc && pdb->isrc[0])
+                            utf8_safe_copy(dev->track_isrc, pdb->isrc, sizeof(dev->track_isrc));
+                        dev->track_bitrate = pdb->bitrate;
+                        dev->track_format = pdb->file_type;
+                        dev->track_samplerate = pdb->sample_rate;
+                        dev->track_depth = pdb->sample_depth;
+                        if (pdb->anlz_path[0])
+                            strncpy(dev->track_anlz_path, pdb->anlz_path, sizeof(dev->track_anlz_path) - 1);
+                        found = 1;
+                        dev->track_db_src = DB_SRC_PDB;
+                        logmsg("cdj", "🎵 %s - %s (via PDB)", pdb->artist, pdb->title);
+                    } else {
+                        logmsg("cdj", "DECK %d: PDB miss", device_num);
                     }
-
                 }
             }
             
@@ -897,15 +752,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         /* Fetch and cache waveform data (once per track) */
         if (dev->track_anlz_path[0] && !dev->waveform_data
             && registration_state == REG_ACTIVE) {
-            /* Resolve source device for waveform fetch (same logic as metadata) */
-            uint32_t wf_ip = dev->ip_addr;
-            uint8_t  wf_slot = dev->track_slot;
-            if (dev->track_source_player > 0 &&
-                dev->track_source_player != dev->device_num) {
-                cdj_device_t *src = get_device(dev->track_source_player);
-                if (src && src->ip_addr)
-                    wf_ip = src->ip_addr;
-            }
+            uint32_t wf_ip;
+            uint8_t  wf_slot;
+            resolve_source_device(dev, &wf_ip, &wf_slot);
 
             uint8_t *tmp = malloc(300000);
             if (tmp) {
@@ -934,30 +783,19 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
 
-        /* Log track and play state changes */
+        /* Log track changes (play/pause transitions handled by update_play_state) */
         if (dev->track_id != old_track || dev->track_slot != old_slot ||
-            dev->rekordbox_id != old_rekordbox ||
-            dev->playing != old_playing) {
+            dev->rekordbox_id != old_rekordbox) {
 
             const char *title = dev->track_title[0] ? dev->track_title : "(unknown)";
             const char *artist = dev->track_artist[0] ? dev->track_artist : NULL;
 
-            if (dev->playing && !old_playing) {
-                if (artist) {
-                    logmsg("cdj", "▶ DECK %d: Playing - %s - %s", device_num, artist, title);
-                } else {
-                    logmsg("cdj", "▶ DECK %d: Playing - %s", device_num, title);
-                }
-            } else if (dev->track_id != old_track || dev->rekordbox_id != old_rekordbox) {
-                if (dev->track_id == 0 && dev->rekordbox_id == 0) {
-                    logmsg("cdj", "⏏ DECK %d: Ejected", device_num);
-                } else if (artist) {
-                    logmsg("cdj", "📀 DECK %d: Loaded - %s - %s", device_num, artist, title);
-                } else {
-                    logmsg("cdj", "📀 DECK %d: Loaded - %s", device_num, title);
-                }
-            } else if (!dev->playing && old_playing) {
-                logmsg("cdj", "⏸ DECK %d: Paused", device_num);
+            if (dev->track_id == 0 && dev->rekordbox_id == 0) {
+                logmsg("cdj", "⏏ DECK %d: Ejected", device_num);
+            } else if (artist) {
+                logmsg("cdj", "📀 DECK %d: Loaded - %s - %s", device_num, artist, title);
+            } else {
+                logmsg("cdj", "📀 DECK %d: Loaded - %s", device_num, title);
             }
         }
         
@@ -1157,39 +995,33 @@ int try_resolve_track_name(cdj_device_t *dev) {
         uint8_t primary_type = dev->track_type;
         uint8_t fallback_type = (dev->track_type == TRACK_REKORDBOX) ? TRACK_UNANALYZED : TRACK_REKORDBOX;
         
-        /* For Link tracks, query the source player's DBServer */
-        uint32_t query_ip = dev->ip_addr;
-        uint8_t query_slot = dev->track_slot;
-        uint8_t query_target = target_device;  /* DMST target device */
-        
-        /* Detect Link: src_player is set and different from this device */
+        /* Resolve source device for Link tracks */
+        uint32_t query_ip;
+        uint8_t  query_slot;
+        resolve_source_device(dev, &query_ip, &query_slot);
+        uint8_t query_target = target_device;
+
+        /* DBServer-specific Link checks: slot conflict and undiscovered source */
         if (dev->track_source_player > 0 && dev->track_source_player != dev->device_num) {
-            cdj_device_t *src_dev = get_device(dev->track_source_player);
-            if (src_dev && src_dev->ip_addr) {
-                /* Check if device table shows us as the source - this means slot conflict */
-                if (src_dev->ip_addr == our_ip) {
-                    /* We don't have media, so we can't be the real source.
-                     * This is a slot conflict - the real device hasn't announced yet.
-                     * Rate-limit these retries to avoid spamming and causing emergency loop. */
-                    last_query_time = now;  /* Prevent retry flood */
-                    last_query_id = dev->rekordbox_id;
-                    vlogmsg("cdj", "[DBSERVER] Link track src_player=%d shows our IP - slot conflict, will retry",
-                               dev->track_source_player);
-                    return 1;  /* Temporary - retry after slot conflict resolves */
-                }
-                query_ip = src_dev->ip_addr;
-                query_slot = dev->track_slot;  /* Use track_slot which has the actual media type */
-                query_target = dev->track_source_player;  /* DMST target = source player */
-                vlogmsg("cdj", "[DBSERVER] Link track: src_player=%d src_slot=%s src_ip=%s",
-                           dev->track_source_player, cdj_slot_name(query_slot), ip_to_str(query_ip));
-            } else {
-                /* Source device not discovered yet - rate-limit retries */
-                last_query_time = now;  /* Prevent retry flood */
+            if (query_ip == our_ip) {
+                /* Slot conflict — source device shows our IP, real device not announced yet */
+                last_query_time = now;
                 last_query_id = dev->rekordbox_id;
-                vlogmsg("cdj", "[DBSERVER] Link track src_player=%d not found yet, will retry", 
+                vlogmsg("cdj", "[DBSERVER] Link track src_player=%d shows our IP - slot conflict, will retry",
                            dev->track_source_player);
-                return 1;  /* Temporary - retry later */
+                return 1;
             }
+            if (query_ip == dev->ip_addr) {
+                /* resolve_source_device couldn't find the source — not discovered yet */
+                last_query_time = now;
+                last_query_id = dev->rekordbox_id;
+                vlogmsg("cdj", "[DBSERVER] Link track src_player=%d not found yet, will retry",
+                           dev->track_source_player);
+                return 1;
+            }
+            query_target = dev->track_source_player;  /* DMST target = source player */
+            vlogmsg("cdj", "[DBSERVER] Link track: src_player=%d src_slot=%s src_ip=%s",
+                       dev->track_source_player, cdj_slot_name(query_slot), ip_to_str(query_ip));
         }
         
         /* Track query for rate limiting */
