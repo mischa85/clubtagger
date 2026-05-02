@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 
 extern int verbose;
 
@@ -274,17 +275,24 @@ static int find_artist_name(const uint8_t *data, size_t len, uint32_t page_size,
 }
 
 int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
-    if (!data || !db || len < 4096) return -1;
-    
+    if (!data || !db || len < 4096) {
+        logmsg("cdj", "[PDB] parse_pdb_file: invalid args (data=%p db=%p len=%zu)",
+               (void *)data, (void *)db, len);
+        return -1;
+    }
+
     db->track_count = 0;
-    
+
     /* Parse file header */
     const pdb_file_header_t *header = (const pdb_file_header_t *)data;
     uint32_t page_size = header->page_size;
     uint32_t num_tables = header->num_tables;
-    
+
     if (page_size == 0 || page_size > 65536 || num_tables > 20) {
-        vlogmsg("cdj", "[PDB] Invalid header: page_size=%u num_tables=%u", page_size, num_tables);
+        logmsg("cdj", "[PDB] Invalid header: page_size=%u num_tables=%u (file_size=%zu, first 16 bytes: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x)",
+               page_size, num_tables, len,
+               data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+               data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]);
         return -1;
     }
     
@@ -522,59 +530,74 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     vlogmsg("cdj", "✅ Mount port: %d", mount_port);
     
     /* Step 2: Mount the export */
-    if (nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path, 
-                          root_fh, &root_fh_len) != 0) {
-        logmsg("cdj", "❌ Mount failed - USB may not have rekordbox export");
+    int mrc = nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path,
+                                root_fh, &root_fh_len);
+    if (mrc != 0) {
+        logmsg("cdj", "❌ Mount failed for %s on slot %s%s",
+               export_path, cdj_slot_name(slot),
+               mrc == -ENOENT ? " (export NOENT — slot has no rekordbox media)" : "");
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
-        return -1;
+        return mrc == -ENOENT ? -ENOENT : -1;
     }
-    
+
     vlogmsg("cdj", "✅ Mounted %s", export_path);
-    
+
     /* Step 3: Lookup PIONEER directory */
-    if (nfs_lookup_simple(device_ip, root_fh, "PIONEER", pioneer_fh) != 0) {
-        vlogmsg("cdj", "❌ PIONEER not found");
+    int lrc = nfs_lookup_simple(device_ip, root_fh, "PIONEER", pioneer_fh);
+    if (lrc != 0) {
+        logmsg("cdj", "❌ PIONEER not found on %s slot %s%s",
+               ip_to_str(device_ip), cdj_slot_name(slot),
+               lrc == -ENOENT ? " (NOENT — non-rekordbox media)" : "");
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
-        return -1;
+        return lrc == -ENOENT ? -ENOENT : -1;
     }
-    
+
     /* Step 4: Lookup rekordbox directory */
-    if (nfs_lookup_simple(device_ip, pioneer_fh, "rekordbox", rb_fh) != 0) {
-        vlogmsg("cdj", "❌ rekordbox dir not found");
+    lrc = nfs_lookup_simple(device_ip, pioneer_fh, "rekordbox", rb_fh);
+    if (lrc != 0) {
+        logmsg("cdj", "❌ rekordbox dir not found on %s slot %s%s",
+               ip_to_str(device_ip), cdj_slot_name(slot),
+               lrc == -ENOENT ? " (NOENT — no rekordbox export on this stick)" : "");
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
-        return -1;
+        return lrc == -ENOENT ? -ENOENT : -1;
     }
-    
+
     /* Step 5: Lookup export.pdb */
-    if (nfs_lookup_simple(device_ip, rb_fh, "export.pdb", pdb_fh) != 0) {
-        vlogmsg("cdj", "❌ export.pdb not found");
+    lrc = nfs_lookup_simple(device_ip, rb_fh, "export.pdb", pdb_fh);
+    if (lrc != 0) {
+        logmsg("cdj", "❌ export.pdb not found on %s slot %s%s",
+               ip_to_str(device_ip), cdj_slot_name(slot),
+               lrc == -ENOENT ? " (NOENT — rekordbox dir exists but no export.pdb)" : "");
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
-        return -1;
+        return lrc == -ENOENT ? -ENOENT : -1;
     }
-    
+
     /* Step 6: Read the file (up to 8MB) */
     #define MAX_PDB_SIZE (8 * 1024 * 1024)
     uint8_t *pdb_data = malloc(MAX_PDB_SIZE);
     if (!pdb_data) {
+        logmsg("cdj", "❌ malloc(%d) failed for PDB buffer", MAX_PDB_SIZE);
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
         return -1;
     }
-    
+
     vlogmsg("cdj", "📖 Reading export.pdb...");
-    
+
     size_t total_read = 0;
-    if (nfs_read_file(device_ip, g_nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read) != 0) {
-        logmsg("cdj", "❌ Read error");
+    int rrc = nfs_read_file(device_ip, g_nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read);
+    if (rrc != 0) {
+        logmsg("cdj", "❌ Read error fetching export.pdb from %s slot %s (rc=%d)",
+               ip_to_str(device_ip), cdj_slot_name(slot), rrc);
         nfs_close_socket();
         free(pdb_data);
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
-        return -1;
+        return rrc == -ENOENT ? -ENOENT : -1;
     }
     
     vlogmsg("cdj", "📄 Downloaded %zu bytes", total_read);

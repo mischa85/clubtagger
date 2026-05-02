@@ -135,7 +135,11 @@ void build_shazam_request(const char *uri, unsigned sample_ms,
 int shazam_post(const char *url, const char *user_agent, const char *json_body,
                 char *response_buf, size_t response_sz) {
     CURL *curl = curl_easy_init();
-    if (!curl) return -1;
+    if (!curl) {
+        logmsg("shz", "shazam_post: curl_easy_init() returned NULL (url=%s)",
+               url ? url : "(null)");
+        return -1;
+    }
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Accept-Encoding: gzip, deflate, br");
     headers = curl_slist_append(headers, "Accept: */*");

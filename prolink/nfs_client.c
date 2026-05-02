@@ -45,15 +45,16 @@ void nfs_init_socket(void) {
     
     nfs_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (nfs_sock < 0) {
-        vlogmsg("cdj", "[NFS] Failed to create socket");
+        logmsg("nfs", "Failed to create socket: %s", strerror(errno));
         return;
     }
-    
+
     /* Bind to interface for link-local routing */
     if (capture_interface) {
         if (setsockopt(nfs_sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface,
                        strlen(capture_interface) + 1) < 0) {
-            vlogmsg("cdj", "[NFS] SO_BINDTODEVICE failed: %s", strerror(errno));
+            logmsg("nfs", "SO_BINDTODEVICE(%s) failed: %s",
+                   capture_interface, strerror(errno));
             /* Continue anyway */
         }
     }
@@ -65,7 +66,8 @@ void nfs_init_socket(void) {
     bind_addr.sin_port = 0;  /* Let OS assign port */
     bind_addr.sin_addr.s_addr = our_ip;
     if (bind(nfs_sock, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
-        vlogmsg("cdj", "[NFS] Warning: Failed to bind to our IP");
+        logmsg("nfs", "bind to our_ip=%s failed: %s",
+               ip_to_str(our_ip), strerror(errno));
     }
     
     /* Set socket timeout */
@@ -138,7 +140,11 @@ static int nfs_rpc_call(uint32_t server_ip, uint16_t port, const uint8_t *reques
                         size_t req_len, uint8_t *response, size_t max_resp) {
     /* Ensure socket is initialized */
     nfs_init_socket();
-    if (nfs_sock < 0) return -1;
+    if (nfs_sock < 0) {
+        logmsg("nfs", "rpc_call: socket not ready (server=%s port=%u)",
+               ip_to_str(server_ip), port);
+        return -1;
+    }
     
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
@@ -148,19 +154,30 @@ static int nfs_rpc_call(uint32_t server_ip, uint16_t port, const uint8_t *reques
     
     /* Retry loop for UDP reliability */
     ssize_t received = -1;
+    int send_errno = 0;
+    int recv_errno = 0;
     for (int retry = 0; retry < 3; retry++) {
         /* Send request */
         if (sendto(nfs_sock, request, req_len, 0, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+            send_errno = errno;
             continue;
         }
-        
+
         /* Receive response */
         socklen_t addr_len = sizeof(addr);
-        received = recvfrom(nfs_sock, response, max_resp, 0, 
+        received = recvfrom(nfs_sock, response, max_resp, 0,
                             (struct sockaddr *)&addr, &addr_len);
         if (received > 0) break;  /* Success */
+        recv_errno = errno;
     }
-    
+
+    if (received <= 0) {
+        logmsg("nfs", "rpc_call to %s:%u: no reply after 3 retries (send_errno=%d:%s recv_errno=%d:%s)",
+               ip_to_str(server_ip), port,
+               send_errno, send_errno ? strerror(send_errno) : "ok",
+               recv_errno, recv_errno ? strerror(recv_errno) : "timeout");
+    }
+
     return (int)received;
 }
 
@@ -189,15 +206,17 @@ int rpc_portmap_getport(uint32_t server_ip, uint32_t program, uint32_t version) 
     int received = nfs_rpc_call(server_ip, PORTMAPPER_PORT, request, pos, response, sizeof(response));
     
     if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(portmap_getport_reply_t))) {
-        if (verbose) {
-            vlogmsg("cdj", "[PORTMAP] No response from %s:111", ip_to_str(server_ip));
-        }
+        logmsg("nfs", "PORTMAP getport(prog=%u vers=%u) from %s:111: short/no reply (%d bytes)",
+               program, version, ip_to_str(server_ip), received);
         return -1;
     }
-    
+
     /* Parse response */
     rpc_reply_header_t *reply = (rpc_reply_header_t *)response;
-    if (RPC_GET_U32((uint8_t *)&reply->accept_stat) != RPC_SUCCESS) {
+    uint32_t accept_stat = RPC_GET_U32((uint8_t *)&reply->accept_stat);
+    if (accept_stat != RPC_SUCCESS) {
+        logmsg("nfs", "PORTMAP getport(prog=%u vers=%u) from %s: RPC accept_stat=%u",
+               program, version, ip_to_str(server_ip), accept_stat);
         return -1;
     }
     
@@ -245,25 +264,40 @@ int nfs_mount_to_port(uint32_t server_ip, uint16_t mount_port, const char *expor
     }
     
     int received = nfs_rpc_call(server_ip, mount_port, request, pos, response, sizeof(response));
-    
-    if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(mount_mnt_reply_t))) {
-        if (verbose) {
-            logmsg("cdj", "[NFS] Mount failed - no response");
-        }
+
+    /* Minimum: RPC reply header (24) + mount status (4) = 28 bytes.
+     * Mount error replies carry no file handle. */
+    if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(uint32_t))) {
+        logmsg("nfs", "Mount %s:%u export=%s: transport short reply (%d bytes)",
+               ip_to_str(server_ip), mount_port, export_path, received);
         return -1;
     }
-    
-    /* Parse reply using struct */
-    mount_mnt_reply_t *reply = (mount_mnt_reply_t *)(response + sizeof(rpc_reply_header_t));
-    uint32_t mount_stat = RPC_GET_U32((uint8_t *)&reply->status);
-    
+
+    /* Read mount status — valid even on 28-byte error replies */
+    uint32_t mount_stat = RPC_GET_U32(response + sizeof(rpc_reply_header_t));
+
     if (verbose) {
         vlogmsg("cdj", "[NFS] Mount status: %u", mount_stat);
     }
-    
-    if (mount_stat != 0) return -1;
-    
+
+    if (mount_stat != 0) {
+        const char *stat_label =
+            (mount_stat == NFSERR_NOENT)  ? " (NOENT — export not present)" :
+            (mount_stat == NFSERR_ACCES)  ? " (ACCES)" : "";
+        logmsg("nfs", "Mount %s:%u export=%s rejected: mount_stat=%u%s",
+               ip_to_str(server_ip), mount_port, export_path, mount_stat, stat_label);
+        return (mount_stat == NFSERR_NOENT) ? -ENOENT : -1;
+    }
+
+    /* Success path needs full reply: status (4) + fh (32) */
+    if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(mount_mnt_reply_t))) {
+        logmsg("nfs", "Mount %s:%u export=%s: OK status but reply truncated (%d bytes)",
+               ip_to_str(server_ip), mount_port, export_path, received);
+        return -1;
+    }
+
     /* File handle - MNT v1 returns fixed 32-byte handle */
+    mount_mnt_reply_t *reply = (mount_mnt_reply_t *)(response + sizeof(rpc_reply_header_t));
     memcpy(root_fh, reply->fh, NFS_FHSIZE);
     *fh_len = NFS_FHSIZE;
     
@@ -307,28 +341,53 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     while (pos % 4 != 0) request[pos++] = 0;
     
     int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, sizeof(response));
-    if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(nfs_lookup_reply_t))) {
-        if (verbose) vlogmsg("cdj", "[NFS] LOOKUP '%s' failed: short response (%d bytes)", name, received);
+
+    /* Minimum: RPC reply header (24) + NFS status (4) = 28 bytes.
+     * NFS error replies (NOENT/STALE/ACCES) carry no file handle, so they
+     * are exactly 28 bytes — must NOT be rejected as "short response". */
+    if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(uint32_t))) {
+        logmsg("nfs", "LOOKUP '%s' on %s:%u: transport short reply (%d bytes)",
+               name, ip_to_str(server_ip), nfs_port, received);
         return -1;
     }
-    
+
     /* Check RPC reply status */
     rpc_reply_header_t *rpc = (rpc_reply_header_t *)response;
-    if (RPC_GET_U32((uint8_t *)&rpc->reply_stat) != RPC_MSG_ACCEPTED) {
-        if (verbose) vlogmsg("cdj", "[NFS] LOOKUP '%s' failed: RPC rejected", name);
+    uint32_t reply_stat = RPC_GET_U32((uint8_t *)&rpc->reply_stat);
+    if (reply_stat != RPC_MSG_ACCEPTED) {
+        logmsg("nfs", "LOOKUP '%s' on %s:%u: RPC rejected (reply_stat=%u)",
+               name, ip_to_str(server_ip), nfs_port, reply_stat);
         return -1;
     }
-    
-    /* Parse NFS reply using struct */
-    nfs_lookup_reply_t *reply = (nfs_lookup_reply_t *)(response + sizeof(rpc_reply_header_t));
-    uint32_t lookup_stat = RPC_GET_U32((uint8_t *)&reply->status);
+
+    /* Read NFS status — valid even on 28-byte error replies */
+    uint32_t lookup_stat = RPC_GET_U32(response + sizeof(rpc_reply_header_t));
     if (lookup_stat != NFS_OK) {
-        logmsg("nfs", "LOOKUP '%s' failed: nfs_stat=%u%s", name, lookup_stat,
-               lookup_stat == NFSERR_STALE ? " (STALE)" : "");
+        /* NOENT is expected protocol behavior — caller is probing alternate
+         * extensions or checking for non-rekordbox media, and logs the
+         * meaningful message at its own layer. Other NFS errors are real. */
+        if (lookup_stat == NFSERR_NOENT) {
+            vlogmsg("nfs", "LOOKUP '%s' on %s:%u: NOENT",
+                    name, ip_to_str(server_ip), nfs_port);
+            return -ENOENT;
+        }
+        const char *stat_label =
+            (lookup_stat == NFSERR_STALE) ? " (STALE — filehandle expired)" :
+            (lookup_stat == NFSERR_ACCES) ? " (ACCES)" : "";
+        logmsg("nfs", "LOOKUP '%s' on %s:%u failed: nfs_stat=%u%s",
+               name, ip_to_str(server_ip), nfs_port, lookup_stat, stat_label);
         return -1;
     }
-    
+
+    /* Success path needs the full reply: status (4) + fh (32) */
+    if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(nfs_lookup_reply_t))) {
+        logmsg("nfs", "LOOKUP '%s' on %s:%u: OK status but reply truncated (%d bytes)",
+               name, ip_to_str(server_ip), nfs_port, received);
+        return -1;
+    }
+
     /* File handle - NFSv2 is fixed 32 bytes */
+    nfs_lookup_reply_t *reply = (nfs_lookup_reply_t *)(response + sizeof(rpc_reply_header_t));
     memcpy(file_fh, reply->fh, NFS_FHSIZE);
     
     if (verbose) {
@@ -355,13 +414,18 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
 
     while (!eof && total_read < buf_len) {
         if (time(NULL) > deadline) {
-            vlogmsg("cdj", "[NFS] READ timeout after %zu bytes (10s limit)", total_read);
+            logmsg("nfs", "READ timeout after %zu bytes (10s limit) from %s:%u",
+                   total_read, ip_to_str(server_ip), nfs_port);
             *bytes_read = total_read;
             return -1;
         }
         uint8_t request[256];
         uint8_t *response = malloc(NFS_READ_CHUNK + 256);
-        if (!response) return -1;
+        if (!response) {
+            logmsg("nfs", "READ malloc failed (chunk=%d) at offset=%zu",
+                   NFS_READ_CHUNK + 256, total_read);
+            return -1;
+        }
         
         /* Use NFS version 2 */
         int pos = build_rpc_call(request, ++nfs_xid, NFS_PROGRAM, NFS_VERSION, NFS_PROC_READ, NULL, 0);
@@ -375,30 +439,36 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         pos += sizeof(nfs_read_args_t);
         
         int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, NFS_READ_CHUNK + 256);
-        if (received < (int)sizeof(rpc_reply_header_t)) {
-            if (verbose) vlogmsg("cdj", "[NFS] Read failed: only received %d bytes", received);
+        if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(uint32_t))) {
+            logmsg("nfs", "READ on %s:%u: transport short reply (%d bytes) at offset=%zu",
+                   ip_to_str(server_ip), nfs_port, received, total_read);
             free(response);
             return -1;
         }
-        
+
         /* Check RPC reply status */
         rpc_reply_header_t *rpc = (rpc_reply_header_t *)response;
-        if (RPC_GET_U32((uint8_t *)&rpc->reply_stat) != RPC_MSG_ACCEPTED) {
-            if (verbose) vlogmsg("cdj", "[NFS] Read failed: RPC rejected");
+        uint32_t reply_stat = RPC_GET_U32((uint8_t *)&rpc->reply_stat);
+        if (reply_stat != RPC_MSG_ACCEPTED) {
+            logmsg("nfs", "READ on %s:%u: RPC rejected (reply_stat=%u) at offset=%zu",
+                   ip_to_str(server_ip), nfs_port, reply_stat, total_read);
             free(response);
             return -1;
         }
-        
-        /* NFS READ reply: status + fattr (68 bytes) + data */
+
+        /* Read NFS status — valid even on 28-byte error replies (no fattr) */
         int rpos = sizeof(rpc_reply_header_t);
-        nfs_read_reply_t *nfs_reply = (nfs_read_reply_t *)(response + rpos);
-        uint32_t nfs_stat = RPC_GET_U32((uint8_t *)&nfs_reply->status);
-        
+        uint32_t nfs_stat = RPC_GET_U32(response + rpos);
+
         if (nfs_stat != NFS_OK) {
-            logmsg("nfs", "Read error: nfs_stat=%u%s", nfs_stat,
-                   nfs_stat == NFSERR_STALE ? " (STALE — filehandle expired)" : "");
+            const char *stat_label =
+                (nfs_stat == NFSERR_NOENT)  ? " (NOENT — file not present)" :
+                (nfs_stat == NFSERR_STALE)  ? " (STALE — filehandle expired)" :
+                (nfs_stat == NFSERR_ACCES)  ? " (ACCES)" : "";
+            logmsg("nfs", "READ on %s:%u nfs_stat=%u%s at offset=%zu",
+                   ip_to_str(server_ip), nfs_port, nfs_stat, stat_label, total_read);
             free(response);
-            return -1;
+            return (nfs_stat == NFSERR_NOENT) ? -ENOENT : -1;
         }
         
         /* Skip status + fattr to get to data length */
@@ -409,8 +479,8 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         rpos += 4;
         
         if (data_size > NFS_READ_CHUNK || rpos + (int)data_size > received) {
-            if (verbose) vlogmsg("cdj", "[NFS] Read failed: data_size=%u rpos=%d received=%d", 
-                                    data_size, rpos, received);
+            logmsg("nfs", "READ on %s:%u: invalid data_size=%u rpos=%d received=%d at offset=%zu",
+                   ip_to_str(server_ip), nfs_port, data_size, rpos, received, total_read);
             free(response);
             return -1;
         }
@@ -439,14 +509,21 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
 int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
                    uint8_t *buf, size_t buf_len, size_t *bytes_read) {
     extern uint16_t g_nfs_port;
-    if (!path || path[0] != '/') return -1;
+    if (!path || path[0] != '/') {
+        logmsg("nfs", "fetch_path: bad path=%s (server=%s slot=%u)",
+               path ? path : "(null)", ip_to_str(server_ip), slot);
+        return -1;
+    }
 
     /* Determine export path from slot (same as OneLibrary/PDB fetch) */
     const char *export_path;
     switch (slot) {
         case 2: export_path = "/B/"; break;  /* SD */
         case 3: export_path = "/C/"; break;  /* USB */
-        default: return -1;
+        default:
+            logmsg("nfs", "fetch_path: unsupported slot=%u (server=%s path=%s)",
+                   slot, ip_to_str(server_ip), path);
+            return -1;
     }
 
     /* Ensure socket is open (may have been closed by previous fetch) */
@@ -457,15 +534,32 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
 
     if (g_nfs_port == 0) {
         int nfs_port = rpc_portmap_getport(server_ip, 100003, 2);
-        if (nfs_port <= 0) return -1;
+        if (nfs_port <= 0) {
+            logmsg("nfs", "fetch_path: portmap lookup of NFS (100003) on %s failed (port=%d)",
+                   ip_to_str(server_ip), nfs_port);
+            return -1;
+        }
         g_nfs_port = (uint16_t)nfs_port;
     }
 
     int mount_port = rpc_portmap_getport(server_ip, 100005, 1);
-    if (mount_port <= 0) return -1;
+    if (mount_port <= 0) {
+        logmsg("nfs", "fetch_path: portmap lookup of MOUNT (100005) on %s failed (port=%d)",
+               ip_to_str(server_ip), mount_port);
+        return -1;
+    }
 
-    if (nfs_mount_to_port(server_ip, (uint16_t)mount_port,
-                          export_path, root_fh, &fh_len) != 0) {
+    int mount_rc = nfs_mount_to_port(server_ip, (uint16_t)mount_port,
+                                     export_path, root_fh, &fh_len);
+    if (mount_rc != 0) {
+        if (mount_rc == -ENOENT) {
+            logmsg("nfs", "fetch_path: export %s NOENT on %s:%u — slot has no rekordbox media (will not retry)",
+                   export_path, ip_to_str(server_ip), mount_port);
+            /* Don't clear g_nfs_port — NFS itself works; only this export is missing */
+            return -ENOENT;
+        }
+        logmsg("nfs", "fetch_path: mount %s on %s:%u failed — clearing g_nfs_port for retry",
+               export_path, ip_to_str(server_ip), mount_port);
         g_nfs_port = 0;
         return -1;
     }
@@ -482,8 +576,15 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
     char *component = strtok_r(pathbuf, "/", &saveptr);
     while (component) {
         char *next = strtok_r(NULL, "/", &saveptr);
-        if (nfs_lookup(server_ip, g_nfs_port, dir_fh, component, file_fh) != 0) {
-            logmsg("nfs", "fetch_path: lookup failed at '%s' in %s", component, path);
+        int lk = nfs_lookup(server_ip, g_nfs_port, dir_fh, component, file_fh);
+        if (lk != 0) {
+            if (lk == -ENOENT) {
+                logmsg("nfs", "fetch_path: NOENT at '%s' in %s — file not present (will not retry)",
+                       component, path);
+                /* Keep g_nfs_port: server is healthy, file just doesn't exist */
+                return -ENOENT;
+            }
+            logmsg("nfs", "fetch_path: lookup failed at '%s' in %s (rc=%d)", component, path, lk);
             g_nfs_port = 0;
             return -1;
         }
@@ -494,6 +595,10 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
     /* Read the file */
     int rc = nfs_read_file(server_ip, g_nfs_port, file_fh, buf, buf_len, bytes_read);
     nfs_close_socket();
+    if (rc == -ENOENT) {
+        logmsg("nfs", "fetch_path: READ NOENT for %s — file vanished mid-fetch (will not retry)", path);
+        return -ENOENT;
+    }
     if (rc != 0) g_nfs_port = 0;  /* Force port rediscovery on next call */
     return rc;
 }

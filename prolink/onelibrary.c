@@ -26,6 +26,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <errno.h>
 
 extern int verbose;
 extern uint32_t our_ip;
@@ -99,8 +100,8 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
 {
     if (!encrypted || encrypted_len < OLIB_PAGE_SIZE ||
         encrypted_len % OLIB_PAGE_SIZE != 0) {
-        vlogmsg("cdj", "[OLIB] Invalid file size %zu (must be multiple of %d)",
-                    encrypted_len, OLIB_PAGE_SIZE);
+        logmsg("cdj", "[OLIB] Invalid file size %zu (page=%d, multiple required) — encrypted=%p",
+               encrypted_len, OLIB_PAGE_SIZE, (const void *)encrypted);
         return NULL;
     }
 
@@ -116,7 +117,8 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
                 OLIB_KDF_ITER);
 
     if (!olib_passphrase || !olib_passphrase[0]) {
-        vlogmsg("cdj", "[OLIB] No decryption key set (use --olib-key)");
+        logmsg("cdj", "[OLIB] onelibrary_decrypt: no passphrase configured (use --olib-key); cannot decrypt %zu bytes",
+               encrypted_len);
         return NULL;
     }
 
@@ -442,39 +444,56 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     g_nfs_port = (uint16_t)nfs_port;
 
     /* Step 2: Mount the export */
-    if (nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path,
-                          root_fh, &root_fh_len) != 0) {
-        logmsg("cdj", "[OLIB] Mount failed");
-        return -1;
+    int mrc = nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path,
+                                root_fh, &root_fh_len);
+    if (mrc != 0) {
+        logmsg("cdj", "[OLIB] Mount %s failed on %s slot %s%s",
+               export_path, ip_to_str(device_ip), cdj_slot_name(slot),
+               mrc == -ENOENT ? " (export NOENT)" : "");
+        return mrc == -ENOENT ? -ENOENT : -1;
     }
 
     /* Step 3: Lookup PIONEER/rekordbox/exportLibrary.db */
-    if (olib_nfs_lookup(device_ip, root_fh, "PIONEER", pioneer_fh) != 0) {
-        vlogmsg("cdj", "[OLIB] PIONEER dir not found");
-        return -1;
+    int lrc = olib_nfs_lookup(device_ip, root_fh, "PIONEER", pioneer_fh);
+    if (lrc != 0) {
+        logmsg("cdj", "[OLIB] PIONEER dir not found on %s slot %s%s",
+               ip_to_str(device_ip), cdj_slot_name(slot),
+               lrc == -ENOENT ? " (NOENT)" : "");
+        return lrc == -ENOENT ? -ENOENT : -1;
     }
-    if (olib_nfs_lookup(device_ip, pioneer_fh, "rekordbox", rb_fh) != 0) {
-        vlogmsg("cdj", "[OLIB] rekordbox dir not found");
-        return -1;
+    lrc = olib_nfs_lookup(device_ip, pioneer_fh, "rekordbox", rb_fh);
+    if (lrc != 0) {
+        logmsg("cdj", "[OLIB] rekordbox dir not found on %s slot %s%s",
+               ip_to_str(device_ip), cdj_slot_name(slot),
+               lrc == -ENOENT ? " (NOENT — non-rekordbox media)" : "");
+        return lrc == -ENOENT ? -ENOENT : -1;
     }
-    if (olib_nfs_lookup(device_ip, rb_fh, "exportLibrary.db", olib_fh) != 0) {
-        vlogmsg("cdj", "[OLIB] exportLibrary.db not found (no OneLibrary on media)");
-        return -1;
+    lrc = olib_nfs_lookup(device_ip, rb_fh, "exportLibrary.db", olib_fh);
+    if (lrc != 0) {
+        logmsg("cdj", "[OLIB] exportLibrary.db not found on %s slot %s%s",
+               ip_to_str(device_ip), cdj_slot_name(slot),
+               lrc == -ENOENT ? " (NOENT — no OneLibrary on this media)" : "");
+        return lrc == -ENOENT ? -ENOENT : -1;
     }
 
     /* Step 4: Read the file */
     uint8_t *encrypted = malloc(OLIB_MAX_FILE_SIZE);
-    if (!encrypted) return -1;
+    if (!encrypted) {
+        logmsg("cdj", "[OLIB] malloc(%d) failed for encrypted buffer", OLIB_MAX_FILE_SIZE);
+        return -1;
+    }
 
     vlogmsg("cdj", "📖 Reading exportLibrary.db...");
 
     size_t total_read = 0;
-    if (nfs_read_file(device_ip, g_nfs_port, olib_fh, encrypted,
-                      OLIB_MAX_FILE_SIZE, &total_read) != 0) {
-        logmsg("cdj", "[OLIB] Read error");
+    int rrc = nfs_read_file(device_ip, g_nfs_port, olib_fh, encrypted,
+                            OLIB_MAX_FILE_SIZE, &total_read);
+    if (rrc != 0) {
+        logmsg("cdj", "[OLIB] Read error fetching exportLibrary.db from %s slot %s (rc=%d)",
+               ip_to_str(device_ip), cdj_slot_name(slot), rrc);
         nfs_close_socket();
         free(encrypted);
-        return -1;
+        return rrc == -ENOENT ? -ENOENT : -1;
     }
 
     vlogmsg("cdj", "📄 Downloaded %zu bytes", total_read);

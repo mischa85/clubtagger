@@ -433,7 +433,9 @@ int send_prolink_keepalive(const char *interface) {
                           (struct sockaddr *)&dest, sizeof(dest));
     
     if (sent != sizeof(pkt)) {
-        if (verbose) vlogmsg("cdj", "[ANNOUNCE] Send failed: %s", strerror(errno));
+        logmsg("cdj", "[ANNOUNCE] sendto broadcast %s:%d failed: sent=%zd errno=%d (%s)",
+               ip_to_str(htonl(PROLINK_BROADCAST_IP)), PROLINK_KEEPALIVE_PORT,
+               sent, errno, strerror(errno));
         return -1;
     }
     
@@ -458,25 +460,33 @@ int do_full_registration(const char *interface) {
 
     if (announce_socket < 0) {
         announce_socket = socket(AF_INET, SOCK_DGRAM, 0);
-        if (announce_socket < 0) return -1;
-        
+        if (announce_socket < 0) {
+            logmsg("cdj", "[REG] do_full_registration: socket(SOCK_DGRAM) failed: %s",
+                   strerror(errno));
+            return -1;
+        }
+
         int broadcast = 1;
         setsockopt(announce_socket, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast));
-        
+
         our_ip = get_link_local_ip(interface);
         if (our_ip == 0) {
+            logmsg("cdj", "[REG] do_full_registration: get_link_local_ip(%s) returned 0 — interface has no link-local IPv4",
+                   interface ? interface : "(null)");
             close(announce_socket);
             announce_socket = -1;
             return -1;
         }
-        
+
         struct sockaddr_in bind_addr;
         memset(&bind_addr, 0, sizeof(bind_addr));
         bind_addr.sin_family = AF_INET;
         bind_addr.sin_port = htons(PROLINK_KEEPALIVE_PORT);
         bind_addr.sin_addr.s_addr = our_ip;
-        
+
         if (bind(announce_socket, (struct sockaddr *)&bind_addr, sizeof(bind_addr)) < 0) {
+            logmsg("cdj", "[REG] do_full_registration: bind to %s:%d failed: %s",
+                   ip_to_str(our_ip), PROLINK_KEEPALIVE_PORT, strerror(errno));
             close(announce_socket);
             announce_socket = -1;
             return -1;
@@ -528,7 +538,7 @@ int do_full_registration(const char *interface) {
             /* Now claim a slot */
             our_device_num = find_free_slot();
             if (our_device_num == 0) {
-                vlogmsg("cdj", "[REG] No free slot available (max %d players), staying passive", get_max_players());
+                logmsg("cdj", "[REG] No free slot available (max %d players), staying passive", get_max_players());
                 registration_state = REG_PASSIVE;
                 return -1;
             }

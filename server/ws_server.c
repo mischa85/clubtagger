@@ -41,7 +41,9 @@
 #define WS_HISTORY_SIZE 5
 #define WS_MAGIC_GUID   "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-static _Atomic int ws_fds[WS_MAX_CLIENTS];
+/* Initialized to -1 so broadcasters called before the ws thread starts
+ * don't see fd=0 (stdin) as a "valid client" and fire ENOTSOCK on every send. */
+static _Atomic int ws_fds[WS_MAX_CLIENTS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 static pthread_mutex_t ws_send_mu = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── WebSocket framing (RFC 6455) ───────────────────────────────────────── */
@@ -74,7 +76,11 @@ static ssize_t ws_send_frame(int fd, uint8_t opcode, const void *data, size_t le
     size_t total = hlen + len;
     uint8_t stackbuf[512];
     uint8_t *buf = (total <= sizeof(stackbuf)) ? stackbuf : malloc(total);
-    if (!buf) return -1;
+    if (!buf) {
+        logmsg("ws", "ws_send_frame: malloc(%zu) failed (fd=%d opcode=0x%02x len=%zu)",
+               total, fd, opcode, len);
+        return -1;
+    }
     memcpy(buf, header, hlen);
     memcpy(buf + hlen, data, len);
 
@@ -85,9 +91,13 @@ static ssize_t ws_send_frame(int fd, uint8_t opcode, const void *data, size_t le
             sent += n;
         } else if (n < 0) {
             if (errno == EINTR) continue;
+            logmsg("ws", "ws_send_frame: send fd=%d failed at %zu/%zu: %s (errno=%d)",
+                   fd, sent, total, strerror(errno), errno);
             if (buf != stackbuf) free(buf);
             return -1;
         } else {
+            logmsg("ws", "ws_send_frame: send fd=%d returned 0 (peer closed) at %zu/%zu",
+                   fd, sent, total);
             if (buf != stackbuf) free(buf);
             return -1;
         }
@@ -190,10 +200,17 @@ static int do_handshake(int fd) {
     tv.tv_sec = 0; tv.tv_usec = 0;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-    if (total == 0) return -1;
+    if (total == 0) {
+        logmsg("ws", "ws_handshake: fd=%d no bytes received (peer closed before sending request)", fd);
+        return -1;
+    }
 
     char *kp = strcasestr(buf, "sec-websocket-key:");
-    if (!kp) return -1;
+    if (!kp) {
+        logmsg("ws", "ws_handshake: fd=%d missing Sec-WebSocket-Key header (got %zu bytes, first 80: %.80s)",
+               fd, total, buf);
+        return -1;
+    }
     kp += 18;
     while (*kp == ' ' || *kp == '\t') kp++;
     char key[64] = {0};
@@ -217,7 +234,12 @@ static int do_handshake(int fd) {
         "Connection: Upgrade\r\n"
         "Sec-WebSocket-Accept: %s\r\n\r\n", b64);
 
-    return (send(fd, resp, rn, 0) == rn) ? 0 : -1;
+    if (send(fd, resp, rn, 0) != rn) {
+        logmsg("ws", "ws_handshake: fd=%d failed to send 101 response (%d bytes): %s",
+               fd, rn, strerror(errno));
+        return -1;
+    }
+    return 0;
 }
 
 /* ── Client frame handler (ping/pong/close) ─────────────────────────────── */
@@ -225,9 +247,20 @@ static int do_handshake(int fd) {
 static int ws_handle_client_frame(int fd) {
     uint8_t header[2];
     ssize_t n = recv(fd, header, 2, MSG_DONTWAIT);
-    if (n == 0) return -1;
-    if (n < 0) return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -1;
-    if (n < 2) return -1;
+    if (n == 0) {
+        logmsg("ws", "ws_handle_client_frame: fd=%d peer closed (recv header == 0)", fd);
+        return -1;
+    }
+    if (n < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) return 0;
+        logmsg("ws", "ws_handle_client_frame: fd=%d recv header failed: %s (errno=%d)",
+               fd, strerror(errno), errno);
+        return -1;
+    }
+    if (n < 2) {
+        logmsg("ws", "ws_handle_client_frame: fd=%d short header (%zd of 2 bytes)", fd, n);
+        return -1;
+    }
 
     uint8_t opcode = header[0] & 0x0F;
     int masked = (header[1] & 0x80) != 0;
@@ -235,24 +268,41 @@ static int ws_handle_client_frame(int fd) {
 
     if (payload_len == 126) {
         uint8_t ext[2];
-        if (recv(fd, ext, 2, 0) != 2) return -1;
+        if (recv(fd, ext, 2, 0) != 2) {
+            logmsg("ws", "ws_handle_client_frame: fd=%d short read of 16-bit length: %s", fd, strerror(errno));
+            return -1;
+        }
         payload_len = (ext[0] << 8) | ext[1];
     } else if (payload_len == 127) {
         uint8_t ext[8];
-        if (recv(fd, ext, 8, 0) != 8) return -1;
+        if (recv(fd, ext, 8, 0) != 8) {
+            logmsg("ws", "ws_handle_client_frame: fd=%d short read of 64-bit length: %s", fd, strerror(errno));
+            return -1;
+        }
         payload_len = 0;
         for (int i = 0; i < 8; i++) payload_len = (payload_len << 8) | ext[i];
     }
 
     uint8_t mask[4] = {0};
-    if (masked && recv(fd, mask, 4, 0) != 4) return -1;
+    if (masked && recv(fd, mask, 4, 0) != 4) {
+        logmsg("ws", "ws_handle_client_frame: fd=%d short read of mask key: %s", fd, strerror(errno));
+        return -1;
+    }
 
-    if (payload_len > 4096) return -1;
+    if (payload_len > 4096) {
+        logmsg("ws", "ws_handle_client_frame: fd=%d oversize payload %llu (max 4096) — protocol violation, closing",
+               fd, (unsigned long long)payload_len);
+        return -1;
+    }
     uint8_t payload[4096];
     size_t total = 0;
     while (total < payload_len) {
         n = recv(fd, payload + total, payload_len - total, 0);
-        if (n <= 0) return -1;
+        if (n <= 0) {
+            logmsg("ws", "ws_handle_client_frame: fd=%d short payload recv (%zu/%llu): %s",
+                   fd, total, (unsigned long long)payload_len, n == 0 ? "peer closed" : strerror(errno));
+            return -1;
+        }
         total += n;
     }
     if (masked)

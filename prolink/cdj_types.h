@@ -140,6 +140,7 @@ typedef struct {
     char     track_anlz_path[256]; /* ANLZ analysis file path from database */
     uint8_t *waveform_data;       /* Cached ANLZ waveform (heap-allocated, NULL if not fetched) */
     size_t   waveform_len;        /* Length of waveform_data */
+    uint8_t  waveform_attempted;  /* 1 if waveform fetch was tried for current track (any outcome) */
     uint32_t lookup_failed_id;  /* rekordbox_id of last failed lookup (prevent retry spam) */
     time_t   last_lookup_time;  /* Rate-limit lookups (don't retry more than once per 5s) */
     
@@ -157,6 +158,8 @@ typedef struct {
     uint8_t  sd_db_fetched;     /* Have we fetched SD database? */
     uint8_t  usb_olib_fetched;  /* Have we fetched USB OneLibrary? */
     uint8_t  sd_olib_fetched;   /* Have we fetched SD OneLibrary? */
+    uint8_t  usb_nfs_dead;      /* 1 if USB slot returned NFS NOENT — no rekordbox/anlz at all, skip waveform NFS too */
+    uint8_t  sd_nfs_dead;       /* 1 if SD slot returned NFS NOENT — same */
     time_t   usb_fetch_attempt; /* Last USB fetch attempt time */
     time_t   sd_fetch_attempt;  /* Last SD fetch attempt time */
     uint16_t usb_fetch_interval; /* Current retry interval in seconds (doubles on failure, caps at 300) */

@@ -69,7 +69,8 @@ int nfs_observer_init(const char *interface) {
     /* Create raw packet socket */
     nfs_sock = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
     if (nfs_sock < 0) {
-        vlogmsg("nfs", "Failed to create raw socket: %s", strerror(errno));
+        logmsg("nfs", "nfs_observer_init: socket(AF_PACKET, SOCK_RAW) failed: %s",
+               strerror(errno));
         return -1;
     }
 
@@ -79,23 +80,26 @@ int nfs_observer_init(const char *interface) {
     sll.sll_protocol = htons(ETH_P_ALL);
     sll.sll_ifindex = if_nametoindex(interface);
     if (sll.sll_ifindex == 0) {
-        vlogmsg("nfs", "Interface '%s' not found", interface);
+        logmsg("nfs", "nfs_observer_init: if_nametoindex('%s') failed: %s",
+               interface ? interface : "(null)", strerror(errno));
         close(nfs_sock);
         nfs_sock = -1;
         return -1;
     }
 
     if (bind(nfs_sock, (struct sockaddr *)&sll, sizeof(sll)) < 0) {
-        vlogmsg("nfs", "Failed to bind to interface: %s", strerror(errno));
+        logmsg("nfs", "nfs_observer_init: bind to interface %s (idx=%u) failed: %s",
+               interface, sll.sll_ifindex, strerror(errno));
         close(nfs_sock);
         nfs_sock = -1;
         return -1;
     }
 
     /* Attach BPF filter for NFS traffic */
-    if (setsockopt(nfs_sock, SOL_SOCKET, SO_ATTACH_FILTER, 
+    if (setsockopt(nfs_sock, SOL_SOCKET, SO_ATTACH_FILTER,
                    &nfs_bpf, sizeof(nfs_bpf)) < 0) {
-        vlogmsg("nfs", "Failed to attach BPF filter: %s", strerror(errno));
+        logmsg("nfs", "nfs_observer_init: SO_ATTACH_FILTER failed on %s: %s",
+               interface, strerror(errno));
         close(nfs_sock);
         nfs_sock = -1;
         return -1;
@@ -134,7 +138,8 @@ int nfs_observer_set_port(uint16_t port) {
     /* Re-attach updated filter */
     if (setsockopt(nfs_sock, SOL_SOCKET, SO_ATTACH_FILTER,
                    &nfs_bpf, sizeof(nfs_bpf)) < 0) {
-        vlogmsg("nfs", "Failed to update BPF filter: %s", strerror(errno));
+        logmsg("nfs", "nfs_observer_set_port: SO_ATTACH_FILTER (port=%u) failed: %s",
+               port, strerror(errno));
         return -1;
     }
 

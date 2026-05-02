@@ -101,13 +101,19 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     atomic_init(&aw->bytes_on_disk, 0);
 
     aw->data = (uint8_t *)malloc(capacity_frames * aw->frame_bytes);
-    if (!aw->data) return -1;
+    if (!aw->data) {
+        logmsg("ring", "asyncwr_init: OOM for ring (%zu frames * %u bytes = %zu bytes)",
+               capacity_frames, aw->frame_bytes, capacity_frames * aw->frame_bytes);
+        return -1;
+    }
 
     /* FLAC conversion buffer sized to max_write_frames (not ring capacity).
      * With 6 channels this saves gigabytes vs the old ring-sized allocation. */
     aw->flac_buf_samples = max_write_frames * channels;
     aw->flac_buf = (int32_t *)malloc(aw->flac_buf_samples * sizeof(int32_t));
     if (!aw->flac_buf) {
+        logmsg("ring", "asyncwr_init: OOM for FLAC buffer (%zu samples * 4 bytes = %zu bytes)",
+               aw->flac_buf_samples, aw->flac_buf_samples * sizeof(int32_t));
         free(aw->data);
         return -1;
     }
@@ -121,7 +127,10 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     pthread_mutex_init(&aw->mu, NULL);
     pthread_cond_init(&aw->cv, NULL);
 
-    if (pthread_create(&aw->thread, NULL, asyncwr_thread_main, aw) != 0) {
+    int prc = pthread_create(&aw->thread, NULL, asyncwr_thread_main, aw);
+    if (prc != 0) {
+        logmsg("ring", "asyncwr_init: pthread_create failed: %s (errno=%d)",
+               strerror(prc), prc);
         free(aw->data);
         free(aw->flac_buf);
         pthread_mutex_destroy(&aw->mu);

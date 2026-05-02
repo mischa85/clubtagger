@@ -110,7 +110,7 @@ int dbserver_transact(int sock, const uint8_t *msg, size_t msg_len,
                       uint8_t *resp, size_t resp_max) {
     ssize_t sent = send(sock, msg, msg_len, 0);
     if (sent != (ssize_t)msg_len) {
-        if (verbose) vlogmsg("cdj", "[DBSERVER] Send failed: sent=%zd errno=%d", sent, errno);
+        logmsg("cdj", "[DBSERVER] Send failed: sent=%zd errno=%d (%s)", sent, errno, strerror(errno));
         return -1;
     }
     
@@ -125,7 +125,7 @@ int dbserver_transact(int sock, const uint8_t *msg, size_t msg_len,
                 usleep(100000);  /* 100ms wait */
                 continue;
             }
-            if (verbose) vlogmsg("cdj", "[DBSERVER] recv error errno=%d", errno);
+            logmsg("cdj", "[DBSERVER] recv error errno=%d (%s)", errno, strerror(errno));
             break;
         }
         if (received == 0) break;
@@ -167,7 +167,11 @@ done_recv:
 
 int dbserver_connect(uint32_t server_ip) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return -1;
+    if (sock < 0) {
+        logmsg("cdj", "[DBSERVER] socket() failed for connect to %s: %s",
+               ip_to_str(server_ip), strerror(errno));
+        return -1;
+    }
     
     vlogmsg("cdj", "[DBSERVER] our_ip=0x%08x (%s)", our_ip, ip_to_str(our_ip));
     
@@ -175,13 +179,13 @@ int dbserver_connect(uint32_t server_ip) {
     if (capture_interface) {
         if (setsockopt(sock, SOL_SOCKET, SO_BINDTODEVICE, capture_interface, 
                        strlen(capture_interface) + 1) < 0) {
-            vlogmsg("cdj", "[DBSERVER] SO_BINDTODEVICE(%s) failed: %s", capture_interface, strerror(errno));
+            logmsg("cdj", "[DBSERVER] SO_BINDTODEVICE(%s) failed: %s", capture_interface, strerror(errno));
             /* Continue anyway - might work without it */
         } else {
             if (verbose) vlogmsg("cdj", "[DBSERVER] Bound to interface %s", capture_interface);
         }
     } else {
-        vlogmsg("cdj", "[DBSERVER] Warning: capture_interface not set");
+        logmsg("cdj", "[DBSERVER] Warning: capture_interface not set");
     }
     
     /* Bind to our Pro DJ Link IP */
@@ -251,13 +255,13 @@ int dbserver_setup(int sock, uint8_t device_num) {
     pos = add_int32_field(msg, 1);
     
     if (send(sock, msg, pos, 0) != pos) {
-        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 1 send failed");
+        logmsg("cdj", "[DBSERVER] Setup step 1 send failed: %s", strerror(errno));
         return -1;
     }
     
     ssize_t received = recv(sock, resp, sizeof(resp), 0);
     if (received < 5) {
-        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 1 recv failed (%zd bytes)", received);
+        logmsg("cdj", "[DBSERVER] Setup step 1 recv failed (%zd bytes, errno=%d %s)", received, errno, strerror(errno));
         return -1;
     }
     
@@ -267,13 +271,13 @@ int dbserver_setup(int sock, uint8_t device_num) {
     pos += add_int32_field(msg + pos, device_num);
     
     if (send(sock, msg, pos, 0) != pos) {
-        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 2 send failed");
+        logmsg("cdj", "[DBSERVER] Setup step 2 send failed: %s", strerror(errno));
         return -1;
     }
     
     received = recv(sock, resp, sizeof(resp), 0);
     if (received < 12) {
-        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup step 2 recv failed (%zd bytes)", received);
+        logmsg("cdj", "[DBSERVER] Setup step 2 recv failed (%zd bytes, errno=%d %s)", received, errno, strerror(errno));
         return -1;
     }
     
@@ -283,7 +287,7 @@ int dbserver_setup(int sock, uint8_t device_num) {
         resp[2] != ((DBSERVER_MAGIC >> 16) & 0xFF) ||
         resp[3] != ((DBSERVER_MAGIC >> 8) & 0xFF) ||
         resp[4] != (DBSERVER_MAGIC & 0xFF)) {
-        if (verbose) vlogmsg("cdj", "[DBSERVER] Setup bad magic");
+        logmsg("cdj", "[DBSERVER] Setup bad magic: %02x %02x %02x %02x %02x", resp[0], resp[1], resp[2], resp[3], resp[4]);
         return -1;
     }
     
@@ -340,18 +344,19 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
     
     int received = dbserver_transact(sock, msg, pos, resp, sizeof(resp));
     
-    /* Always dump first 50 bytes of response for debugging */
+    /* Always dump first 50 bytes of response */
+    char rb_resp_hex[200] = {0};
     if (received > 0) {
-        char hex[200];
         int hlen = 0;
         for (int i = 0; i < received && i < 50; i++) {
-            hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", resp[i]);
+            hlen += snprintf(rb_resp_hex + hlen, sizeof(rb_resp_hex) - hlen, "%02x ", resp[i]);
         }
-        vlogmsg("cdj", "[DBSERVER] Resp (%d bytes): %s", received, hex);
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Rekordbox resp (%d bytes): %s", received, rb_resp_hex);
     }
-    
+
     if (received < 20) {
-        vlogmsg("cdj", "[DBSERVER] Response too short (%d < 20)", received);
+        logmsg("cdj", "[DBSERVER] Rekordbox response too short (id=%u %d bytes): %s",
+               rekordbox_id, received, rb_resp_hex);
         return -1;
     }
     
@@ -378,7 +383,8 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
     
     if (verbose) vlogmsg("cdj", "[DBSERVER] num_items=%d", num_items);
     if (num_items == 0 || num_items == (int)0xffffffff) {
-        vlogmsg("cdj", "[DBSERVER] No items (num_items=%d)", num_items);
+        logmsg("cdj", "[DBSERVER] Rekordbox no items (id=%u num_items=%d resp=%s)",
+               rekordbox_id, num_items, rb_resp_hex);
         return -1;
     }
     
@@ -395,31 +401,40 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
     pos += add_int32_field(msg + pos, 0);
     
     received = dbserver_transact(sock, msg, pos, resp, sizeof(resp));
+    char rb_menu_hex[200] = {0};
+    if (received > 0) {
+        int hlen = 0;
+        for (int i = 0; i < received && i < 50; i++) {
+            hlen += snprintf(rb_menu_hex + hlen, sizeof(rb_menu_hex) - hlen, "%02x ", resp[i]);
+        }
+    }
     if (received < 50) {
+        logmsg("cdj", "[DBSERVER] Rekordbox menu response too short (id=%u %d bytes): %s",
+               rekordbox_id, received, rb_menu_hex);
         return -1;
     }
-    
+
     /* Parse strings from menu items */
     int found_title = 0, found_artist = 0;
-    
+
     for (int i = 0; i < received - 20; i++) {
         if (is_dbserver_magic(&resp[i])) {
-            
+
             int msg_start = i;
             if (msg_start + 13 > received) continue;
-            
+
             uint16_t msg_type = get_msg_type(resp, msg_start);
-            
+
             if (msg_type == DBMSG_MENU_ITEM) {
                 for (int j = msg_start + 30; j < received - 6 && j < msg_start + 512; j++) {
                     if (resp[j] == DBFIELD_STRING) {
-                        uint32_t str_len = (resp[j+1] << 24) | (resp[j+2] << 16) | 
+                        uint32_t str_len = (resp[j+1] << 24) | (resp[j+2] << 16) |
                                            (resp[j+3] << 8) | resp[j+4];
-                        
+
                         if (str_len > 0 && str_len < 256 && j + 5 + (int)(str_len * 2) <= received) {
                             char text[256] = {0};
                             size_t k = utf16be_to_utf8(resp + j + 5, str_len * 2, text, sizeof(text));
-                            
+
                             if (k >= 2) {
                                 if (!found_title) {
                                     utf8_safe_copy(title, text, title_len);
@@ -436,14 +451,19 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
             }
         }
     }
-    
+
     if (verbose) {
         vlogmsg("cdj", "[DBSERVER] Parse result: found_title=%d found_artist=%d", found_title, found_artist);
         if (found_title) vlogmsg("cdj", "[DBSERVER] Title: %s", title);
         if (found_artist) vlogmsg("cdj", "[DBSERVER] Artist: %s", artist);
     }
-    
-    return (found_title || found_artist) ? 0 : -1;
+
+    if (!found_title && !found_artist) {
+        logmsg("cdj", "[DBSERVER] Rekordbox parse found no strings (id=%u %d bytes num_items=%d): %s",
+               rekordbox_id, received, num_items, rb_menu_hex);
+        return -1;
+    }
+    return 0;
 }
 
 int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
@@ -462,18 +482,20 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
     pos += add_int32_field(msg + pos, track_id);
     
     int received = dbserver_transact(sock, msg, pos, resp, sizeof(resp));
-    
-    /* Debug: dump response if it looks like an error */
-    if (received > 0 && received < 50) {
-        char hex[200];
+
+    /* Capture response hex for both diagnostic and failure logs */
+    char un_resp_hex[200] = {0};
+    if (received > 0) {
         int hlen = 0;
         for (int i = 0; i < received && i < 60; i++) {
-            hlen += snprintf(hex + hlen, sizeof(hex) - hlen, "%02x ", resp[i]);
+            hlen += snprintf(un_resp_hex + hlen, sizeof(un_resp_hex) - hlen, "%02x ", resp[i]);
         }
-        vlogmsg("cdj", "[DBSERVER] Unanalyzed resp (%d bytes): %s", received, hex);
+        if (verbose) vlogmsg("cdj", "[DBSERVER] Unanalyzed resp (%d bytes): %s", received, un_resp_hex);
     }
-    
+
     if (received < 20) {
+        logmsg("cdj", "[DBSERVER] Unanalyzed response too short (id=%u %d bytes): %s",
+               track_id, received, un_resp_hex);
         return -1;
     }
     
@@ -496,8 +518,10 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
         }
     }
     vlogmsg("cdj", "[DBSERVER] Unanalyzed: %d items available", num_items);
-    
+
     if (num_items == 0 || num_items == (int)0xffffffff || num_items == DBMSG_UNANALYZED_REQ) {
+        logmsg("cdj", "[DBSERVER] Unanalyzed no items (id=%u num_items=%d resp=%s)",
+               track_id, num_items, un_resp_hex);
         return -1;
     }
     
@@ -514,31 +538,40 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
     pos += add_int32_field(msg + pos, 0);
     
     received = dbserver_transact(sock, msg, pos, resp, sizeof(resp));
+    char un_menu_hex[200] = {0};
+    if (received > 0) {
+        int hlen = 0;
+        for (int i = 0; i < received && i < 50; i++) {
+            hlen += snprintf(un_menu_hex + hlen, sizeof(un_menu_hex) - hlen, "%02x ", resp[i]);
+        }
+    }
     if (received < 50) {
+        logmsg("cdj", "[DBSERVER] Unanalyzed menu response too short (id=%u %d bytes): %s",
+               track_id, received, un_menu_hex);
         return -1;
     }
-    
+
     /* Parse strings */
     int found_title = 0, found_artist = 0;
-    
+
     for (int i = 0; i < received - 20; i++) {
         if (is_dbserver_magic(&resp[i])) {
-            
+
             int msg_start = i;
             if (msg_start + 13 > received) continue;
-            
+
             uint16_t msg_type = get_msg_type(resp, msg_start);
-            
+
             if (msg_type == DBMSG_MENU_ITEM) {
                 for (int j = msg_start + 30; j < received - 6 && j < msg_start + 512; j++) {
                     if (resp[j] == DBFIELD_STRING) {
-                        uint32_t str_len = (resp[j+1] << 24) | (resp[j+2] << 16) | 
+                        uint32_t str_len = (resp[j+1] << 24) | (resp[j+2] << 16) |
                                            (resp[j+3] << 8) | resp[j+4];
-                        
+
                         if (str_len > 0 && str_len < 256 && j + 5 + (int)(str_len * 2) <= received) {
                             char text[256] = {0};
                             size_t k = utf16be_to_utf8(resp + j + 5, str_len * 2, text, sizeof(text));
-                            
+
                             if (k >= 2) {
                                 if (!found_title) {
                                     utf8_safe_copy(title, text, title_len);
@@ -555,8 +588,13 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
             }
         }
     }
-    
-    return (found_title || found_artist) ? 0 : -1;
+
+    if (!found_title && !found_artist) {
+        logmsg("cdj", "[DBSERVER] Unanalyzed parse found no strings (id=%u %d bytes num_items=%d): %s",
+               track_id, received, num_items, un_menu_hex);
+        return -1;
+    }
+    return 0;
 }
 
 /*
@@ -571,7 +609,7 @@ int dbserver_query_metadata(uint32_t device_ip, uint8_t our_device_param, uint8_
                             char *artist, size_t artist_len) {
     /* Ensure we're registered on the network before querying */
     if (!ensure_registration_active()) {
-        vlogmsg("cdj", "[DBSERVER] Cannot query - no network slot available");
+        logmsg("cdj", "[DBSERVER] Cannot query id=%u - no network slot available", track_id);
         return CDJ_ERR_CONNECT;
     }
     
@@ -638,7 +676,8 @@ int dbserver_query_port(uint32_t server_ip) {
     int ret = connect(sock, (struct sockaddr *)&addr, sizeof(addr));
     if (ret < 0 && errno != EINPROGRESS) {
         close(sock);
-        vlogmsg("cdj", "[DBSERVER] RemoteDB 12523 connect failed, using port %d", DBSERVER_PORT);
+        logmsg("cdj", "[DBSERVER] RemoteDB 12523 connect failed to %s: %s, using default port %d",
+               ip_to_str(server_ip), strerror(errno), DBSERVER_PORT);
         return DBSERVER_PORT;
     }
 
@@ -692,16 +731,16 @@ int dbserver_query_port(uint32_t server_ip) {
 
 int dbserver_request_all_tracks_count(int sock, uint8_t device, uint8_t slot) {
     (void)sock; (void)device; (void)slot;
-    /* TODO: implement */
+    logmsg("cdj", "[DBSERVER] dbserver_request_all_tracks_count: stub not implemented");
     return -1;
 }
 
 int dbserver_find_unanalyzed_filename(uint32_t device_ip, uint8_t our_device,
                                       uint8_t slot, uint32_t track_id,
                                       char *filename, size_t filename_len) {
-    (void)device_ip; (void)our_device; (void)slot; (void)track_id;
-    (void)filename; (void)filename_len;
-    /* TODO: implement */
+    (void)our_device; (void)filename; (void)filename_len;
+    logmsg("cdj", "[DBSERVER] dbserver_find_unanalyzed_filename: stub not implemented (ip=%s slot=%u id=%u)",
+           ip_to_str(device_ip), slot, track_id);
     return -1;
 }
 

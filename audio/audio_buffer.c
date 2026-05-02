@@ -70,7 +70,11 @@ void build_audio_filename(char *out, size_t out_sz, const char *outdir,
  * ───────────────────────────────────────────────────────────────────────────── */
 
 int64_t audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char *prefix) {
-    if (!ab->data || ab->frames == 0) return -1;
+    if (!ab->data || ab->frames == 0) {
+        logmsg("wav", "audiobuf_write_wav: invalid input data=%p frames=%zu prefix=%s",
+               (void *)ab->data, ab->frames, prefix ? prefix : "(null)");
+        return -1;
+    }
 
     ensure_dir(outdir);
 
@@ -132,7 +136,11 @@ int64_t audiobuf_write_wav(const AudioBuffer *ab, const char *outdir, const char
 
 #ifdef HAVE_FLAC
 int64_t audiobuf_write_flac(const AudioBuffer *ab, const char *outdir, const char *prefix) {
-    if (!ab->data || ab->frames == 0) return -1;
+    if (!ab->data || ab->frames == 0) {
+        logmsg("flac", "audiobuf_write_flac: invalid input data=%p frames=%zu prefix=%s",
+               (void *)ab->data, ab->frames, prefix ? prefix : "(null)");
+        return -1;
+    }
 
     ensure_dir(outdir);
 
@@ -270,7 +278,11 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
                                 size_t ring_start, size_t nframes,
                                 unsigned channels, unsigned rate, int bytes_per_sample,
                                 const char *outdir, const char *prefix, time_t start_time) {
-    if (!ring || nframes == 0) return -1;
+    if (!ring || nframes == 0) {
+        logmsg("wav", "audiobuf_write_wav_ring: invalid input ring=%p nframes=%zu prefix=%s",
+               (const void *)ring, nframes, prefix ? prefix : "(null)");
+        return -1;
+    }
 
     ensure_dir(outdir);
 
@@ -334,7 +346,11 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
                                  unsigned channels, unsigned rate, int bytes_per_sample,
                                  int32_t *flac_buf, size_t flac_buf_samples,
                                  const char *outdir, const char *prefix, time_t start_time) {
-    if (!ring || nframes == 0) return -1;
+    if (!ring || nframes == 0) {
+        logmsg("flac", "audiobuf_write_flac_ring: invalid input ring=%p nframes=%zu prefix=%s",
+               (const void *)ring, nframes, prefix ? prefix : "(null)");
+        return -1;
+    }
 
     size_t total_samples = nframes * channels;
     if (!flac_buf || flac_buf_samples < total_samples) {

@@ -11,6 +11,13 @@
 #include <stddef.h>
 
 /*
+ * NFS client return codes — POSIX -errno convention:
+ *   0        = success
+ *  -ENOENT   = file/export not present (caller MUST NOT retry the same path)
+ *  -1        = generic/transient error (caller may retry)
+ */
+
+/*
  * ============================================================================
  * Socket Management
  * ============================================================================
