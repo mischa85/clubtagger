@@ -691,13 +691,20 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     }
                 }
 
-                /* 3. DBServer — only after database fetch attempted for this slot */
+                /* 3. DBServer — only after database fetch attempted for this slot.
+                 * Check the SOURCE device's flags (the CDJ holding the media), not
+                 * dev's — when a deck is linked to another CDJ's USB/SD, dev never
+                 * had media inserted so its flags are always 0. */
                 if (!found) {
                     int fetch_done = 1;
+                    cdj_device_t *src_dev = (dev->track_source_player > 0 &&
+                                             dev->track_source_player != dev->device_num)
+                                            ? get_device(dev->track_source_player) : dev;
+                    if (!src_dev) src_dev = dev;
                     if (src_slot == SLOT_USB)
-                        fetch_done = dev->usb_olib_fetched || dev->usb_db_fetched;
+                        fetch_done = src_dev->usb_olib_fetched || src_dev->usb_db_fetched;
                     else if (src_slot == SLOT_SD)
-                        fetch_done = dev->sd_olib_fetched || dev->sd_db_fetched;
+                        fetch_done = src_dev->sd_olib_fetched || src_dev->sd_db_fetched;
 
                     if (fetch_done) {
                         logmsg("cdj", "DECK %d: Trying DBServer (id=%u)", device_num, dev->rekordbox_id);
@@ -705,8 +712,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         found = (dev->track_title[0] != '\0');
                         if (found) dev->track_db_src = DB_SRC_DBSERVER;
                     } else {
-                        logmsg("cdj", "DECK %d: Waiting for %s database fetch before DBServer",
-                               device_num, cdj_slot_name(src_slot));
+                        logmsg("cdj", "DECK %d: Waiting for %s database fetch on src player %d before DBServer",
+                               device_num, cdj_slot_name(src_slot), src_dev->device_num);
                         retry_later = 1;
                     }
                 }
@@ -761,8 +768,13 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             uint8_t  wf_slot;
             resolve_source_device(dev, &wf_ip, &wf_slot);
 
-            uint8_t slot_dead = (wf_slot == SLOT_USB) ? dev->usb_nfs_dead :
-                                (wf_slot == SLOT_SD)  ? dev->sd_nfs_dead  : 0;
+            /* Read nfs_dead from the SOURCE device (Link Export: media lives there) */
+            cdj_device_t *src_dev = (dev->track_source_player > 0 &&
+                                     dev->track_source_player != dev->device_num)
+                                    ? get_device(dev->track_source_player) : dev;
+            if (!src_dev) src_dev = dev;
+            uint8_t slot_dead = (wf_slot == SLOT_USB) ? src_dev->usb_nfs_dead :
+                                (wf_slot == SLOT_SD)  ? src_dev->sd_nfs_dead  : 0;
             if (slot_dead) {
                 logmsg("cdj", "🌊 Device %d: skip waveform NFS — slot known NOENT (track id=%u)",
                        dev->device_num, dev->track_id);
