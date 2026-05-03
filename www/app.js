@@ -292,6 +292,10 @@
             const pitch = formatPitchLCD(pitchPct);
 
             const slotName = SLOTS[d.track_slot] || '';
+            // Show source player when reading from another CDJ's media (Link Export)
+            const sourceLabel = (d.source_player && d.source_player !== d.n)
+                ? `${slotName || 'media'} · P${d.source_player}`
+                : slotName;
             const keyStr = d.key_note <= 11 ? keyName(d.key_note, d.key_scale, d.key_acc) : '';
 
             let fmtStr = '';
@@ -352,7 +356,7 @@
                     <div class="cdj-beat-strip">
                         ${d.isrc ? '<span class="cdj-isrc">' + escapeHtml(d.isrc) + '</span>' : ''}
                         ${beatDots}
-                        <span class="cdj-source">${escapeHtml(slotName)}</span>
+                        <span class="cdj-source">${escapeHtml(sourceLabel)}</span>
                         ${d.db_src ? '<span class="db-src-badge db-src-' + d.db_src.toLowerCase().replace(' ', '') + '">' + escapeHtml(d.db_src) + '</span>' : ''}
                     </div>
                     ${hasWf
