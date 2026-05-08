@@ -63,6 +63,9 @@ static void dump_media_bytes(cdj_device_t *dev, const uint8_t *data,
             data[0x28], data[0x29]);
 }
 
+/* PATCH(2026-04): source-device resolution boilerplate. Same pattern is repeated
+ * inline at L700-703 (DBServer gate) and L772-775 (waveform slot_dead). Candidate
+ * to consolidate into a single cdj_track_owner(dev) helper returning cdj_device_t*. */
 /* Resolve the device that owns the media for a Link track.
  * Returns source IP and slot. For local tracks, returns dev's own IP/slot. */
 static void resolve_source_device(const cdj_device_t *dev,
@@ -84,9 +87,7 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
 {
     uint8_t *present   = (slot == SLOT_USB) ? &dev->usb_present : &dev->sd_present;
     uint8_t *local_raw = (slot == SLOT_USB) ? &dev->usb_local_raw : &dev->sd_local_raw;
-    uint8_t *olib      = (slot == SLOT_USB) ? &dev->usb_olib_fetched : &dev->sd_olib_fetched;
-    uint8_t *db        = (slot == SLOT_USB) ? &dev->usb_db_fetched : &dev->sd_db_fetched;
-    uint8_t *dead      = (slot == SLOT_USB) ? &dev->usb_nfs_dead : &dev->sd_nfs_dead;
+    bool    *loaded    = (slot == SLOT_USB) ? &dev->usb_db_loaded : &dev->sd_db_loaded;
     time_t  *attempt   = (slot == SLOT_USB) ? &dev->usb_fetch_attempt : &dev->sd_fetch_attempt;
     uint16_t *interval = (slot == SLOT_USB) ? &dev->usb_fetch_interval : &dev->sd_fetch_interval;
     const char *name   = (slot == SLOT_USB) ? "USB" : "SD";
@@ -97,12 +98,12 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
 
     if (*present && !old) {
         logmsg("cdj", "💾 Device %d: %s inserted", dev->device_num, name);
-        *olib = 0; *db = 0; *dead = 0; *attempt = 0; *interval = 10;
+        *loaded = false; *attempt = 0; *interval = 10;
         dbserver_reset_retry();
     }
     if (!*present && old) {
         logmsg("cdj", "💾 Device %d: %s removed", dev->device_num, name);
-        *olib = 0; *db = 0; *dead = 0; *attempt = 0; *interval = 10;
+        *loaded = false; *attempt = 0; *interval = 10;
         remove_pdb_database(dev->ip_addr, slot);
         remove_onelibrary(dev->ip_addr, slot);
     }
@@ -163,71 +164,55 @@ static void update_play_state(cdj_device_t *dev, const cdj_status_packet_t *pkt,
     if (bpm > 0 && bpm < 50000) dev->bpm_raw = bpm;
 }
 
-/* Fetch OneLibrary or PDB database for one slot. Handles exponential backoff. */
+/* Fetch a database for one slot. Tries OneLibrary first, falls back to PDB.
+ * Sets *_db_loaded only on success; failure leaves it false and applies
+ * exponential backoff (10s → 300s cap). NOENT is treated identically to any
+ * transient error — a CDJ may still be mounting its export. */
 static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
 {
-    uint8_t *olib     = (slot == SLOT_USB) ? &dev->usb_olib_fetched : &dev->sd_olib_fetched;
-    uint8_t *db       = (slot == SLOT_USB) ? &dev->usb_db_fetched : &dev->sd_db_fetched;
-    uint8_t *dead     = (slot == SLOT_USB) ? &dev->usb_nfs_dead : &dev->sd_nfs_dead;
+    bool    *loaded   = (slot == SLOT_USB) ? &dev->usb_db_loaded : &dev->sd_db_loaded;
     uint8_t  raw      = (slot == SLOT_USB) ? dev->usb_local_raw : dev->sd_local_raw;
     time_t  *attempt  = (slot == SLOT_USB) ? &dev->usb_fetch_attempt : &dev->sd_fetch_attempt;
     uint16_t *interval = (slot == SLOT_USB) ? &dev->usb_fetch_interval : &dev->sd_fetch_interval;
     const char *name  = (slot == SLOT_USB) ? "USB" : "SD";
 
-    if (raw != MEDIA_STATE_LOADED || (*olib && *db)) return;
+    if (raw != MEDIA_STATE_LOADED || *loaded) return;
     if (now - *attempt < *interval) return;
 
-    int fetched = 0;
     *attempt = now;
 
-    /* OneLibrary first (has ANLZ paths, richer metadata) */
-    if (!*olib && onelibrary_key_available()) {
+    /* OneLibrary first (has ANLZ paths, richer metadata). */
+    if (onelibrary_key_available()) {
         logmsg("cdj", "📥 Device %d: Fetching %s OneLibrary...", dev->device_num, name);
-        int orc = fetch_onelibrary_database(dev->ip_addr, slot);
-        if (orc == 0) {
-            *olib = 1; *db = 1; *interval = 10; fetched = 1;
-            if (dev->track_slot == slot && dev->track_title[0] == '\0')
-                dev->lookup_failed_id = 0;
-        } else if (orc == -ENOENT) {
-            /* No rekordbox/OneLibrary on this media. PDB will hit the same
-             * NOENT — mark BOTH slots done so we stop retrying until the
-             * media is removed and re-inserted (which resets these flags).
-             * Also set *dead so waveform fetcher skips NFS on this slot too. */
-            logmsg("cdj", "🛑 Device %d: %s has no rekordbox media (NOENT) — giving up until reinsert",
-                   dev->device_num, name);
-            *olib = 1; *db = 1; *dead = 1;
-        } else {
-            /* OneLibrary failed transiently — mark done, fall through to PDB next cycle */
-            *olib = 1;
-        }
-    }
-    /* PDB only after OneLibrary is done or key unavailable */
-    else if (!*db) {
-        logmsg("cdj", "📥 Device %d: Fetching %s PDB...", dev->device_num, name);
-        pdb_database_t *pdb = create_pdb_database(dev->ip_addr, slot);
-        if (pdb) {
-            int prc = fetch_rekordbox_database(dev->ip_addr, slot, pdb);
-            if (prc == 0) {
-                logmsg("cdj", "✅ Device %d: %s PDB loaded (%d tracks)",
-                       dev->device_num, name, pdb->track_count);
-                *db = 1; *interval = 10; fetched = 1;
-                if (dev->track_slot == slot && dev->track_title[0] == '\0')
-                    dev->lookup_failed_id = 0;
-            } else if (prc == -ENOENT) {
-                logmsg("cdj", "🛑 Device %d: %s PDB NOENT — non-rekordbox media, giving up until reinsert",
-                       dev->device_num, name);
-                *db = 1; *dead = 1;
-            }
+        if (fetch_onelibrary_database(dev->ip_addr, slot) == 0) {
+            *loaded = true; *interval = 10;
+            if (dev->track_slot == slot &&
+                (dev->track_title[0] == '\0' || dev->track_db_src == DB_SRC_SHAZAM))
+                dev->lookup_backoff = 5;  /* DB just loaded — re-enable lookups for the current track */
+            return;
         }
     }
 
-    if (!fetched && !(*olib && *db)) {
-        /* Exponential backoff: 10s, 20s, 40s, 80s, 160s, 300s cap */
-        if (*interval < 300)
-            *interval = (*interval * 2 > 300) ? 300 : *interval * 2;
-        logmsg("cdj", "📥 Device %d: %s fetch failed, retry in %ds",
-               dev->device_num, name, *interval);
+    /* PDB fallback. Try whether or not OneLibrary just failed — older exports
+     * lack OneLibrary but have PDB. */
+    logmsg("cdj", "📥 Device %d: Fetching %s PDB...", dev->device_num, name);
+    pdb_database_t *pdb = create_pdb_database(dev->ip_addr, slot);
+    if (pdb && fetch_rekordbox_database(dev->ip_addr, slot, pdb) == 0) {
+        logmsg("cdj", "✅ Device %d: %s PDB loaded (%d tracks)",
+               dev->device_num, name, pdb->track_count);
+        *loaded = true; *interval = 10;
+        if (dev->track_slot == slot &&
+            (dev->track_title[0] == '\0' || dev->track_db_src == DB_SRC_SHAZAM))
+            dev->lookup_backoff = 5;
+        return;
     }
+
+    /* Both subsystems failed. Double the backoff interval (cap 300s) and
+     * retry on the next status packet that arrives after the interval. */
+    if (*interval < 300)
+        *interval = (*interval * 2 > 300) ? 300 : *interval * 2;
+    logmsg("cdj", "📥 Device %d: %s fetch failed, retry in %ds",
+           dev->device_num, name, *interval);
 }
 
 /*
@@ -604,10 +589,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_anlz_path[0] = '\0';
             if (dev->waveform_data) { free(dev->waveform_data); dev->waveform_data = NULL; }
             dev->waveform_len = 0;
-            dev->waveform_attempted = 0;
+            dev->waveform_last_attempt = 0;
+            dev->waveform_backoff = 10;   /* Start fresh on track change */
             ws_broadcast_waveform(dev->device_num, NULL, 0); /* Clear UI waveform */
             dev->track_db_src = DB_SRC_NONE;
-            dev->lookup_failed_id = 0;  /* Reset failed lookup marker */
+            dev->lookup_backoff = 5;    /* Reset backoff for new track */
             dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
             dev->logged_rekordbox_id = 0;  /* Allow new track to be logged */
             dev->play_started = dev->playing ? time(NULL) : 0;  /* Reset play timer on track change */
@@ -615,12 +601,18 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             confidence_reset_deck((int)(dev - devices));
         }
         
-        /* Skip lookup if no track loaded, already failed for this ID, or already have title */
+        /* Skip lookup if no track loaded or we already have a DB-sourced title.
+         * Shazam-sourced titles still trigger lookups — a real DB hit
+         * unconditionally overrides Shazam. Rate-limited by lookup_backoff,
+         * which doubles on failure (5s → 60s) and resets on track change,
+         * successful resolution, or db-load completion. */
         time_t now_lookup = time(NULL);
+        int title_blocks_lookup = dev->track_title[0] != '\0' &&
+                                  dev->track_db_src != DB_SRC_SHAZAM;
+        uint16_t backoff = dev->lookup_backoff ? dev->lookup_backoff : 5;
         int need_lookup = (dev->rekordbox_id > 0) &&
-                          (dev->track_title[0] == '\0') &&
-                          (dev->lookup_failed_id != dev->rekordbox_id) &&
-                          (now_lookup - dev->last_lookup_time >= 5);  /* Rate-limit: once per 5s */
+                          !title_blocks_lookup &&
+                          (now_lookup - dev->last_lookup_time >= backoff);
 
         if ((track_changed && dev->rekordbox_id > 0) || need_lookup) {
             dev->last_lookup_time = now_lookup;
@@ -691,22 +683,19 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     }
                 }
 
-                /* 3. DBServer — only after database fetch attempted for this slot.
-                 * Check the SOURCE device's flags (the CDJ holding the media), not
-                 * dev's — when a deck is linked to another CDJ's USB/SD, dev never
-                 * had media inserted so its flags are always 0. */
+                /* 3. DBServer — only once the in-memory DB for this slot has loaded.
+                 * Check the SOURCE device's flag (the CDJ holding the media), not
+                 * dev's — under Link Export the deck never saw media inserted, so
+                 * its own flag stays false. */
                 if (!found) {
-                    int fetch_done = 1;
                     cdj_device_t *src_dev = (dev->track_source_player > 0 &&
                                              dev->track_source_player != dev->device_num)
                                             ? get_device(dev->track_source_player) : dev;
                     if (!src_dev) src_dev = dev;
-                    if (src_slot == SLOT_USB)
-                        fetch_done = src_dev->usb_olib_fetched || src_dev->usb_db_fetched;
-                    else if (src_slot == SLOT_SD)
-                        fetch_done = src_dev->sd_olib_fetched || src_dev->sd_db_fetched;
+                    bool db_loaded = (src_slot == SLOT_USB) ? src_dev->usb_db_loaded :
+                                     (src_slot == SLOT_SD)  ? src_dev->sd_db_loaded  : true;
 
-                    if (fetch_done) {
+                    if (db_loaded) {
                         logmsg("cdj", "DECK %d: Trying DBServer (id=%u)", device_num, dev->rekordbox_id);
                         retry_later = try_resolve_track_name(dev);
                         found = (dev->track_title[0] != '\0');
@@ -744,9 +733,13 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 }
             }
             
-            /* Mark failed lookup to prevent retry spam - but not if temporary skip */
+            /* Failure → grow backoff (5→10→20→40→60). Success → reset to 5.
+             * retry_later means "try again soon, this wasn't a real miss". */
             if (!found && !retry_later && dev->rekordbox_id > 0) {
-                dev->lookup_failed_id = dev->rekordbox_id;
+                uint16_t b = dev->lookup_backoff ? dev->lookup_backoff * 2 : 5;
+                dev->lookup_backoff = (b > 60) ? 60 : b;
+            } else if (found) {
+                dev->lookup_backoff = 5;
             }
 
             /* Signal confidence model when metadata is resolved */
@@ -758,64 +751,57 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
 
-        /* Fetch and cache waveform data (once per track).
-         * Guards: waveform_attempted prevents re-running the 3-extension loop
-         * on every status packet (10/sec) for tracks with no ANLZ.
-         * nfs_dead skips slots already proven to have no rekordbox export. */
-        if (dev->track_anlz_path[0] && !dev->waveform_data && !dev->waveform_attempted
-            && registration_state == REG_ACTIVE) {
+        /* Fetch and cache waveform data. Backoff (10s → 300s) prevents
+         * re-running the 3-extension loop on every status packet (10/sec)
+         * for tracks the CDJ hasn't indexed yet. waveform_data being non-NULL
+         * is the "have data" flag; we keep retrying until it's set. */
+        time_t now_wf = time(NULL);
+        uint16_t wf_backoff = dev->waveform_backoff ? dev->waveform_backoff : 10;
+        if (dev->track_anlz_path[0] && !dev->waveform_data
+            && registration_state == REG_ACTIVE
+            && now_wf - dev->waveform_last_attempt >= wf_backoff) {
             uint32_t wf_ip;
             uint8_t  wf_slot;
             resolve_source_device(dev, &wf_ip, &wf_slot);
 
-            /* Read nfs_dead from the SOURCE device (Link Export: media lives there) */
-            cdj_device_t *src_dev = (dev->track_source_player > 0 &&
-                                     dev->track_source_player != dev->device_num)
-                                    ? get_device(dev->track_source_player) : dev;
-            if (!src_dev) src_dev = dev;
-            uint8_t slot_dead = (wf_slot == SLOT_USB) ? src_dev->usb_nfs_dead :
-                                (wf_slot == SLOT_SD)  ? src_dev->sd_nfs_dead  : 0;
-            if (slot_dead) {
-                logmsg("cdj", "🌊 Device %d: skip waveform NFS — slot known NOENT (track id=%u)",
-                       dev->device_num, dev->track_id);
-                dev->waveform_attempted = 1;
+            dev->waveform_last_attempt = now_wf;
+            uint8_t *tmp = malloc(ANLZ_MAX_SIZE);
+            if (!tmp) {
+                logmsg("cdj", "🌊 Device %d: waveform malloc(%d) failed",
+                       dev->device_num, ANLZ_MAX_SIZE);
             } else {
-                dev->waveform_attempted = 1;  /* mark before NFS so failure path is also covered */
-                uint8_t *tmp = malloc(ANLZ_MAX_SIZE);
-                if (!tmp) {
-                    logmsg("cdj", "🌊 Device %d: waveform malloc(%d) failed",
-                           dev->device_num, ANLZ_MAX_SIZE);
-                } else {
-                    size_t anlz_read = 0;
-                    char ext_path[256];
-                    int fetched = 0;
+                size_t anlz_read = 0;
+                char ext_path[256];
+                int fetched = 0;
 
-                    /* Modern → legacy: .2EX (CDJ-3000+), .EXT (NXS2 color), .DAT (legacy) */
-                    const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
-                    for (int ei = 0; exts[ei] && !fetched; ei++) {
-                        strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
-                        ext_path[sizeof(ext_path) - 1] = '\0';
-                        char *dot = strrchr(ext_path, '.');
-                        if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
+                /* Modern → legacy: .2EX (CDJ-3000+), .EXT (NXS2 color), .DAT (legacy) */
+                const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
+                for (int ei = 0; exts[ei] && !fetched; ei++) {
+                    strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
+                    ext_path[sizeof(ext_path) - 1] = '\0';
+                    char *dot = strrchr(ext_path, '.');
+                    if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
 
-                        int rc = nfs_fetch_path(wf_ip, wf_slot, ext_path, tmp,
-                                                ANLZ_MAX_SIZE, &anlz_read);
-                        if (rc == 0 && anlz_read > 0) {
-                            logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
-                            dev->waveform_data = realloc(tmp, anlz_read);
-                            if (!dev->waveform_data) dev->waveform_data = tmp;
-                            dev->waveform_len = anlz_read;
-                            ws_broadcast_waveform(dev->device_num, dev->waveform_data, dev->waveform_len);
-                            fetched = 1;
-                        } else if (rc == -ENOENT) {
-                            /* Expected for extensions this track doesn't have — fall through quietly. */
-                        }
+                    int rc = nfs_fetch_path(wf_ip, wf_slot, ext_path, tmp,
+                                            ANLZ_MAX_SIZE, &anlz_read);
+                    if (rc == 0 && anlz_read > 0) {
+                        logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
+                        dev->waveform_data = realloc(tmp, anlz_read);
+                        if (!dev->waveform_data) dev->waveform_data = tmp;
+                        dev->waveform_len = anlz_read;
+                        ws_broadcast_waveform(dev->device_num, dev->waveform_data, dev->waveform_len);
+                        fetched = 1;
+                    } else if (rc == -ENOENT) {
+                        /* Expected for extensions this track doesn't have — fall through quietly. */
                     }
-                    if (!fetched) {
-                        logmsg("cdj", "🌊 Device %d: no waveform found for track id=%u (tried .2EX/.EXT/.DAT)",
-                               dev->device_num, dev->track_id);
-                        free(tmp);
-                    }
+                }
+                if (!fetched) {
+                    /* Grow the backoff: 10 → 20 → 40 → 80 → 160 → 300 cap */
+                    uint16_t b = dev->waveform_backoff ? dev->waveform_backoff * 2 : 10;
+                    dev->waveform_backoff = (b > 300) ? 300 : b;
+                    logmsg("cdj", "🌊 Device %d: no waveform for track id=%u (tried .2EX/.EXT/.DAT, retry in %ds)",
+                           dev->device_num, dev->track_id, dev->waveform_backoff);
+                    free(tmp);
                 }
             }
         }

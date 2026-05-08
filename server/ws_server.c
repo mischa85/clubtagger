@@ -41,8 +41,9 @@
 #define WS_HISTORY_SIZE 5
 #define WS_MAGIC_GUID   "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
-/* Initialized to -1 so broadcasters called before the ws thread starts
- * don't see fd=0 (stdin) as a "valid client" and fire ENOTSOCK on every send. */
+/* PATCH(2026-05): static atomic int array zero-initializes to fd=0 (stdin) —
+ * broadcasters called before the ws thread inits would emit ENOTSOCK spam on
+ * every send. Initializing to -1 makes "no client" the resting state. */
 static _Atomic int ws_fds[WS_MAX_CLIENTS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 static pthread_mutex_t ws_send_mu = PTHREAD_MUTEX_INITIALIZER;
 
@@ -599,9 +600,9 @@ void *ws_main(void *arg) {
                 if (!first) dlen += snprintf(dmsg + dlen, sizeof(dmsg) - dlen, ",");
                 first = 0;
                 static const char *db_src_names[] = {
-                    "", "OneLibrary", "PDB", "DBServer"
+                    "", "OneLibrary", "PDB", "DBServer", "Shazam"
                 };
-                const char *db_src = dev->track_db_src < 4
+                const char *db_src = dev->track_db_src < 5
                     ? db_src_names[dev->track_db_src] : "";
 
                 static const char *fmt_names[] = {

@@ -148,29 +148,57 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
             atomic_fetch_add(&app->shazam_matches, 1);
             *shazam_backoff = 0;
 
-            /* Find the best matching CDJ deck for this Shazam result */
+            /* Determine which deck is playing the audio Shazam just identified.
+             * Two paths to a binding:
+             *   (a) a playing deck already has a name and we can match it via ISRC/fuzzy,
+             *   (b) exactly one deck is playing without a name — Shazam IS the source.
+             * Path (b) was missing prior to 2026-05; without it Shazam was structurally
+             * subordinate to the database and could not name a silent deck. */
             int matched_deck = -1;
+            int matched_via = 0;
+            int untitled_candidate = -1;
+            int untitled_count = 0;
+
             for (int di = 0; di < MAX_DEVICES; di++) {
                 cdj_device_t *dd = &devices[di];
                 if (!dd->active || dd->device_type != DEVICE_TYPE_CDJ) continue;
-                if (!dd->playing || dd->track_title[0] == '\0') continue;
+                if (!dd->playing) continue;
 
-                if (prolink_isrc_matches(dd->track_isrc, isrc)) {
-                    confidence_signal(di, SIG_ISRC_MATCH, 0,
-                                      artist, title, isrc, 0);
-                    matched_deck = di;
-                    break;
-                }
-                if (prolink_matches_fingerprint(dd->track_title, dd->track_artist,
-                                                title, artist)) {
-                    confidence_signal(di, SIG_FUZZY_MATCH, 0,
-                                      artist, title, isrc, 0);
-                    matched_deck = di;
-                    break;
+                if (dd->track_title[0]) {
+                    if (prolink_isrc_matches(dd->track_isrc, isrc)) {
+                        confidence_signal(di, SIG_ISRC_MATCH, 0,
+                                          artist, title, isrc, 0);
+                        matched_deck = di;
+                        matched_via = SIG_ISRC_MATCH;
+                        break;
+                    }
+                    if (prolink_matches_fingerprint(dd->track_title, dd->track_artist,
+                                                    title, artist)) {
+                        confidence_signal(di, SIG_FUZZY_MATCH, 0,
+                                          artist, title, isrc, 0);
+                        matched_deck = di;
+                        matched_via = SIG_FUZZY_MATCH;
+                        break;
+                    }
+                } else {
+                    untitled_count++;
+                    untitled_candidate = di;
                 }
             }
 
-            if (matched_deck >= 0) {
+            /* Shazam-as-source: when exactly one deck is playing without a title,
+             * that's our deck. If two were untitled we couldn't disambiguate; fall
+             * through to audio-only. */
+            if (matched_deck < 0 && untitled_count == 1) {
+                confidence_signal(untitled_candidate, SIG_SHAZAM_PRIMARY,
+                                  shazam_confidence, artist, title, isrc, 0);
+                matched_deck = untitled_candidate;
+                matched_via = SIG_SHAZAM_PRIMARY;
+                logmsg("id", "[%s] Shazam-as-source: bound to Deck %d (untitled)",
+                       ch_name, devices[untitled_candidate].device_num);
+            }
+
+            if (matched_deck >= 0 && matched_via != SIG_SHAZAM_PRIMARY) {
                 deck_confidence_t ds;
                 confidence_get_deck(matched_deck, &ds);
                 if (ds.signals_seen & SIG_SHAZAM_MATCH) {
@@ -180,7 +208,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
                     confidence_signal(matched_deck, SIG_SHAZAM_MATCH, shazam_confidence,
                                       artist, title, isrc, 0);
                 }
-            } else if (!have_cdj) {
+            } else if (matched_deck < 0 && !have_cdj) {
                 /* Audio-only mode */
                 deck_confidence_t audio_state;
                 confidence_get_audio(&audio_state);
@@ -193,7 +221,8 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
                     confidence_signal(-1, SIG_SHAZAM_MATCH, shazam_confidence,
                                       artist, title, isrc, 0);
                 }
-            } else {
+            } else if (matched_deck < 0) {
+                /* CDJ has tracks named, but Shazam doesn't match any of them. */
                 deck_confidence_t audio_state;
                 confidence_get_audio(&audio_state);
                 int shazam_is_consistent = audio_state.title[0] &&
