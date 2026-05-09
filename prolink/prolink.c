@@ -46,6 +46,10 @@ uint8_t get_prolink_packet_type(const uint8_t *data) {
 /* Forward declaration — defined in Track Name Resolution section below */
 void dbserver_reset_retry(void);
 
+/* Per-process monotonic counter for track_seq. Incremented on each track_changed
+ * event so every log line about one playthrough can carry the same [T<n>] tag. */
+static uint32_t next_track_seq = 1;
+
 /* Dump media-relevant bytes (verbose debug). No change-suppression — keep simple
  * to avoid the static-array bookkeeping that crashed previously. */
 static void dump_media_bytes(cdj_device_t *dev, const uint8_t *data,
@@ -79,6 +83,48 @@ static void resolve_source_device(const cdj_device_t *dev,
         if (src && src->ip_addr)
             *out_ip = src->ip_addr;
     }
+}
+
+/* Log everything the network told us about a freshly-loaded track. Fires
+ * once per track-change so a subsequent offline backfill has a complete
+ * baseline (rekordbox_id, source CDJ, BPM, key, length, type) to key on.
+ * DB and Shazam resolution events that follow are enrichment on top of
+ * this line, not a replacement for it. */
+static void log_track_loaded(const cdj_device_t *dev)
+{
+    static const char *type_names[] = {
+        [TRACK_REKORDBOX]  = "rekordbox",
+        [TRACK_UNANALYZED] = "unanalyzed",
+        [TRACK_CD_AUDIO]   = "cd-audio",
+        [TRACK_STREAMING]  = "streaming",
+    };
+    const char *type_name = (dev->track_type < sizeof(type_names)/sizeof(type_names[0])
+                             && type_names[dev->track_type])
+                            ? type_names[dev->track_type] : "unknown";
+
+    char key_buf[8] = "?";
+    if (dev->key_note <= 11) {
+        static const char *sharp[] = {"A","A#","B","C","C#","D","D#","E","F","F#","G","G#"};
+        static const char *flat[]  = {"A","Bb","B","C","Db","D","Eb","E","F","Gb","G","Ab"};
+        const char *n = (dev->key_accidental == 0xff) ? flat[dev->key_note] : sharp[dev->key_note];
+        snprintf(key_buf, sizeof(key_buf), "%s%s", n, dev->key_scale == 0 ? "m" : "");
+    }
+
+    logmsg("cdj",
+           "[T%u] 🆕 DECK %d NEW rb=%u tid=%u type=%s slot=%s "
+           "src_player=%u src_slot=%s bpm=%.2f key=%s len=%us "
+           "on_air=%d playing=%d cdj=\"%s\"",
+           dev->track_seq,
+           dev->device_num,
+           dev->rekordbox_id, (unsigned)dev->track_id, type_name,
+           cdj_slot_name(dev->track_slot),
+           (unsigned)dev->track_source_player,
+           cdj_slot_name(dev->track_source_slot),
+           dev->bpm_raw / 100.0,
+           key_buf,
+           dev->track_length_sec,
+           dev->on_air, dev->playing,
+           dev->name[0] ? dev->name : "?");
 }
 
 /* Update media presence for one slot (USB or SD). Handles insert/remove logging,
@@ -599,6 +645,18 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->play_started = dev->playing ? time(NULL) : 0;  /* Reset play timer on track change */
             /* Reset confidence for this deck — new track starts at 0 */
             confidence_reset_deck((int)(dev - devices));
+
+            /* Assign a fresh sequence ID for this playthrough so every
+             * subsequent log line about this track can carry the same tag. */
+            dev->track_seq = (dev->track_id != 0 || dev->rekordbox_id != 0)
+                             ? next_track_seq++ : 0;
+
+            /* Baseline: dump everything the network told us. Resolution
+             * results from cache/OneLibrary/DBServer/PDB/Shazam follow as
+             * enrichment lines if/when they arrive. */
+            if (dev->track_seq != 0) {
+                log_track_loaded(dev);
+            }
         }
         
         /* Skip lookup if no track loaded or we already have a DB-sourced title.
@@ -616,17 +674,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
         if ((track_changed && dev->rekordbox_id > 0) || need_lookup) {
             dev->last_lookup_time = now_lookup;
-            if (track_changed) {
-                logmsg("cdj", "DECK %d: Looking up id=%u slot=%s src_player=%d",
-                       device_num, dev->rekordbox_id, cdj_slot_name(dev->track_slot),
-                       dev->track_source_player);
-            }
 
             int found = 0;
             int retry_later = 0;  /* 1 = temporary skip, will retry */
 
             if (dev->track_slot == SLOT_CD) {
-                logmsg("cdj", "DECK %d: Trying DBServer (CD-text)", device_num);
+                logmsg("cdj", "[T%u] DECK %d: Trying DBServer (CD-text)", dev->track_seq, device_num);
                 retry_later = try_resolve_track_name(dev);
                 found = (dev->track_title[0] != '\0');
             } else if (dev->track_slot > 0) {
@@ -643,14 +696,14 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     if (tc->isrc[0])
                         utf8_safe_copy(dev->track_isrc, tc->isrc, sizeof(dev->track_isrc));
                     found = 1;
-                    logmsg("cdj", "DECK %d: Found in cache: %s - %s",
-                           device_num, dev->track_artist, dev->track_title);
+                    logmsg("cdj", "[T%u] DECK %d: Found in cache: %s - %s",
+                           dev->track_seq, device_num, dev->track_artist, dev->track_title);
                 }
 
                 /* 2. OneLibrary */
                 if (!found) {
-                    logmsg("cdj", "DECK %d: Trying OneLibrary (id=%u src=%s slot=%s)",
-                           device_num, dev->rekordbox_id,
+                    logmsg("cdj", "[T%u] DECK %d: Trying OneLibrary (id=%u src=%s slot=%s)",
+                           dev->track_seq, device_num, dev->rekordbox_id,
                            ip_to_str(src_ip), cdj_slot_name(src_slot));
                     char ol_title[128] = {0}, ol_artist[128] = {0}, ol_isrc[64] = {0};
                     char ol_anlz[256] = {0};
@@ -677,9 +730,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         dev->track_depth = ol_depth;
                         if (ol_anlz[0])
                             strncpy(dev->track_anlz_path, ol_anlz, sizeof(dev->track_anlz_path) - 1);
-                        logmsg("cdj", "🎵 %s - %s (via OneLibrary)", ol_artist, ol_title);
+                        logmsg("cdj", "[T%u] 🎵 %s - %s (via OneLibrary)",
+                               dev->track_seq, ol_artist, ol_title);
                     } else {
-                        logmsg("cdj", "DECK %d: OneLibrary miss (rc=%d)", device_num, ol_rc);
+                        logmsg("cdj", "[T%u] DECK %d: OneLibrary miss (rc=%d)",
+                               dev->track_seq, device_num, ol_rc);
                     }
                 }
 
@@ -696,21 +751,22 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                      (src_slot == SLOT_SD)  ? src_dev->sd_db_loaded  : true;
 
                     if (db_loaded) {
-                        logmsg("cdj", "DECK %d: Trying DBServer (id=%u)", device_num, dev->rekordbox_id);
+                        logmsg("cdj", "[T%u] DECK %d: Trying DBServer (id=%u)",
+                               dev->track_seq, device_num, dev->rekordbox_id);
                         retry_later = try_resolve_track_name(dev);
                         found = (dev->track_title[0] != '\0');
                         if (found) dev->track_db_src = DB_SRC_DBSERVER;
                     } else {
-                        logmsg("cdj", "DECK %d: Waiting for %s database fetch on src player %d before DBServer",
-                               device_num, cdj_slot_name(src_slot), src_dev->device_num);
+                        logmsg("cdj", "[T%u] DECK %d: Waiting for %s database fetch on src player %d before DBServer",
+                               dev->track_seq, device_num, cdj_slot_name(src_slot), src_dev->device_num);
                         retry_later = 1;
                     }
                 }
 
                 /* 4. PDB (parsed export) */
                 if (!found) {
-                    logmsg("cdj", "DECK %d: Trying PDB (id=%u src=%s slot=%s)",
-                           device_num, dev->rekordbox_id,
+                    logmsg("cdj", "[T%u] DECK %d: Trying PDB (id=%u src=%s slot=%s)",
+                           dev->track_seq, device_num, dev->rekordbox_id,
                            ip_to_str(src_ip), cdj_slot_name(src_slot));
                     TrackID *pdb = lookup_pdb_track(dev->rekordbox_id, src_ip, src_slot);
                     if (pdb && pdb->title[0] && pdb->artist[0]) {
@@ -726,9 +782,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                             strncpy(dev->track_anlz_path, pdb->anlz_path, sizeof(dev->track_anlz_path) - 1);
                         found = 1;
                         dev->track_db_src = DB_SRC_PDB;
-                        logmsg("cdj", "🎵 %s - %s (via PDB)", pdb->artist, pdb->title);
+                        logmsg("cdj", "[T%u] 🎵 %s - %s (via PDB)",
+                               dev->track_seq, pdb->artist, pdb->title);
                     } else {
-                        logmsg("cdj", "DECK %d: PDB miss", device_num);
+                        logmsg("cdj", "[T%u] DECK %d: PDB miss", dev->track_seq, device_num);
                     }
                 }
             }
@@ -767,8 +824,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->waveform_last_attempt = now_wf;
             uint8_t *tmp = malloc(ANLZ_MAX_SIZE);
             if (!tmp) {
-                logmsg("cdj", "🌊 Device %d: waveform malloc(%d) failed",
-                       dev->device_num, ANLZ_MAX_SIZE);
+                logmsg("cdj", "[T%u] 🌊 Device %d: waveform malloc(%d) failed",
+                       dev->track_seq, dev->device_num, ANLZ_MAX_SIZE);
             } else {
                 size_t anlz_read = 0;
                 char ext_path[256];
@@ -785,7 +842,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     int rc = nfs_fetch_path(wf_ip, wf_slot, ext_path, tmp,
                                             ANLZ_MAX_SIZE, &anlz_read);
                     if (rc == 0 && anlz_read > 0) {
-                        logmsg("cdj", "🌊 Waveform: %s (%zu bytes)", exts[ei] + 1, anlz_read);
+                        logmsg("cdj", "[T%u] 🌊 Waveform: %s (%zu bytes)",
+                               dev->track_seq, exts[ei] + 1, anlz_read);
                         dev->waveform_data = realloc(tmp, anlz_read);
                         if (!dev->waveform_data) dev->waveform_data = tmp;
                         dev->waveform_len = anlz_read;
@@ -799,27 +857,21 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     /* Grow the backoff: 10 → 20 → 40 → 80 → 160 → 300 cap */
                     uint16_t b = dev->waveform_backoff ? dev->waveform_backoff * 2 : 10;
                     dev->waveform_backoff = (b > 300) ? 300 : b;
-                    logmsg("cdj", "🌊 Device %d: no waveform for track id=%u (tried .2EX/.EXT/.DAT, retry in %ds)",
-                           dev->device_num, dev->track_id, dev->waveform_backoff);
+                    logmsg("cdj", "[T%u] 🌊 Device %d: no waveform for track id=%u (tried .2EX/.EXT/.DAT, retry in %ds)",
+                           dev->track_seq, dev->device_num, dev->track_id, dev->waveform_backoff);
                     free(tmp);
                 }
             }
         }
 
-        /* Log track changes (play/pause transitions handled by update_play_state) */
-        if (dev->track_id != old_track || dev->track_slot != old_slot ||
-            dev->rekordbox_id != old_rekordbox) {
-
-            const char *title = dev->track_title[0] ? dev->track_title : "(unknown)";
-            const char *artist = dev->track_artist[0] ? dev->track_artist : NULL;
-
-            if (dev->track_id == 0 && dev->rekordbox_id == 0) {
-                logmsg("cdj", "⏏ DECK %d: Ejected", device_num);
-            } else if (artist) {
-                logmsg("cdj", "📀 DECK %d: Loaded - %s - %s", device_num, artist, title);
-            } else {
-                logmsg("cdj", "📀 DECK %d: Loaded - %s", device_num, title);
-            }
+        /* Eject is the only track-change variant the per-resolver and 🆕
+         * baseline lines don't already cover — log it here. The "Loaded"
+         * summary that used to live here was redundant with the 🎵 ... (via X)
+         * enrichment lines, so it was removed. */
+        if ((dev->track_id != old_track || dev->track_slot != old_slot ||
+             dev->rekordbox_id != old_rekordbox) &&
+            dev->track_id == 0 && dev->rekordbox_id == 0) {
+            logmsg("cdj", "⏏ DECK %d: Ejected", device_num);
         }
         
         if (verbose > 1) {
