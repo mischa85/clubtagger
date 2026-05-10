@@ -13,6 +13,7 @@
 #include "onelibrary.h"
 #include "registration.h"
 #include "nfs_client.h"
+#include "track_registry.h"
 #include "../confidence.h"
 #include "../server/ws_server.h"
 #include "../common.h"
@@ -147,6 +148,7 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
         *loaded = false; *attempt = 0; *interval = 10;
         remove_pdb_database(dev->ip_addr, slot);
         remove_onelibrary(dev->ip_addr, slot);
+        track_registry_evict_source(dev->device_num);
     }
 }
 
@@ -720,6 +722,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         logmsg("cdj", "[%u@CDJ%u] 🎵 %s - %s (via OneLibrary)",
                                dev->rekordbox_id, dev->track_source_player,
                                ol_artist, ol_title);
+                        track_key_t k = { .rekordbox_id = dev->rekordbox_id,
+                                          .source_player = dev->track_source_player };
+                        track_registry_emit(k, RES_ONELIBRARY,
+                                            ol_artist, ol_title, ol_isrc, ol_anlz);
                     } else {
                         logmsg("cdj", "[%u@CDJ%u] DECK %d: OneLibrary miss (rc=%d)",
                                dev->rekordbox_id, dev->track_source_player,
@@ -775,6 +781,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         logmsg("cdj", "[%u@CDJ%u] 🎵 %s - %s (via PDB)",
                                dev->rekordbox_id, dev->track_source_player,
                                pdb->artist, pdb->title);
+                        track_key_t k = { .rekordbox_id = dev->rekordbox_id,
+                                          .source_player = dev->track_source_player };
+                        track_registry_emit(k, RES_PDB,
+                                            pdb->artist, pdb->title,
+                                            (pdb->has_isrc ? pdb->isrc : ""),
+                                            pdb->anlz_path);
                     } else {
                         logmsg("cdj", "[%u@CDJ%u] DECK %d: PDB miss",
                                dev->rekordbox_id, dev->track_source_player, device_num);
@@ -1139,16 +1151,19 @@ int try_resolve_track_name(cdj_device_t *dev) {
             } else {
                 logmsg("cdj", "🎵 %s (via DBServer)", title);
             }
-            
+
             track_cache_entry_t *tc = add_track_cache(dev->rekordbox_id, dev->track_source_player);
             if (tc) {
                 utf8_safe_copy(tc->title, title, sizeof(tc->title));
                 utf8_safe_copy(tc->artist, artist, sizeof(tc->artist));
                 tc->track_num = dev->track_number;
             }
+            track_key_t k = { .rekordbox_id = dev->rekordbox_id,
+                              .source_player = dev->track_source_player };
+            track_registry_emit(k, RES_DBSERVER, artist, title, "", "");
             return 0;  /* Success */
         }
-        
+
         /* Strategy 2: Try with fallback track type */
         if (result != CDJ_ERR_CONNECT) {
             memset(title, 0, sizeof(title));
@@ -1168,13 +1183,16 @@ int try_resolve_track_name(cdj_device_t *dev) {
                 } else {
                     logmsg("cdj", "🎵 %s (via DBServer)", title);
                 }
-                
+
                 track_cache_entry_t *tc = add_track_cache(dev->rekordbox_id, dev->track_source_player);
                 if (tc) {
                     utf8_safe_copy(tc->title, title, sizeof(tc->title));
                     utf8_safe_copy(tc->artist, artist, sizeof(tc->artist));
                     tc->track_num = dev->track_number;
                 }
+                track_key_t k = { .rekordbox_id = dev->rekordbox_id,
+                                  .source_player = dev->track_source_player };
+                track_registry_emit(k, RES_DBSERVER, artist, title, "", "");
                 return 0;
             }
         }

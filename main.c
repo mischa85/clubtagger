@@ -11,6 +11,7 @@
 #include "confidence.h"
 #include "writer/writer_thread.h"
 #include "prolink/prolink_thread.h"
+#include "prolink/track_registry.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -504,6 +505,9 @@ int main(int argc, char **argv) {
     /* Initialize confidence model */
     confidence_init(CONF_DEFAULT_ACCEPT, CONF_DEFAULT_DECAY, cfg.same_track_hold_sec);
 
+    /* Initialize track registry (passive in step 2 — observes resolver emits) */
+    track_registry_init();
+
     /* Log version and mode information */
 #ifdef GIT_COMMIT
     logmsg("main", "clubtagger %s", GIT_COMMIT);
@@ -674,6 +678,7 @@ cleanup:
         free(app.prolink);
     }
     db_close(&app);
+    track_registry_destroy();
 
     /* Free per-channel buffers */
     for (int c = 0; c < SLINK_MAX_CHANNELS; c++) {
