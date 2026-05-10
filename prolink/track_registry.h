@@ -60,6 +60,7 @@ typedef struct {
     char     isrc[64];
     char     anlz_path[256];
 
+    resolver_id_t primary;      /* Resolver whose title/artist won; RES__COUNT if none */
     uint32_t resolved_by;       /* bitmask of (1u << resolver_id_t) */
     uint8_t  verified;          /* 2+ resolvers agree on title/artist */
     uint8_t  disputed;          /* DBServer disagrees with OneLibrary/PDB */

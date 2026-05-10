@@ -803,12 +803,19 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 dev->lookup_backoff = 5;
             }
 
-            /* Signal confidence model when metadata is resolved */
-            if (found && dev->track_title[0]) {
+            /* Signal confidence model when metadata is resolved.
+             * Identity comes from the registry winner (composed across
+             * all resolvers) — DBServer wins title/artist when present,
+             * OneLibrary/PDB enrich with ISRC when they agree. */
+            track_key_t res_key = { .rekordbox_id = dev->rekordbox_id,
+                                    .source_player = dev->track_source_player };
+            track_identity_t res_id;
+            int have_id = track_registry_winner(res_key, &res_id);
+            if (found && have_id && res_id.title[0]) {
                 int didx = (int)(dev - devices);
                 confidence_signal(didx, SIG_CDJ_LOADED, 0,
-                                  dev->track_artist, dev->track_title,
-                                  dev->track_isrc, dev->rekordbox_id);
+                                  res_id.artist, res_id.title,
+                                  res_id.isrc, dev->rekordbox_id);
             }
         }
 
@@ -818,7 +825,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
          * is the "have data" flag; we keep retrying until it's set. */
         time_t now_wf = time(NULL);
         uint16_t wf_backoff = dev->waveform_backoff ? dev->waveform_backoff : 10;
-        if (dev->track_anlz_path[0] && !dev->waveform_data
+        track_key_t wf_key = { .rekordbox_id = dev->rekordbox_id,
+                               .source_player = dev->track_source_player };
+        track_identity_t wf_id;
+        int have_wf_id = track_registry_winner(wf_key, &wf_id);
+        if (have_wf_id && wf_id.anlz_path[0] && !dev->waveform_data
             && registration_state == REG_ACTIVE
             && now_wf - dev->waveform_last_attempt >= wf_backoff) {
             uint32_t wf_ip;
@@ -839,7 +850,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 /* Modern → legacy: .2EX (CDJ-3000+), .EXT (NXS2 color), .DAT (legacy) */
                 const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
                 for (int ei = 0; exts[ei] && !fetched; ei++) {
-                    strncpy(ext_path, dev->track_anlz_path, sizeof(ext_path) - 1);
+                    strncpy(ext_path, wf_id.anlz_path, sizeof(ext_path) - 1);
                     ext_path[sizeof(ext_path) - 1] = '\0';
                     char *dot = strrchr(ext_path, '.');
                     if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);

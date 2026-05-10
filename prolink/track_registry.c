@@ -138,6 +138,7 @@ int track_registry_emit(track_key_t key, resolver_id_t resolver,
 int track_registry_winner(track_key_t key, track_identity_t *out) {
     if (!out) return 0;
     memset(out, 0, sizeof(*out));
+    out->primary = RES__COUNT;
 
     pthread_mutex_lock(&g_track_registry.mu);
 
@@ -171,6 +172,7 @@ int track_registry_winner(track_key_t key, track_identity_t *out) {
     if (primary) {
         copy_field(out->artist, sizeof(out->artist), primary->artist);
         copy_field(out->title,  sizeof(out->title),  primary->title);
+        out->primary = primary_id;
         out->resolved_by |= (1u << primary_id);
     }
 

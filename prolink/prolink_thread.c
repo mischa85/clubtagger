@@ -11,6 +11,7 @@
 #include "registration.h"
 #include "packet_handler.h"
 #include "track_cache.h"
+#include "track_registry.h"
 #include "../common.h"
 
 #ifdef HAVE_AF_XDP
@@ -663,8 +664,12 @@ void prolink_check_tagging(ProlinkThread *pt) {
         if (now - dev->last_seen > 10) continue;  /* Stale device */
         if (!dev->playing) continue;
         if (dev->rekordbox_id == 0) continue;
-        if (dev->track_title[0] == '\0') continue;  /* No metadata yet */
-        
+
+        track_key_t tk = { .rekordbox_id = dev->rekordbox_id,
+                           .source_player = dev->track_source_player };
+        track_identity_t id;
+        if (!track_registry_winner(tk, &id) || id.title[0] == '\0') continue;
+
         /* Already logged this track on this deck */
         if (dev->logged_rekordbox_id == dev->rekordbox_id) continue;
         
@@ -695,14 +700,14 @@ void prolink_check_tagging(ProlinkThread *pt) {
         if (should_log) {
             /* Mark as logged to prevent duplicate logging */
             dev->logged_rekordbox_id = dev->rekordbox_id;
-            
+
             logmsg("cdj", "📝 DECK %d: Logging track - %s - %s (%s)",
-                   dev->device_num, dev->track_artist, dev->track_title, reason);
-            
-            pt->on_track_confirmed(pt->callback_user_data, 
+                   dev->device_num, id.artist, id.title, reason);
+
+            pt->on_track_confirmed(pt->callback_user_data,
                                    dev->device_num,
-                                   dev->track_artist,
-                                   dev->track_title,
+                                   id.artist,
+                                   id.title,
                                    CDJ_TAG_CONFIDENCE,
                                    reason);
         }

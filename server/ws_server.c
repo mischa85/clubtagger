@@ -9,6 +9,7 @@
 #include "../common.h"
 #include "../prolink/cdj_types.h"
 #include "../prolink/onelibrary.h"
+#include "../prolink/track_registry.h"
 #include "../confidence.h"
 #include "../db/database.h"
 
@@ -588,22 +589,29 @@ void *ws_main(void *arg) {
                 if (!dev->active || dev->device_type != DEVICE_TYPE_CDJ) continue;
                 if (now - dev->last_seen > 10) continue;
 
+                track_key_t tk = { .rekordbox_id = dev->rekordbox_id,
+                                   .source_player = dev->track_source_player };
+                track_identity_t id;
+                track_registry_winner(tk, &id);
+
                 char et[256], ea[256], en[64], ei[128];
-                json_escape(dev->track_title, et, sizeof(et));
-                json_escape(dev->track_artist, ea, sizeof(ea));
+                json_escape(id.title,  et, sizeof(et));
+                json_escape(id.artist, ea, sizeof(ea));
                 json_escape(dev->name, en, sizeof(en));
-                json_escape(dev->track_isrc, ei, sizeof(ei));
+                json_escape(id.isrc,   ei, sizeof(ei));
 
                 deck_confidence_t dc;
                 confidence_get_deck(d, &dc);
 
                 if (!first) dlen += snprintf(dmsg + dlen, sizeof(dmsg) - dlen, ",");
                 first = 0;
-                static const char *db_src_names[] = {
-                    "", "OneLibrary", "PDB", "DBServer", "Shazam"
+                static const char *res_names[RES__COUNT] = {
+                    [RES_ONELIBRARY] = "OneLibrary",
+                    [RES_PDB]        = "PDB",
+                    [RES_DBSERVER]   = "DBServer"
                 };
-                const char *db_src = dev->track_db_src < 5
-                    ? db_src_names[dev->track_db_src] : "";
+                const char *db_src = (id.primary < RES__COUNT)
+                    ? res_names[id.primary] : "";
 
                 static const char *fmt_names[] = {
                     [0] = "", [1] = "MP3", [4] = "M4A",
