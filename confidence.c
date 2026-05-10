@@ -173,27 +173,6 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
             d->shazam_confidence = conf;
         }
         break;
-    case SIG_SHAZAM_PRIMARY:
-        /* Shazam identifies the audio for a deck whose CDJ-side metadata isn't
-         * loaded yet (DB miss, slow USB mount, non-rekordbox media). Populate
-         * the device's track fields so the rest of the system has a name to
-         * work with. A later DB-sourced resolution overrides this — see the
-         * lookup gate in prolink.c which keeps probing while db_src=SHAZAM. */
-        if (deck_idx >= 0 && deck_idx < CONF_MAX_DECKS) {
-            int conf = (value > 0 && value <= 100) ? value : 70;
-            weight = W_SHAZAM_PRIMARY * conf / 100;
-            d->shazam_confidence = conf;
-            cdj_device_t *dev = &devices[deck_idx];
-            if (title && title[0] && dev->track_title[0] == '\0') {
-                snprintf(dev->track_title, sizeof(dev->track_title), "%s", title);
-                if (artist && artist[0])
-                    snprintf(dev->track_artist, sizeof(dev->track_artist), "%s", artist);
-                if (isrc && isrc[0])
-                    snprintf(dev->track_isrc, sizeof(dev->track_isrc), "%s", isrc);
-                dev->track_db_src = DB_SRC_SHAZAM;
-            }
-        }
-        break;
     case SIG_SHAZAM_CONFIRM:
         {
             int conf = (value > 0 && value <= 100) ? value : 70;
@@ -245,7 +224,6 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
         case SIG_CDJ_PLAYING:     sig_name = "playing"; break;
         case SIG_CDJ_ON_AIR_EDGE: sig_name = "ON AIR"; break;
         case SIG_SHAZAM_MATCH:    sig_name = "Shazam match"; break;
-        case SIG_SHAZAM_PRIMARY:  sig_name = "Shazam primary"; break;
         case SIG_SHAZAM_CONFIRM:  sig_name = "Shazam confirm"; break;
         case SIG_ISRC_MATCH:      sig_name = "ISRC match"; break;
         case SIG_FUZZY_MATCH:     sig_name = "CDJ+Shazam match"; break;
@@ -430,7 +408,7 @@ const char *confidence_source_string(uint32_t signals_seen)
     int has_cdj = signals_seen & (SIG_CDJ_LOADED | SIG_CDJ_PLAYING |
                                   SIG_CDJ_ON_AIR | SIG_CDJ_ON_AIR_EDGE |
                                   SIG_CDJ_DURATION);
-    int has_audio = signals_seen & (SIG_SHAZAM_MATCH | SIG_SHAZAM_CONFIRM | SIG_SHAZAM_PRIMARY);
+    int has_audio = signals_seen & (SIG_SHAZAM_MATCH | SIG_SHAZAM_CONFIRM);
     int has_cross = signals_seen & (SIG_ISRC_MATCH | SIG_FUZZY_MATCH);
 
     if (has_cross || (has_cdj && has_audio))     return "both";

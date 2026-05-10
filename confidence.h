@@ -34,7 +34,6 @@ typedef enum {
     SIG_SHAZAM_DISAGREE = (1 << 9),   /* Shazam returned different track */
     SIG_SHAZAM_NO_MATCH = (1 << 10),  /* Shazam found nothing */
     SIG_CDJ_OFF_AIR     = (1 << 11),  /* Deck went off-air (fader down) */
-    SIG_SHAZAM_PRIMARY  = (1 << 12),  /* Shazam is the source — populate deck name */
 } signal_flag_t;
 
 /*
@@ -49,7 +48,6 @@ typedef enum {
 #define W_CDJ_ON_AIR        100
 #define W_CDJ_ON_AIR_EDGE   100   /* Fader up — important but needs duration to confirm */
 #define W_SHAZAM_MATCH      100   /* Single hit is just a hint (may be false positive) */
-#define W_SHAZAM_PRIMARY    100   /* Shazam-as-source on an untitled deck — same epistemic strength as MATCH */
 #define W_SHAZAM_CONFIRM    250   /* Consistency is the real signal — needs to reach threshold for audio-only */
 #define W_ISRC_MATCH        300   /* CDJ + Shazam ISRC agree — very strong */
 #define W_FUZZY_MATCH       200   /* CDJ + Shazam title/artist match */

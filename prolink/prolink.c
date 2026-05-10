@@ -227,8 +227,7 @@ static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
         logmsg("cdj", "📥 Device %d: Fetching %s OneLibrary...", dev->device_num, name);
         if (fetch_onelibrary_database(dev->ip_addr, slot) == 0) {
             *loaded = true; *interval = 10;
-            if (dev->track_slot == slot &&
-                (dev->track_title[0] == '\0' || dev->track_db_src == DB_SRC_SHAZAM))
+            if (dev->track_slot == slot && dev->track_title[0] == '\0')
                 dev->lookup_backoff = 5;  /* DB just loaded — re-enable lookups for the current track */
             return;
         }
@@ -242,8 +241,7 @@ static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
         logmsg("cdj", "✅ Device %d: %s PDB loaded (%d tracks)",
                dev->device_num, name, pdb->track_count);
         *loaded = true; *interval = 10;
-        if (dev->track_slot == slot &&
-            (dev->track_title[0] == '\0' || dev->track_db_src == DB_SRC_SHAZAM))
+        if (dev->track_slot == slot && dev->track_title[0] == '\0')
             dev->lookup_backoff = 5;
         return;
     }
@@ -649,14 +647,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
         
-        /* Skip lookup if no track loaded or we already have a DB-sourced title.
-         * Shazam-sourced titles still trigger lookups — a real DB hit
-         * unconditionally overrides Shazam. Rate-limited by lookup_backoff,
-         * which doubles on failure (5s → 60s) and resets on track change,
-         * successful resolution, or db-load completion. */
+        /* Skip lookup if no track loaded or we already have a title. Rate-limited
+         * by lookup_backoff, which doubles on failure (5s → 60s) and resets on
+         * track change, successful resolution, or db-load completion. */
         time_t now_lookup = time(NULL);
-        int title_blocks_lookup = dev->track_title[0] != '\0' &&
-                                  dev->track_db_src != DB_SRC_SHAZAM;
+        int title_blocks_lookup = dev->track_title[0] != '\0';
         uint16_t backoff = dev->lookup_backoff ? dev->lookup_backoff : 5;
         int need_lookup = (dev->rekordbox_id > 0) &&
                           !title_blocks_lookup &&
