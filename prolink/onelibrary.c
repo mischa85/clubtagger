@@ -46,27 +46,7 @@ extern const char *capture_interface;
 #define OLIB_KDF_ITER      256000
 #define OLIB_MAX_FILE_SIZE (16 * 1024 * 1024)  /* 16 MB max */
 
-/* Passphrase set via --olib-key command line argument */
-static const char *olib_passphrase = NULL;
-
-void onelibrary_set_key(const char *key) {
-    olib_passphrase = key;
-}
-
-int onelibrary_key_available(void) {
-    return olib_passphrase && olib_passphrase[0];
-}
-
 static const char SQLITE_MAGIC[16] = "SQLite format 3";
-
-/*
- * ============================================================================
- * Database Storage
- * ============================================================================
- */
-
-static onelibrary_t olib_databases[MAX_ONELIBRARY];
-static int olib_count = 0;
 
 /*
  * ============================================================================
@@ -96,12 +76,18 @@ static int decrypt_page(const unsigned char *key, const unsigned char *iv,
 }
 
 uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
-                            size_t *out_len)
+                            const char *passphrase, size_t *out_len)
 {
     if (!encrypted || encrypted_len < OLIB_PAGE_SIZE ||
         encrypted_len % OLIB_PAGE_SIZE != 0) {
         logmsg("cdj", "[OLIB] Invalid file size %zu (page=%d, multiple required) — encrypted=%p",
                encrypted_len, OLIB_PAGE_SIZE, (const void *)encrypted);
+        return NULL;
+    }
+
+    if (!passphrase || !passphrase[0]) {
+        logmsg("cdj", "[OLIB] onelibrary_decrypt: NULL/empty passphrase; cannot decrypt %zu bytes",
+               encrypted_len);
         return NULL;
     }
 
@@ -116,13 +102,7 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
     vlogmsg("cdj", "[OLIB] Deriving key (PBKDF2-HMAC-SHA512, %d iterations)...",
                 OLIB_KDF_ITER);
 
-    if (!olib_passphrase || !olib_passphrase[0]) {
-        logmsg("cdj", "[OLIB] onelibrary_decrypt: no passphrase configured (use --olib-key); cannot decrypt %zu bytes",
-               encrypted_len);
-        return NULL;
-    }
-
-    if (!PKCS5_PBKDF2_HMAC(olib_passphrase, strlen(olib_passphrase),
+    if (!PKCS5_PBKDF2_HMAC(passphrase, strlen(passphrase),
                             salt, OLIB_SALT_SIZE, OLIB_KDF_ITER,
                             EVP_sha512(), OLIB_KEY_SIZE, enc_key)) {
         logmsg("cdj", "[OLIB] PBKDF2 key derivation failed");
@@ -270,49 +250,13 @@ void onelibrary_close(onelibrary_t *olib)
     olib->fetched_at = 0;
 }
 
-onelibrary_t *find_onelibrary(uint32_t device_ip, uint8_t slot)
-{
-    for (int i = 0; i < olib_count; i++) {
-        if (olib_databases[i].db &&
-            olib_databases[i].device_ip == device_ip &&
-            olib_databases[i].slot == slot) {
-            return &olib_databases[i];
-        }
-    }
-    return NULL;
-}
-
-void remove_onelibrary(uint32_t device_ip, uint8_t slot)
-{
-    for (int i = 0; i < olib_count; i++) {
-        if (olib_databases[i].device_ip == device_ip &&
-            olib_databases[i].slot == slot) {
-            int track_count = olib_databases[i].track_count;
-            onelibrary_close(&olib_databases[i]);
-
-            /* Shift remaining down */
-            for (int j = i; j < olib_count - 1; j++) {
-                olib_databases[j] = olib_databases[j + 1];
-            }
-            memset(&olib_databases[olib_count - 1], 0, sizeof(onelibrary_t));
-            olib_count--;
-
-            vlogmsg("cdj", "🗑️ Removed OneLibrary: %s @ %s (%d tracks)",
-                       slot == 3 ? "USB" : (slot == 2 ? "SD" : "?"),
-                       ip_to_str(device_ip), track_count);
-            return;
-        }
-    }
-}
-
 /*
  * ============================================================================
  * Track Lookup
  * ============================================================================
  */
 
-int onelibrary_lookup(uint32_t content_id,
-                      uint32_t device_ip, uint8_t slot,
+int onelibrary_lookup(onelibrary_t *olib, uint32_t content_id,
                       char *title, size_t title_len,
                       char *artist, size_t artist_len,
                       char *isrc, size_t isrc_len,
@@ -320,78 +264,68 @@ int onelibrary_lookup(uint32_t content_id,
                       uint32_t *samplerate_out, uint8_t *depth_out,
                       char *anlz_path, size_t anlz_path_len)
 {
-    if (content_id == 0) return -1;
+    if (!olib || !olib->db || content_id == 0) return -1;
 
-    for (int i = 0; i < olib_count; i++) {
-        if (!olib_databases[i].db) continue;
-        /* If device_ip specified, only search matching database */
-        if (device_ip != 0 &&
-            (olib_databases[i].device_ip != device_ip || olib_databases[i].slot != slot))
-            continue;
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(olib->db,
+        "SELECT c.title, a.name, c.isrc, c.bitrate, c.fileType, c.samplingRate, c.bitDepth, c.analysisDataFilePath "
+        "FROM content c "
+        "LEFT JOIN artist a ON c.artist_id_artist = a.artist_id "
+        "WHERE c.content_id = ?",
+        -1, &stmt, NULL);
 
-        sqlite3_stmt *stmt = NULL;
-        int rc = sqlite3_prepare_v2(olib_databases[i].db,
-            "SELECT c.title, a.name, c.isrc, c.bitrate, c.fileType, c.samplingRate, c.bitDepth, c.analysisDataFilePath "
-            "FROM content c "
-            "LEFT JOIN artist a ON c.artist_id_artist = a.artist_id "
-            "WHERE c.content_id = ?",
-            -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        logmsg("cdj", "[OLIB] sqlite3_prepare_v2 failed: %s", sqlite3_errmsg(olib->db));
+        return -1;
+    }
 
-        if (rc != SQLITE_OK) continue;
+    sqlite3_bind_int(stmt, 1, (int)content_id);
 
-        sqlite3_bind_int(stmt, 1, (int)content_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *t = (const char *)sqlite3_column_text(stmt, 0);
+        const char *a = (const char *)sqlite3_column_text(stmt, 1);
+        const char *isr = (const char *)sqlite3_column_text(stmt, 2);
+        int br = sqlite3_column_int(stmt, 3);
+        int ft = sqlite3_column_int(stmt, 4);
+        int sr = sqlite3_column_int(stmt, 5);
+        int bd = sqlite3_column_int(stmt, 6);
 
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            const char *t = (const char *)sqlite3_column_text(stmt, 0);
-            const char *a = (const char *)sqlite3_column_text(stmt, 1);
-            const char *isr = (const char *)sqlite3_column_text(stmt, 2);
-            int br = sqlite3_column_int(stmt, 3);
-            int ft = sqlite3_column_int(stmt, 4);
-            int sr = sqlite3_column_int(stmt, 5);
-            int bd = sqlite3_column_int(stmt, 6);
-
-            if (t && title && title_len > 0) {
-                strncpy(title, t, title_len - 1);
-                title[title_len - 1] = '\0';
-            }
-            if (a && artist && artist_len > 0) {
-                strncpy(artist, a, artist_len - 1);
-                artist[artist_len - 1] = '\0';
-            }
-            if (isr && isr[0] && isrc && isrc_len > 0) {
-                strncpy(isrc, isr, isrc_len - 1);
-                isrc[isrc_len - 1] = '\0';
-            } else if (isrc && isrc_len > 0) {
-                isrc[0] = '\0';
-            }
-            if (bitrate_out) *bitrate_out = (uint32_t)br;
-            if (format_out) *format_out = (uint8_t)ft;
-            if (samplerate_out) *samplerate_out = (uint32_t)sr;
-            if (depth_out) *depth_out = (uint8_t)bd;
-            const char *ap = (const char *)sqlite3_column_text(stmt, 7);
-            if (ap && ap[0] && anlz_path && anlz_path_len > 0) {
-                strncpy(anlz_path, ap, anlz_path_len - 1);
-                anlz_path[anlz_path_len - 1] = '\0';
-            } else if (anlz_path && anlz_path_len > 0) {
-                anlz_path[0] = '\0';
-            }
-
-            sqlite3_finalize(stmt);
-
-            if (verbose) {
-                vlogmsg("cdj", "[OLIB] Found track %u: \"%s\" by \"%s\"",
-                           content_id, title ? title : "", artist ? artist : "");
-            }
-            return 0;
+        if (t && title && title_len > 0) {
+            strncpy(title, t, title_len - 1);
+            title[title_len - 1] = '\0';
+        }
+        if (a && artist && artist_len > 0) {
+            strncpy(artist, a, artist_len - 1);
+            artist[artist_len - 1] = '\0';
+        }
+        if (isr && isr[0] && isrc && isrc_len > 0) {
+            strncpy(isrc, isr, isrc_len - 1);
+            isrc[isrc_len - 1] = '\0';
+        } else if (isrc && isrc_len > 0) {
+            isrc[0] = '\0';
+        }
+        if (bitrate_out) *bitrate_out = (uint32_t)br;
+        if (format_out) *format_out = (uint8_t)ft;
+        if (samplerate_out) *samplerate_out = (uint32_t)sr;
+        if (depth_out) *depth_out = (uint8_t)bd;
+        const char *ap = (const char *)sqlite3_column_text(stmt, 7);
+        if (ap && ap[0] && anlz_path && anlz_path_len > 0) {
+            strncpy(anlz_path, ap, anlz_path_len - 1);
+            anlz_path[anlz_path_len - 1] = '\0';
+        } else if (anlz_path && anlz_path_len > 0) {
+            anlz_path[0] = '\0';
         }
 
         sqlite3_finalize(stmt);
+
+        if (verbose) {
+            vlogmsg("cdj", "[OLIB] Found track %u: \"%s\" by \"%s\"",
+                       content_id, title ? title : "", artist ? artist : "");
+        }
+        return 0;
     }
 
-    if (olib_count > 0 && verbose) {
-        logmsg("cdj", "⚠ OneLibrary miss: content_id=%u not found in %d database(s)",
-               content_id, olib_count);
-    }
+    sqlite3_finalize(stmt);
     return -1;
 }
 
@@ -401,18 +335,26 @@ int onelibrary_lookup(uint32_t content_id,
  * ============================================================================
  */
 
-/* Cached NFS port from portmapper (shared with pdb_parser.c) */
-extern uint16_t g_nfs_port;
-
-/* Simplified NFS lookup helper (reuses g_nfs_port) */
-static int olib_nfs_lookup(uint32_t server_ip, const uint8_t *dir_fh,
-                           const char *name, uint8_t *file_fh)
+int fetch_onelibrary_database(onelibrary_t *out, uint32_t device_ip, uint8_t slot,
+                              uint16_t nfs_port, uint16_t mount_port,
+                              const char *passphrase)
 {
-    return nfs_lookup(server_ip, g_nfs_port, dir_fh, name, file_fh);
-}
+    if (!out) {
+        logmsg("cdj", "[OLIB] fetch: NULL out pointer");
+        return -1;
+    }
+    if (!passphrase || !passphrase[0]) {
+        logmsg("cdj", "[OLIB] fetch: NULL/empty passphrase for %s slot %s",
+               ip_to_str(device_ip), cdj_slot_name(slot));
+        return -1;
+    }
+    if (nfs_port == 0 || mount_port == 0) {
+        logmsg("cdj", "[OLIB] fetch: missing ports for %s slot %s (nfs=%u mount=%u) — announce portmap discovery did not complete",
+               ip_to_str(device_ip), cdj_slot_name(slot), nfs_port, mount_port);
+        return -1;
+    }
+    memset(out, 0, sizeof(*out));
 
-int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
-{
     uint8_t root_fh[64], pioneer_fh[64], rb_fh[64], olib_fh[64];
     size_t root_fh_len;
 
@@ -426,25 +368,12 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
             return -1;
     }
 
-    vlogmsg("cdj", "📥 Fetching OneLibrary from %s (slot %s, export %s)...",
-                ip_to_str(device_ip), cdj_slot_name(slot), export_path);
-
-    /* Step 1: Query portmapper for mount port */
-    int mount_port = rpc_portmap_getport(device_ip, MOUNT_PROGRAM, MOUNT_VERSION);
-    if (mount_port <= 0) {
-        logmsg("cdj", "[OLIB] Portmapper query failed");
-        return -1;
-    }
-
-    /* Query portmapper for NFS port */
-    int nfs_port = rpc_portmap_getport(device_ip, NFS_PROGRAM, NFS_VERSION);
-    if (nfs_port <= 0) {
-        nfs_port = 2049;
-    }
-    g_nfs_port = (uint16_t)nfs_port;
+    vlogmsg("cdj", "📥 Fetching OneLibrary from %s (slot %s, export %s, nfs=%u mount=%u)...",
+                ip_to_str(device_ip), cdj_slot_name(slot), export_path,
+                nfs_port, mount_port);
 
     /* Step 2: Mount the export */
-    int mrc = nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path,
+    int mrc = nfs_mount_to_port(device_ip, mount_port, export_path,
                                 root_fh, &root_fh_len);
     if (mrc != 0) {
         logmsg("cdj", "[OLIB] Mount %s failed on %s slot %s%s",
@@ -454,21 +383,21 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     }
 
     /* Step 3: Lookup PIONEER/rekordbox/exportLibrary.db */
-    int lrc = olib_nfs_lookup(device_ip, root_fh, "PIONEER", pioneer_fh);
+    int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh);
     if (lrc != 0) {
         logmsg("cdj", "[OLIB] PIONEER dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
                lrc == -ENOENT ? " (NOENT)" : "");
         return lrc == -ENOENT ? -ENOENT : -1;
     }
-    lrc = olib_nfs_lookup(device_ip, pioneer_fh, "rekordbox", rb_fh);
+    lrc = nfs_lookup(device_ip, nfs_port, pioneer_fh, "rekordbox", rb_fh);
     if (lrc != 0) {
         logmsg("cdj", "[OLIB] rekordbox dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
                lrc == -ENOENT ? " (NOENT — non-rekordbox media)" : "");
         return lrc == -ENOENT ? -ENOENT : -1;
     }
-    lrc = olib_nfs_lookup(device_ip, rb_fh, "exportLibrary.db", olib_fh);
+    lrc = nfs_lookup(device_ip, nfs_port, rb_fh, "exportLibrary.db", olib_fh);
     if (lrc != 0) {
         logmsg("cdj", "[OLIB] exportLibrary.db not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -486,7 +415,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
     vlogmsg("cdj", "📖 Reading exportLibrary.db...");
 
     size_t total_read = 0;
-    int rrc = nfs_read_file(device_ip, g_nfs_port, olib_fh, encrypted,
+    int rrc = nfs_read_file(device_ip, nfs_port, olib_fh, encrypted,
                             OLIB_MAX_FILE_SIZE, &total_read);
     if (rrc != 0) {
         logmsg("cdj", "[OLIB] Read error fetching exportLibrary.db from %s slot %s (rc=%d)",
@@ -501,7 +430,7 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
 
     /* Step 5: Decrypt */
     size_t decrypted_len = 0;
-    uint8_t *decrypted = onelibrary_decrypt(encrypted, total_read, &decrypted_len);
+    uint8_t *decrypted = onelibrary_decrypt(encrypted, total_read, passphrase, &decrypted_len);
     free(encrypted);
 
     if (!decrypted) {
@@ -509,82 +438,13 @@ int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot)
         return -1;
     }
 
-    /* Step 6: Open as SQLite and register */
-    /* Find or create slot */
-    onelibrary_t *olib = find_onelibrary(device_ip, slot);
-    if (olib) {
-        onelibrary_close(olib);
-    } else {
-        if (olib_count < MAX_ONELIBRARY) {
-            olib = &olib_databases[olib_count++];
-        } else {
-            /* Evict oldest */
-            time_t oldest = time(NULL);
-            int oldest_idx = 0;
-            for (int i = 0; i < MAX_ONELIBRARY; i++) {
-                if (olib_databases[i].fetched_at < oldest) {
-                    oldest = olib_databases[i].fetched_at;
-                    oldest_idx = i;
-                }
-            }
-            onelibrary_close(&olib_databases[oldest_idx]);
-            olib = &olib_databases[oldest_idx];
-        }
-    }
-    memset(olib, 0, sizeof(onelibrary_t));
-
-    if (onelibrary_open(olib, decrypted, decrypted_len, device_ip, slot) != 0) {
-        vlogmsg("cdj", "[OLIB] Failed to open decrypted database");
+    /* Step 6: Open as SQLite into caller-owned struct. onelibrary_open
+     * takes ownership of `decrypted` (frees on success or failure). */
+    if (onelibrary_open(out, decrypted, decrypted_len, device_ip, slot) != 0) {
+        logmsg("cdj", "[OLIB] Failed to open decrypted database for %s slot %s",
+               ip_to_str(device_ip), cdj_slot_name(slot));
         return -1;
     }
 
     return 0;
-}
-
-/*
- * ============================================================================
- * Passive Sniffing
- * ============================================================================
- */
-
-void onelibrary_process_passive(const uint8_t *data, size_t len,
-                                uint32_t server_ip, uint8_t slot)
-{
-    vlogmsg("cdj", "[OLIB] Processing passively captured OneLibrary (%zu bytes) from %s",
-               len, ip_to_str(server_ip));
-
-    /* Decrypt */
-    size_t decrypted_len = 0;
-    uint8_t *decrypted = onelibrary_decrypt(data, len, &decrypted_len);
-    if (!decrypted) {
-        vlogmsg("cdj", "[OLIB] Passive decryption failed");
-        return;
-    }
-
-    /* Find or create slot */
-    onelibrary_t *olib = find_onelibrary(server_ip, slot);
-    if (olib) {
-        onelibrary_close(olib);
-    } else {
-        if (olib_count < MAX_ONELIBRARY) {
-            olib = &olib_databases[olib_count++];
-        } else {
-            /* Evict oldest */
-            time_t oldest = time(NULL);
-            int oldest_idx = 0;
-            for (int i = 0; i < MAX_ONELIBRARY; i++) {
-                if (olib_databases[i].fetched_at < oldest) {
-                    oldest = olib_databases[i].fetched_at;
-                    oldest_idx = i;
-                }
-            }
-            onelibrary_close(&olib_databases[oldest_idx]);
-            olib = &olib_databases[oldest_idx];
-        }
-    }
-    memset(olib, 0, sizeof(onelibrary_t));
-
-    if (onelibrary_open(olib, decrypted, decrypted_len, server_ip, slot) != 0) {
-        vlogmsg("cdj", "[OLIB] Failed to open passively captured database");
-    }
 }

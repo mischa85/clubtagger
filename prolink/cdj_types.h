@@ -99,6 +99,8 @@ typedef struct {
     uint32_t ip_addr;
     uint8_t  mac_addr[6];
     char     name[32];
+    uint16_t nfs_port;          /* NFSv2 port discovered via portmap at announce; 0 = unknown */
+    uint16_t mount_port;        /* MOUNT v1 port discovered via portmap at announce; 0 = unknown */
     
     /* Track state */
     uint8_t  playing;

@@ -76,8 +76,13 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db);
  * ============================================================================
  */
 
-/* Fetch rekordbox database from CDJ via NFS */
-int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *db);
+/* Fetch rekordbox database from CDJ via NFS.
+ * `nfs_port` and `mount_port` are the device's ports discovered at announce
+ * time (cdj_device_t::nfs_port, mount_port); the fetcher does not touch
+ * portmap. Both must be non-zero. */
+int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
+                             uint16_t nfs_port, uint16_t mount_port,
+                             pdb_database_t *db);
 
 /* Parse a passively captured PDB buffer (from NFS sniffing) */
 void parse_pdb_buffer(const uint8_t *data, size_t len, uint32_t device_ip);

@@ -10,9 +10,10 @@
 #include "track_cache.h"
 #include "dbserver_thread.h"
 #include "pdb_parser.h"
-#include "onelibrary.h"
+#include "onelibrary_thread.h"
 #include "registration.h"
 #include "nfs_client.h"
+#include "nfs_protocol.h"
 #include "track_registry.h"
 #include "../confidence.h"
 #include "../server/ws_server.h"
@@ -22,6 +23,7 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <pthread.h>
 
 /*
  * ============================================================================
@@ -138,12 +140,21 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
     if (*present && !old) {
         logmsg("cdj", "💾 Device %d: %s inserted", dev->device_num, name);
         *loaded = false; *attempt = 0; *interval = 10;
+        if (prolink_olib_key && prolink_olib_key[0]) {
+            int rc = onelibrary_thread_spawn(dev->device_num, slot, dev->ip_addr,
+                                             dev->nfs_port, dev->mount_port,
+                                             prolink_olib_key);
+            if (rc != 0) {
+                logmsg("cdj", "⚠ Device %d: %s OneLibrary worker spawn failed rc=%d",
+                       dev->device_num, name, rc);
+            }
+        }
     }
     if (!*present && old) {
         logmsg("cdj", "💾 Device %d: %s removed", dev->device_num, name);
         *loaded = false; *attempt = 0; *interval = 10;
         remove_pdb_database(dev->ip_addr, slot);
-        remove_onelibrary(dev->ip_addr, slot);
+        onelibrary_thread_stop(dev->device_num, slot);
         track_registry_evict_source_slot(dev->device_num, slot);
     }
 }
@@ -231,10 +242,12 @@ static void update_play_state(cdj_device_t *dev, const cdj_status_packet_t *pkt,
     if (bpm > 0 && bpm < 50000) dev->bpm_raw = bpm;
 }
 
-/* Fetch a database for one slot. Tries OneLibrary first, falls back to PDB.
- * Sets *_db_loaded only on success; failure leaves it false and applies
- * exponential backoff (10s → 300s cap). NOENT is treated identically to any
- * transient error — a CDJ may still be mounting its export. */
+/* Fetch the PDB for one slot from the prolink thread.
+ * OneLibrary is fetched independently by its per-slot worker thread —
+ * we don't gate or coordinate from here.
+ *
+ * Sets *_db_loaded only on PDB success; failure leaves it false and applies
+ * exponential backoff (10s → 300s cap). */
 static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
 {
     bool    *loaded   = (slot == SLOT_USB) ? &dev->usb_db_loaded : &dev->sd_db_loaded;
@@ -248,22 +261,13 @@ static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
 
     *attempt = now;
 
-    /* OneLibrary first (has ANLZ paths, richer metadata). */
-    if (onelibrary_key_available()) {
-        logmsg("cdj", "📥 Device %d: Fetching %s OneLibrary...", dev->device_num, name);
-        if (fetch_onelibrary_database(dev->ip_addr, slot) == 0) {
-            *loaded = true; *interval = 10;
-            if (dev->track_slot == slot && dev->track_title[0] == '\0')
-                dev->lookup_backoff = 5;  /* DB just loaded — re-enable lookups for the current track */
-            return;
-        }
-    }
-
-    /* PDB fallback. Try whether or not OneLibrary just failed — older exports
-     * lack OneLibrary but have PDB. */
     logmsg("cdj", "📥 Device %d: Fetching %s PDB...", dev->device_num, name);
     pdb_database_t *pdb = create_pdb_database(dev->ip_addr, slot);
-    if (pdb && fetch_rekordbox_database(dev->ip_addr, slot, pdb) == 0) {
+    pthread_mutex_lock(&nfs_fetch_mu);
+    int prc = (pdb ? fetch_rekordbox_database(dev->ip_addr, slot,
+                                              dev->nfs_port, dev->mount_port, pdb) : -1);
+    pthread_mutex_unlock(&nfs_fetch_mu);
+    if (prc == 0) {
         logmsg("cdj", "✅ Device %d: %s PDB loaded (%d tracks)",
                dev->device_num, name, pdb->track_count);
         *loaded = true; *interval = 10;
@@ -272,11 +276,9 @@ static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
         return;
     }
 
-    /* Both subsystems failed. Double the backoff interval (cap 300s) and
-     * retry on the next status packet that arrives after the interval. */
     if (*interval < 300)
         *interval = (*interval * 2 > 300) ? 300 : *interval * 2;
-    logmsg("cdj", "📥 Device %d: %s fetch failed, retry in %ds",
+    logmsg("cdj", "📥 Device %d: %s PDB fetch failed, retry in %ds",
            dev->device_num, name, *interval);
 }
 
@@ -344,6 +346,37 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
             if (was_new) {
                 logmsg("cdj", "🔗 Device %d: %s connected @ %s",
                        device_num, name, ip_to_str(src_ip));
+
+                /* Discover the device's NFS and MOUNT ports via portmap once
+                 * at connect. RPC service ports are stable for the lifetime
+                 * of the daemon (i.e., until the CDJ reboots); on reboot the
+                 * stale-device logic clears dev->name, which re-fires was_new
+                 * and re-runs this block. Held under nfs_fetch_mu because
+                 * portmap reuses the shared NFS UDP socket. */
+                if (dev->device_type == DEVICE_TYPE_CDJ) {
+                    pthread_mutex_lock(&nfs_fetch_mu);
+                    int np = rpc_portmap_getport(src_ip, NFS_PROGRAM, NFS_VERSION);
+                    int mp = rpc_portmap_getport(src_ip, MOUNT_PROGRAM, MOUNT_VERSION);
+                    pthread_mutex_unlock(&nfs_fetch_mu);
+                    if (np > 0) {
+                        dev->nfs_port = (uint16_t)np;
+                    } else {
+                        dev->nfs_port = 2049;
+                        logmsg("cdj", "⚠ Device %d: portmap NFS query failed, defaulting to 2049",
+                               device_num);
+                    }
+                    if (mp > 0) {
+                        dev->mount_port = (uint16_t)mp;
+                    } else {
+                        /* No safe default — CDJ uses non-standard mount port.
+                         * Leave 0; fetchers will refuse and retry next fetch. */
+                        dev->mount_port = 0;
+                        logmsg("cdj", "⚠ Device %d: portmap MOUNT query failed — mount port unknown",
+                               device_num);
+                    }
+                    vlogmsg("cdj", "[%s] NFS port=%u, MOUNT port=%u",
+                            name, dev->nfs_port, dev->mount_port);
+                }
 
                 /* Spawn DBServer worker — every CDJ hosts a DBServer; queries
                  * for any track on the network go to the playing deck. */
@@ -735,87 +768,44 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                            device_num, dev->track_artist, dev->track_title);
                 }
 
-                /* 2. OneLibrary */
+                /* 2. OneLibrary — async via per-(source_player, slot) worker.
+                 * The worker emits to track_registry; the winner is folded
+                 * into dev fields below. */
                 if (!found) {
-                    logmsg("cdj", "[%u@CDJ%u] DECK %d: Trying OneLibrary (src=%s slot=%s)",
-                           dev->rekordbox_id, dev->track_source_player, device_num,
-                           ip_to_str(src_ip), cdj_slot_name(src_slot));
-                    char ol_title[128] = {0}, ol_artist[128] = {0}, ol_isrc[64] = {0};
-                    char ol_anlz[256] = {0};
-                    uint32_t ol_bitrate = 0, ol_srate = 0;
-                    uint8_t ol_format = 0, ol_depth = 0;
-                    int ol_rc = onelibrary_lookup(dev->rekordbox_id,
-                                          src_ip, src_slot,
-                                          ol_title, sizeof(ol_title),
-                                          ol_artist, sizeof(ol_artist),
-                                          ol_isrc, sizeof(ol_isrc),
-                                          &ol_bitrate, &ol_format,
-                                          &ol_srate, &ol_depth,
-                                          ol_anlz, sizeof(ol_anlz));
-                    if (ol_rc == 0 && ol_title[0] != '\0') {
-                        utf8_safe_copy(dev->track_title, ol_title, sizeof(dev->track_title));
-                        utf8_safe_copy(dev->track_artist, ol_artist, sizeof(dev->track_artist));
-                        if (ol_isrc[0])
-                            utf8_safe_copy(dev->track_isrc, ol_isrc, sizeof(dev->track_isrc));
-                        found = 1;
-                        dev->track_db_src = DB_SRC_ONELIBRARY;
-                        dev->track_bitrate = ol_bitrate;
-                        dev->track_format = ol_format;
-                        dev->track_samplerate = ol_srate;
-                        dev->track_depth = ol_depth;
-                        if (ol_anlz[0])
-                            strncpy(dev->track_anlz_path, ol_anlz, sizeof(dev->track_anlz_path) - 1);
-                        logmsg("cdj", "[%u@CDJ%u] 🎵 %s - %s (via OneLibrary)",
+                    int ol_erc = onelibrary_thread_enqueue(dev->track_source_player,
+                                                           src_slot,
+                                                           dev->rekordbox_id);
+                    if (ol_erc != 0 && ol_erc != -ENOENT) {
+                        /* -ENOENT = no worker for this slot (key not set / wrong slot).
+                         * Other errors are real and should be visible. */
+                        logmsg("cdj", "[%u@CDJ%u] OneLibrary enqueue failed (src=CDJ%u slot=%s rc=%d)",
                                dev->rekordbox_id, dev->track_source_player,
-                               ol_artist, ol_title);
-                        track_key_t k = { .rekordbox_id = dev->rekordbox_id,
-                                          .source_player = dev->track_source_player,
-                                          .slot          = src_slot };
-                        track_registry_emit(k, RES_ONELIBRARY,
-                                            ol_artist, ol_title, ol_isrc, ol_anlz);
-                    } else {
-                        logmsg("cdj", "[%u@CDJ%u] DECK %d: OneLibrary miss (rc=%d)",
-                               dev->rekordbox_id, dev->track_source_player,
-                               device_num, ol_rc);
+                               dev->track_source_player, cdj_slot_name(src_slot), ol_erc);
                     }
+                    retry_later = 1;
                 }
 
-                /* 3. DBServer — async via per-(source_player, slot) worker. The
-                 * worker emits to track_registry; the registry winner is picked
-                 * up on the next prolink tick. The db_loaded gate remains for
-                 * now (step 5 removes it once registry is the only consumer). */
+                /* 3. DBServer — async via per-playing-deck worker. The
+                 * worker emits to track_registry; the registry winner is
+                 * picked up on the next prolink tick. */
                 if (!found) {
-                    cdj_device_t *src_dev = (dev->track_source_player > 0 &&
-                                             dev->track_source_player != dev->device_num)
-                                            ? get_device(dev->track_source_player) : dev;
-                    if (!src_dev) src_dev = dev;
-                    bool db_loaded = (src_slot == SLOT_USB) ? src_dev->usb_db_loaded :
-                                     (src_slot == SLOT_SD)  ? src_dev->sd_db_loaded  : true;
-
-                    if (db_loaded) {
-                        /* DMST byte = device holding the media. For self-mounted
-                         * that's dev itself; for Link Export it's track_source_player. */
-                        uint8_t query_target = (dev->track_source_player > 0)
-                                             ? dev->track_source_player : dev->device_num;
-                        logmsg("cdj", "[%u@CDJ%u] DECK %d: Enqueuing DBServer query (target=%u slot=%s)",
-                               dev->rekordbox_id, dev->track_source_player, device_num,
-                               query_target, cdj_slot_name(src_slot));
-                        int erc = dbserver_thread_enqueue(dev->device_num,
-                                                          dev->rekordbox_id,
-                                                          dev->ip_addr, query_target,
-                                                          src_slot, dev->track_type);
-                        if (erc != 0) {
-                            logmsg("cdj", "[%u@CDJ%u] DBServer enqueue failed (playing=CDJ%u rc=%d)",
-                                   dev->rekordbox_id, dev->track_source_player,
-                                   dev->device_num, erc);
-                        }
-                        retry_later = 1;  /* async — result arrives via track_registry */
-                    } else {
-                        logmsg("cdj", "[%u@CDJ%u] DECK %d: Waiting for %s database fetch on src player %d before DBServer",
+                    /* DMST byte = device holding the media. For self-mounted
+                     * that's dev itself; for Link Export it's track_source_player. */
+                    uint8_t query_target = (dev->track_source_player > 0)
+                                         ? dev->track_source_player : dev->device_num;
+                    logmsg("cdj", "[%u@CDJ%u] DECK %d: Enqueuing DBServer query (target=%u slot=%s)",
+                           dev->rekordbox_id, dev->track_source_player, device_num,
+                           query_target, cdj_slot_name(src_slot));
+                    int erc = dbserver_thread_enqueue(dev->device_num,
+                                                      dev->rekordbox_id,
+                                                      dev->ip_addr, query_target,
+                                                      src_slot, dev->track_type);
+                    if (erc != 0) {
+                        logmsg("cdj", "[%u@CDJ%u] DBServer enqueue failed (playing=CDJ%u rc=%d)",
                                dev->rekordbox_id, dev->track_source_player,
-                               device_num, cdj_slot_name(src_slot), src_dev->device_num);
-                        retry_later = 1;
+                               dev->device_num, erc);
                     }
+                    retry_later = 1;
                 }
 
                 /* 4. PDB (parsed export) */
@@ -908,6 +898,18 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             uint32_t wf_ip;
             uint8_t  wf_slot;
             resolve_source_device(dev, &wf_ip, &wf_slot);
+            /* Waveforms come from the source CDJ's NFS export — read the
+             * source device's discovered port. For local tracks this is
+             * dev itself; for Link tracks it's the player that owns the
+             * media. */
+            const cdj_device_t *wf_src = dev;
+            if (dev->track_source_player > 0 &&
+                dev->track_source_player != dev->device_num) {
+                cdj_device_t *s = get_device(dev->track_source_player);
+                if (s && s->ip_addr) wf_src = s;
+            }
+            uint16_t wf_nport = wf_src->nfs_port;
+            uint16_t wf_mport = wf_src->mount_port;
 
             dev->waveform_last_attempt = now_wf;
             uint8_t *tmp = malloc(ANLZ_MAX_SIZE);
@@ -922,14 +924,15 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
                 /* Modern → legacy: .2EX (CDJ-3000+), .EXT (NXS2 color), .DAT (legacy) */
                 const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
+                pthread_mutex_lock(&nfs_fetch_mu);
                 for (int ei = 0; exts[ei] && !fetched; ei++) {
                     strncpy(ext_path, wf_id.anlz_path, sizeof(ext_path) - 1);
                     ext_path[sizeof(ext_path) - 1] = '\0';
                     char *dot = strrchr(ext_path, '.');
                     if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
 
-                    int rc = nfs_fetch_path(wf_ip, wf_slot, ext_path, tmp,
-                                            ANLZ_MAX_SIZE, &anlz_read);
+                    int rc = nfs_fetch_path(wf_ip, wf_nport, wf_mport, wf_slot,
+                                            ext_path, tmp, ANLZ_MAX_SIZE, &anlz_read);
                     if (rc == 0 && anlz_read > 0) {
                         logmsg("cdj", "[%u@CDJ%u] 🌊 Waveform: %s (%zu bytes)",
                                dev->rekordbox_id, dev->track_source_player,
@@ -943,6 +946,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                         /* Expected for extensions this track doesn't have — fall through quietly. */
                     }
                 }
+                pthread_mutex_unlock(&nfs_fetch_mu);
                 if (!fetched) {
                     /* Grow the backoff: 10 → 20 → 40 → 80 → 160 → 300 cap */
                     uint16_t b = dev->waveform_backoff ? dev->waveform_backoff * 2 : 10;

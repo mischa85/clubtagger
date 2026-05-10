@@ -8,7 +8,6 @@
 #include "pdb_parser.h"
 #include "pdb_protocol.h"
 #include "nfs_client.h"
-#include "nfs_protocol.h"
 #include "cdj_types.h"
 #include "../common.h"
 #include <stdio.h>
@@ -476,20 +475,20 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
  * ============================================================================
  */
 
-/* Internal helper for NFS lookup with just dir_fh and output fh */
-uint16_t g_nfs_port = 2049;  /* Cached NFS port from portmapper (shared with onelibrary.c) */
-
-static int nfs_lookup_simple(uint32_t server_ip, const uint8_t *dir_fh, 
-                             const char *name, uint8_t *file_fh) {
-    return nfs_lookup(server_ip, g_nfs_port, dir_fh, name, file_fh);
-}
-
-int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *db) {
+int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
+                             uint16_t nfs_port, uint16_t mount_port,
+                             pdb_database_t *db) {
     uint8_t root_fh[64], pioneer_fh[64], rb_fh[64], pdb_fh[64];
     size_t root_fh_len;
-    
+
     if (!db) return -1;
-    
+    if (nfs_port == 0 || mount_port == 0) {
+        logmsg("cdj", "❌ fetch_rekordbox_database: missing ports for %s slot %s (nfs=%u mount=%u) — announce portmap discovery did not complete",
+               ip_to_str(device_ip), cdj_slot_name(slot), nfs_port, mount_port);
+        db->fetch_failed = 1;
+        return -1;
+    }
+
     /* Determine export path based on slot */
     const char *export_path;
     switch (slot) {
@@ -501,36 +500,15 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
             db->fetch_failed = 1;
             return -1;
     }
-    
-    vlogmsg("cdj", "📥 Fetching database from %s (slot %s, export %s)...", 
-                ip_to_str(device_ip), cdj_slot_name(slot), export_path);
-    
+
+    vlogmsg("cdj", "📥 Fetching database from %s (slot %s, export %s, nfs=%u mount=%u)...",
+                ip_to_str(device_ip), cdj_slot_name(slot), export_path,
+                nfs_port, mount_port);
+
     db->fetch_in_progress = 1;
-    
-    /* Step 1: Query portmapper for mount port */
-    vlogmsg("cdj", "🔍 Querying portmapper on %s:111...", ip_to_str(device_ip));
-    int mount_port = rpc_portmap_getport(device_ip, MOUNT_PROGRAM, MOUNT_VERSION);
-    
-    if (mount_port <= 0) {
-        logmsg("cdj", "❌ Portmapper query failed - no mount service");
-        db->fetch_in_progress = 0;
-        db->fetch_failed = 1;
-        return -1;
-    }
-    
-    /* Query portmapper for NFS port (CDJs often use non-standard ports) */
-    int nfs_port = rpc_portmap_getport(device_ip, NFS_PROGRAM, NFS_VERSION);
-    if (nfs_port <= 0) {
-        vlogmsg("cdj", "⚠️ NFS port query failed, using default 2049");
-        nfs_port = 2049;
-    } else {
-        vlogmsg("cdj", "✅ NFS port: %d", nfs_port);
-    }
-    g_nfs_port = (uint16_t)nfs_port;
-    vlogmsg("cdj", "✅ Mount port: %d", mount_port);
-    
+
     /* Step 2: Mount the export */
-    int mrc = nfs_mount_to_port(device_ip, (uint16_t)mount_port, export_path,
+    int mrc = nfs_mount_to_port(device_ip, mount_port, export_path,
                                 root_fh, &root_fh_len);
     if (mrc != 0) {
         logmsg("cdj", "❌ Mount failed for %s on slot %s%s",
@@ -544,7 +522,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     vlogmsg("cdj", "✅ Mounted %s", export_path);
 
     /* Step 3: Lookup PIONEER directory */
-    int lrc = nfs_lookup_simple(device_ip, root_fh, "PIONEER", pioneer_fh);
+    int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh);
     if (lrc != 0) {
         logmsg("cdj", "❌ PIONEER not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -555,7 +533,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     }
 
     /* Step 4: Lookup rekordbox directory */
-    lrc = nfs_lookup_simple(device_ip, pioneer_fh, "rekordbox", rb_fh);
+    lrc = nfs_lookup(device_ip, nfs_port, pioneer_fh, "rekordbox", rb_fh);
     if (lrc != 0) {
         logmsg("cdj", "❌ rekordbox dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -566,7 +544,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     }
 
     /* Step 5: Lookup export.pdb */
-    lrc = nfs_lookup_simple(device_ip, rb_fh, "export.pdb", pdb_fh);
+    lrc = nfs_lookup(device_ip, nfs_port, rb_fh, "export.pdb", pdb_fh);
     if (lrc != 0) {
         logmsg("cdj", "❌ export.pdb not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -589,7 +567,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot, pdb_database_t *d
     vlogmsg("cdj", "📖 Reading export.pdb...");
 
     size_t total_read = 0;
-    int rrc = nfs_read_file(device_ip, g_nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read);
+    int rrc = nfs_read_file(device_ip, nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read);
     if (rrc != 0) {
         logmsg("cdj", "❌ Read error fetching export.pdb from %s slot %s (rc=%d)",
                ip_to_str(device_ip), cdj_slot_name(slot), rrc);

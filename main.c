@@ -13,6 +13,7 @@
 #include "prolink/prolink_thread.h"
 #include "prolink/track_registry.h"
 #include "prolink/dbserver_thread.h"
+#include "prolink/onelibrary_thread.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -576,14 +577,10 @@ int main(int argc, char **argv) {
         /* Set passive mode before init - the thread reads this global */
         extern int passive_only;
         passive_only = app.cfg.prolink_passive;
-        /* Set OneLibrary decryption key if provided */
-        if (app.cfg.olib_key) {
-            extern void onelibrary_set_key(const char *key);
-            onelibrary_set_key(app.cfg.olib_key);
-        }
         app.prolink = (ProlinkThread *)malloc(sizeof(ProlinkThread));
         if (app.prolink) {
-            if (prolink_init(app.prolink, app.cfg.prolink_interface, g_verbose) != 0) {
+            if (prolink_init(app.prolink, app.cfg.prolink_interface, g_verbose,
+                             app.cfg.olib_key) != 0) {
                 logmsg("main", "prolink init failed (continuing without CDJ support)");
                 free(app.prolink);
                 app.prolink = NULL;
@@ -679,6 +676,7 @@ cleanup:
         free(app.prolink);
     }
     dbserver_thread_stop_all();
+    onelibrary_thread_stop_all();
     db_close(&app);
     track_registry_destroy();
 

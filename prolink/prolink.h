@@ -68,6 +68,11 @@ static inline track_key_t dev_track_key(const cdj_device_t *dev) {
     };
 }
 
+/* OneLibrary SQLCipher passphrase, set by prolink_init from --olib-key.
+ * Borrowed pointer (argv lifetime). NULL/empty → OneLibrary disabled.
+ * Read by update_slot_media when spawning the per-slot worker. */
+extern const char *prolink_olib_key;
+
 /* Check if media slot changed and handle accordingly */
 void check_media_change(cdj_device_t *dev);
 

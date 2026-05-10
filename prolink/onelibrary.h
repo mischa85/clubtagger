@@ -32,25 +32,17 @@ typedef struct {
     time_t    fetched_at;   /* When this database was loaded */
 } onelibrary_t;
 
-#define MAX_ONELIBRARY 12   /* 6 CDJs x 2 slots */
-
 /*
  * ============================================================================
  * Decryption
  * ============================================================================
  */
 
-/* Set the decryption passphrase (must be called before any decrypt operations) */
-void onelibrary_set_key(const char *key);
-
-/* Check if a decryption key has been set */
-int onelibrary_key_available(void);
-
-/* Decrypt a SQLCipher 4 encrypted OneLibrary database in memory.
- * Returns malloc'd plaintext buffer (caller frees), or NULL on failure.
- * out_len receives the size of decrypted data. */
+/* Decrypt a SQLCipher 4 encrypted OneLibrary database in memory using the
+ * given passphrase. Returns malloc'd plaintext buffer (caller frees), or
+ * NULL on failure. out_len receives the size of decrypted data. */
 uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
-                            size_t *out_len);
+                            const char *passphrase, size_t *out_len);
 
 /*
  * ============================================================================
@@ -64,14 +56,8 @@ uint8_t *onelibrary_decrypt(const uint8_t *encrypted, size_t encrypted_len,
 int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len,
                     uint32_t device_ip, uint8_t slot);
 
-/* Close and free OneLibrary handle */
+/* Close and free OneLibrary handle (idempotent). */
 void onelibrary_close(onelibrary_t *olib);
-
-/* Find loaded OneLibrary for device/slot */
-onelibrary_t *find_onelibrary(uint32_t device_ip, uint8_t slot);
-
-/* Remove OneLibrary for device/slot (e.g., media ejected) */
-void remove_onelibrary(uint32_t device_ip, uint8_t slot);
 
 /*
  * ============================================================================
@@ -79,13 +65,11 @@ void remove_onelibrary(uint32_t device_ip, uint8_t slot);
  * ============================================================================
  */
 
-/* Look up track by content_id (= rekordbox_id) in a specific device's database.
- * If device_ip is 0, searches all loaded databases (legacy behavior).
+/* Look up track by content_id (= rekordbox_id) in the given database.
  * Populates title/artist/isrc into provided buffers.
- * bitrate_out/format_out may be NULL if not needed.
- * Returns 0 on success, -1 if not found. */
-int onelibrary_lookup(uint32_t content_id,
-                      uint32_t device_ip, uint8_t slot,
+ * bitrate_out/format_out etc. may be NULL if not needed.
+ * Returns 0 on success, -1 if not found / olib not loaded. */
+int onelibrary_lookup(onelibrary_t *olib, uint32_t content_id,
                       char *title, size_t title_len,
                       char *artist, size_t artist_len,
                       char *isrc, size_t isrc_len,
@@ -99,12 +83,19 @@ int onelibrary_lookup(uint32_t content_id,
  * ============================================================================
  */
 
-/* Fetch exportLibrary.db from CDJ via NFS, decrypt, and open.
- * Returns 0 on success, -1 on failure. */
-int fetch_onelibrary_database(uint32_t device_ip, uint8_t slot);
-
-/* Process passively captured exportLibrary.db data */
-void onelibrary_process_passive(const uint8_t *data, size_t len,
-                                uint32_t server_ip, uint8_t slot);
+/* Fetch exportLibrary.db from CDJ via NFS, decrypt with `passphrase`, and
+ * open into *out. On success *out is populated and owns its sqlite handle
+ * + buffer (caller must release via onelibrary_close).
+ *
+ * `nfs_port` and `mount_port` are the device's ports discovered at announce
+ * time (cdj_device_t::nfs_port, mount_port); the fetcher does not touch
+ * portmap at all. Both must be non-zero.
+ *
+ * Returns 0 on success, -ENOENT if the export/file is absent (caller should
+ * stop retrying), -1 on transient failure (caller may retry with backoff). */
+int fetch_onelibrary_database(onelibrary_t *out,
+                              uint32_t device_ip, uint8_t slot,
+                              uint16_t nfs_port, uint16_t mount_port,
+                              const char *passphrase);
 
 #endif /* ONELIBRARY_H */

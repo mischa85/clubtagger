@@ -8,7 +8,6 @@
 #include "nfs_client.h"
 #include "nfs_protocol.h"
 #include "pdb_parser.h"
-#include "onelibrary.h"
 #include "registration.h"
 #include "../common.h"
 #include <stdio.h>
@@ -33,6 +32,8 @@ static uint32_t nfs_xid = 0x12345678;
 extern uint32_t our_ip;  /* From registration module */
 extern const char *capture_interface;  /* From registration module */
 extern int verbose;      /* From main */
+
+pthread_mutex_t nfs_fetch_mu = PTHREAD_MUTEX_INITIALIZER;
 
 /*
  * ============================================================================
@@ -228,10 +229,6 @@ int rpc_portmap_getport(uint32_t server_ip, uint32_t program, uint32_t version) 
     }
     
     return port;
-}
-
-int query_pioneer_portmapper(uint32_t server_ip) {
-    return rpc_portmap_getport(server_ip, MOUNT_PROGRAM, MOUNT_VERSION);
 }
 
 /*
@@ -506,12 +503,17 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     return 0;
 }
 
-int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
+int nfs_fetch_path(uint32_t server_ip, uint16_t nfs_port, uint16_t mount_port,
+                   uint8_t slot, const char *path,
                    uint8_t *buf, size_t buf_len, size_t *bytes_read) {
-    extern uint16_t g_nfs_port;
     if (!path || path[0] != '/') {
         logmsg("nfs", "fetch_path: bad path=%s (server=%s slot=%u)",
                path ? path : "(null)", ip_to_str(server_ip), slot);
+        return -1;
+    }
+    if (nfs_port == 0 || mount_port == 0) {
+        logmsg("nfs", "fetch_path: missing ports for %s (nfs=%u mount=%u) — announce portmap discovery did not complete",
+               ip_to_str(server_ip), nfs_port, mount_port);
         return -1;
     }
 
@@ -532,35 +534,16 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
     uint8_t root_fh[NFS_FHSIZE];
     size_t fh_len = 0;
 
-    if (g_nfs_port == 0) {
-        int nfs_port = rpc_portmap_getport(server_ip, 100003, 2);
-        if (nfs_port <= 0) {
-            logmsg("nfs", "fetch_path: portmap lookup of NFS (100003) on %s failed (port=%d)",
-                   ip_to_str(server_ip), nfs_port);
-            return -1;
-        }
-        g_nfs_port = (uint16_t)nfs_port;
-    }
-
-    int mount_port = rpc_portmap_getport(server_ip, 100005, 1);
-    if (mount_port <= 0) {
-        logmsg("nfs", "fetch_path: portmap lookup of MOUNT (100005) on %s failed (port=%d)",
-               ip_to_str(server_ip), mount_port);
-        return -1;
-    }
-
-    int mount_rc = nfs_mount_to_port(server_ip, (uint16_t)mount_port,
+    int mount_rc = nfs_mount_to_port(server_ip, mount_port,
                                      export_path, root_fh, &fh_len);
     if (mount_rc != 0) {
         if (mount_rc == -ENOENT) {
             logmsg("nfs", "fetch_path: export %s NOENT on %s:%u — slot has no rekordbox media (will not retry)",
                    export_path, ip_to_str(server_ip), mount_port);
-            /* Don't clear g_nfs_port — NFS itself works; only this export is missing */
             return -ENOENT;
         }
-        logmsg("nfs", "fetch_path: mount %s on %s:%u failed — clearing g_nfs_port for retry",
+        logmsg("nfs", "fetch_path: mount %s on %s:%u failed",
                export_path, ip_to_str(server_ip), mount_port);
-        g_nfs_port = 0;
         return -1;
     }
 
@@ -576,16 +559,14 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
     char *component = strtok_r(pathbuf, "/", &saveptr);
     while (component) {
         char *next = strtok_r(NULL, "/", &saveptr);
-        int lk = nfs_lookup(server_ip, g_nfs_port, dir_fh, component, file_fh);
+        int lk = nfs_lookup(server_ip, nfs_port, dir_fh, component, file_fh);
         if (lk != 0) {
             if (lk == -ENOENT) {
                 logmsg("nfs", "fetch_path: NOENT at '%s' in %s — file not present (will not retry)",
                        component, path);
-                /* Keep g_nfs_port: server is healthy, file just doesn't exist */
                 return -ENOENT;
             }
             logmsg("nfs", "fetch_path: lookup failed at '%s' in %s (rc=%d)", component, path, lk);
-            g_nfs_port = 0;
             return -1;
         }
         if (next) memcpy(dir_fh, file_fh, NFS_FHSIZE);
@@ -593,13 +574,12 @@ int nfs_fetch_path(uint32_t server_ip, uint8_t slot, const char *path,
     }
 
     /* Read the file */
-    int rc = nfs_read_file(server_ip, g_nfs_port, file_fh, buf, buf_len, bytes_read);
+    int rc = nfs_read_file(server_ip, nfs_port, file_fh, buf, buf_len, bytes_read);
     nfs_close_socket();
     if (rc == -ENOENT) {
         logmsg("nfs", "fetch_path: READ NOENT for %s — file vanished mid-fetch (will not retry)", path);
         return -ENOENT;
     }
-    if (rc != 0) g_nfs_port = 0;  /* Force port rediscovery on next call */
     return rc;
 }
 
@@ -872,11 +852,12 @@ static void add_pdb_data(pdb_reassembly_t *r, uint32_t offset, const uint8_t *da
 
 static void complete_pdb_reassembly(pdb_reassembly_t *r) {
     if (r->is_onelibrary) {
-        vlogmsg("cdj", "[NFS-SNIFF] Passive OneLibrary capture complete from %s (%u bytes)",
+        /* TODO: passive OneLibrary ingestion is disabled until the
+         * onelibrary_thread worker exposes an "ingest pre-decrypted bytes"
+         * API. The active fetch path covers our needs; passive sniff was
+         * an opportunistic shortcut. */
+        vlogmsg("cdj", "[NFS-SNIFF] Passive OneLibrary capture from %s (%u bytes) — ignored (disabled)",
                    ip_to_str(r->server_ip), r->received);
-        /* Determine slot from file size heuristic (both USB and SD go through same path) */
-        uint8_t slot = SLOT_USB;  /* Default to USB */
-        onelibrary_process_passive(r->buffer, r->received, r->server_ip, slot);
     } else {
         vlogmsg("cdj", "[NFS-SNIFF] Passive PDB capture complete from %s (%u bytes)",
                    ip_to_str(r->server_ip), r->received);

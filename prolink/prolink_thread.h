@@ -68,8 +68,13 @@ typedef struct {
  * ============================================================================
  */
 
-/* Initialize and start the prolink thread */
-int prolink_init(ProlinkThread *pt, const char *interface, int verbose_level);
+/* Initialize and start the prolink thread.
+ *
+ * `olib_key` is the OneLibrary SQLCipher passphrase from --olib-key
+ * (NULL or empty disables OneLibrary fetching). The pointer is borrowed
+ * — caller must keep it alive (argv strings are fine). */
+int prolink_init(ProlinkThread *pt, const char *interface, int verbose_level,
+                 const char *olib_key);
 
 /* Shutdown the prolink thread */
 void prolink_shutdown(ProlinkThread *pt);

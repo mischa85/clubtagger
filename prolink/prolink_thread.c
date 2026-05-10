@@ -445,13 +445,17 @@ static void *prolink_thread_main(void *arg) {
  * ============================================================================
  */
 
-int prolink_init(ProlinkThread *pt, const char *interface, int verbose_level) {
+const char *prolink_olib_key = NULL;
+
+int prolink_init(ProlinkThread *pt, const char *interface, int verbose_level,
+                 const char *olib_key) {
     if (!pt || !interface) return -1;
-    
+
     memset(pt, 0, sizeof(*pt));
     pt->interface = interface;
     atomic_store(&pt->running, 1);
-    
+    prolink_olib_key = olib_key;
+
     /* Set CDJ verbose level */
     verbose = verbose_level;
     
