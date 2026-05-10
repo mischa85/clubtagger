@@ -12,6 +12,7 @@
 #include "writer/writer_thread.h"
 #include "prolink/prolink_thread.h"
 #include "prolink/track_registry.h"
+#include "prolink/dbserver_thread.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -677,6 +678,7 @@ cleanup:
         prolink_shutdown(app.prolink);
         free(app.prolink);
     }
+    dbserver_thread_stop_all();
     db_close(&app);
     track_registry_destroy();
 

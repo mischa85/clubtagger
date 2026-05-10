@@ -9,6 +9,7 @@
 #include "cdj_types.h"
 #include "track_cache.h"
 #include "dbserver.h"
+#include "dbserver_thread.h"
 #include "pdb_parser.h"
 #include "onelibrary.h"
 #include "registration.h"
@@ -157,6 +158,34 @@ static void update_media_state(cdj_device_t *dev, const cdj_status_packet_t *pkt
 {
     update_slot_media(dev, pkt->usb_state, SLOT_USB);
     update_slot_media(dev, pkt->sd_state, SLOT_SD);
+}
+
+/* CDJs that haven't sent a keepalive in this many seconds are considered
+ * disappeared. Longer than the 10s stale-skip threshold elsewhere so a
+ * Wi-Fi blip doesn't thrash worker spawn/stop. */
+#define CDJ_DISAPPEAR_TIMEOUT_SEC 30
+
+void prolink_sweep_disappeared_cdjs(void) {
+    time_t now = time(NULL);
+    for (int i = 0; i < MAX_DEVICES; i++) {
+        cdj_device_t *dev = &devices[i];
+        if (dev->name[0] == '\0') continue;       /* never seen / already cleared */
+        if (dev->last_seen == 0) continue;
+        if (now - dev->last_seen <= CDJ_DISAPPEAR_TIMEOUT_SEC) continue;
+
+        logmsg("cdj", "🔌 Device %d: %s disappeared (silent for %lds)",
+               dev->device_num, dev->name,
+               (long)(now - dev->last_seen));
+
+        if (dev->device_type == DEVICE_TYPE_CDJ) {
+            dbserver_thread_stop(dev->device_num);
+        }
+
+        /* Clear identity so the next announce re-fires was_new and respawns
+         * the worker fresh (no stale dedup state from the prior session). */
+        dev->name[0]   = '\0';
+        dev->last_seen = 0;
+    }
 }
 
 /* Update play state (P1+P2), on-air, and BPM from a status packet.
@@ -320,10 +349,16 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
             if (was_new) {
                 logmsg("cdj", "🔗 Device %d: %s connected @ %s",
                        device_num, name, ip_to_str(src_ip));
-                
+
+                /* Spawn DBServer worker — every CDJ hosts a DBServer; queries
+                 * for any track on the network go to the playing deck. */
+                if (dev->device_type == DEVICE_TYPE_CDJ) {
+                    dbserver_thread_spawn(device_num);
+                }
+
                 /* Start registration when we see a new CDJ */
-                if (dev->device_type == DEVICE_TYPE_CDJ && 
-                    capture_interface && 
+                if (dev->device_type == DEVICE_TYPE_CDJ &&
+                    capture_interface &&
                     registration_state == REG_IDLE) {
                     vlogmsg("cdj", "[REG] Starting registration (CDJ detected)...");
                     do_full_registration(capture_interface);
@@ -733,10 +768,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     }
                 }
 
-                /* 3. DBServer — only once the in-memory DB for this slot has loaded.
-                 * Check the SOURCE device's flag (the CDJ holding the media), not
-                 * dev's — under Link Export the deck never saw media inserted, so
-                 * its own flag stays false. */
+                /* 3. DBServer — async via per-(source_player, slot) worker. The
+                 * worker emits to track_registry; the registry winner is picked
+                 * up on the next prolink tick. The db_loaded gate remains for
+                 * now (step 5 removes it once registry is the only consumer). */
                 if (!found) {
                     cdj_device_t *src_dev = (dev->track_source_player > 0 &&
                                              dev->track_source_player != dev->device_num)
@@ -746,11 +781,26 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                      (src_slot == SLOT_SD)  ? src_dev->sd_db_loaded  : true;
 
                     if (db_loaded) {
-                        logmsg("cdj", "[%u@CDJ%u] DECK %d: Trying DBServer",
-                               dev->rekordbox_id, dev->track_source_player, device_num);
-                        retry_later = try_resolve_track_name(dev);
-                        found = (dev->track_title[0] != '\0');
-                        if (found) dev->track_db_src = DB_SRC_DBSERVER;
+                        /* DMST byte = device holding the media. For self-mounted
+                         * that's dev itself; for Link Export it's track_source_player. */
+                        uint8_t query_target = (dev->track_source_player > 0)
+                                             ? dev->track_source_player : dev->device_num;
+                        uint8_t prim = dev->track_type;
+                        uint8_t fall = (dev->track_type == TRACK_REKORDBOX)
+                                     ? TRACK_UNANALYZED : TRACK_REKORDBOX;
+                        logmsg("cdj", "[%u@CDJ%u] DECK %d: Enqueuing DBServer query (target=%u slot=%s)",
+                               dev->rekordbox_id, dev->track_source_player, device_num,
+                               query_target, cdj_slot_name(src_slot));
+                        int erc = dbserver_thread_enqueue(dev->device_num,
+                                                          dev->rekordbox_id,
+                                                          dev->ip_addr, query_target,
+                                                          src_slot, prim, fall);
+                        if (erc != 0) {
+                            logmsg("cdj", "[%u@CDJ%u] DBServer enqueue failed (playing=CDJ%u rc=%d)",
+                                   dev->rekordbox_id, dev->track_source_player,
+                                   dev->device_num, erc);
+                        }
+                        retry_later = 1;  /* async — result arrives via track_registry */
                     } else {
                         logmsg("cdj", "[%u@CDJ%u] DECK %d: Waiting for %s database fetch on src player %d before DBServer",
                                dev->rekordbox_id, dev->track_source_player,

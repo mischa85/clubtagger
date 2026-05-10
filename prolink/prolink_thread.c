@@ -8,6 +8,7 @@
 #include "prolink_thread.h"
 #include "../common.h"
 #include "cdj_types.h"
+#include "prolink.h"
 #include "registration.h"
 #include "packet_handler.h"
 #include "track_cache.h"
@@ -294,6 +295,7 @@ keepalive_check:
         time_t now = time(NULL);
         if (now - last_ka >= 1) {
             do_full_registration(pt->interface);
+            prolink_sweep_disappeared_cdjs();
             last_ka = now;
 
             /* Watchdog: warn if no CDJ packets received recently */
@@ -390,6 +392,7 @@ static void *prolink_thread_pcap(void *arg) {
         time_t now = time(NULL);
         if (now - last_ka >= 1) {
             do_full_registration(pt->interface);
+            prolink_sweep_disappeared_cdjs();
             last_ka = now;
         }
     }

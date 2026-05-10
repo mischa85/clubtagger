@@ -54,4 +54,10 @@ int try_resolve_track_name(cdj_device_t *dev);
 /* Check if media slot changed and handle accordingly */
 void check_media_change(cdj_device_t *dev);
 
+/* Sweep for CDJs that have stopped sending keepalives. Stops their dbserver
+ * worker and clears identity fields so the next announce re-fires the
+ * was_new path with a fresh worker. Call once per second from the prolink
+ * thread loop. */
+void prolink_sweep_disappeared_cdjs(void);
+
 #endif /* PROLINK_H */
