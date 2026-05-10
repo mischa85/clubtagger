@@ -254,11 +254,17 @@ void confidence_signal(int deck_idx, signal_flag_t sig, int value,
         default: break;
         }
         if (sig_name[0]) {
-            uint32_t seq = (deck_idx >= 0 && deck_idx < CONF_MAX_DECKS)
-                           ? devices[deck_idx].track_seq : 0;
-            logmsg("conf", "[T%u] Deck %d: %s (%+d) → %d%% | %s — %s",
-                   seq, d->deck_num, sig_name, weight, d->score / 10,
-                   d->artist, d->title);
+            if (deck_idx >= 0 && deck_idx < CONF_MAX_DECKS) {
+                logmsg("conf", "[%u@CDJ%u] Deck %d: %s (%+d) → %d%% | %s — %s",
+                       devices[deck_idx].rekordbox_id,
+                       devices[deck_idx].track_source_player,
+                       d->deck_num, sig_name, weight, d->score / 10,
+                       d->artist, d->title);
+            } else {
+                logmsg("conf", "Audio: %s (%+d) → %d%% | %s — %s",
+                       sig_name, weight, d->score / 10,
+                       d->artist, d->title);
+            }
         }
     }
 

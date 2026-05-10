@@ -129,11 +129,7 @@ typedef struct {
     time_t   last_position_time;/* When we last saw playhead advance */
     uint8_t  playhead_stalled;  /* 1 = playhead not advancing (scratch/hold) */
     uint32_t rekordbox_id;      /* rekordbox track ID */
-    uint32_t track_seq;         /* Per-process monotonic ID, bumped on each track_changed.
-                                 * Stamped into all log lines for one playthrough so a
-                                 * grep '\[T42\]' reconstructs the full lifecycle (load,
-                                 * resolution attempts, hits/misses, waveform fetch). */
-    
+
     /* Track metadata */
     char     track_title[128];
     char     track_artist[128];

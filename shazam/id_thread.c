@@ -166,8 +166,8 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
 
                 if (dd->track_title[0]) {
                     if (prolink_isrc_matches(dd->track_isrc, isrc)) {
-                        logmsg("id", "[T%u] [%s] Shazam ISRC match: Deck %d - %s - %s",
-                               dd->track_seq, ch_name, dd->device_num,
+                        logmsg("id", "[%s] Shazam ISRC match: Deck %d - %s - %s",
+                               ch_name, dd->device_num,
                                artist[0] ? artist : "?", title[0] ? title : "?");
                         confidence_signal(di, SIG_ISRC_MATCH, 0,
                                           artist, title, isrc, 0);
@@ -177,8 +177,8 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
                     }
                     if (prolink_matches_fingerprint(dd->track_title, dd->track_artist,
                                                     title, artist)) {
-                        logmsg("id", "[T%u] [%s] Shazam fuzzy match: Deck %d - %s - %s",
-                               dd->track_seq, ch_name, dd->device_num,
+                        logmsg("id", "[%s] Shazam fuzzy match: Deck %d - %s - %s",
+                               ch_name, dd->device_num,
                                artist[0] ? artist : "?", title[0] ? title : "?");
                         confidence_signal(di, SIG_FUZZY_MATCH, 0,
                                           artist, title, isrc, 0);
@@ -200,8 +200,8 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
                                   shazam_confidence, artist, title, isrc, 0);
                 matched_deck = untitled_candidate;
                 matched_via = SIG_SHAZAM_PRIMARY;
-                logmsg("id", "[T%u] [%s] Shazam-as-source: bound to Deck %d (untitled) - %s - %s",
-                       devices[untitled_candidate].track_seq, ch_name,
+                logmsg("id", "[%s] Shazam-as-source: bound to Deck %d (untitled) - %s - %s",
+                       ch_name,
                        devices[untitled_candidate].device_num,
                        artist[0] ? artist : "?", title[0] ? title : "?");
             }

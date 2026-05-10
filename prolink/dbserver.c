@@ -945,8 +945,8 @@ void parse_dbserver_traffic(const uint8_t *data, size_t len,
                                query->rekordbox_id, title, artist);
                     
                     /* Add to track cache */
-                    track_cache_entry_t *entry = add_track_cache(query->rekordbox_id, 
-                                                                  query->server_ip);
+                    track_cache_entry_t *entry = add_track_cache(query->rekordbox_id,
+                                                                  query->device);
                     if (entry) {
                         if (title[0]) {
                             strncpy(entry->title, title, sizeof(entry->title) - 1);
