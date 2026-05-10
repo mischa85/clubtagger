@@ -38,6 +38,7 @@ PROLINK_SRC := prolink/prolink_thread.c \
                prolink/nfs_observer.c \
                prolink/pdb_parser.c \
                prolink/track_cache.c \
+               prolink/track_registry.c \
                prolink/onelibrary.c
 
 SRC      += $(PROLINK_SRC)
