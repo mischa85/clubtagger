@@ -668,8 +668,7 @@ void prolink_check_tagging(ProlinkThread *pt) {
         if (!dev->playing) continue;
         if (dev->rekordbox_id == 0) continue;
 
-        track_key_t tk = { .rekordbox_id = dev->rekordbox_id,
-                           .source_player = dev->track_source_player };
+        track_key_t tk = dev_track_key(dev);
         track_identity_t id;
         if (!track_registry_winner(tk, &id) || id.title[0] == '\0') continue;
 

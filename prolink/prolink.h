@@ -10,6 +10,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "cdj_types.h"
+#include "track_registry.h"
 
 /*
  * ============================================================================
@@ -43,13 +44,29 @@ uint8_t get_prolink_packet_type(const uint8_t *data);
 
 /*
  * ============================================================================
- * Track Name Resolution
+ * Track registry key
  * ============================================================================
  */
 
-/* Try to resolve track title/artist for a device.
- * Returns: 0 = done (success or permanent failure), 1 = temporary skip (retry later) */
-int try_resolve_track_name(cdj_device_t *dev);
+/* Build the track-registry key for a device's currently-loaded track.
+ *
+ * SLOT_CD lives in a separate id namespace (CD track number) and the source
+ * is always the playing deck itself; everything else is keyed by
+ * rekordbox_id at the source player. */
+static inline track_key_t dev_track_key(const cdj_device_t *dev) {
+    if (dev->track_slot == SLOT_CD) {
+        return (track_key_t){
+            .rekordbox_id  = dev->track_id,
+            .source_player = dev->device_num,
+            .slot          = SLOT_CD,
+        };
+    }
+    return (track_key_t){
+        .rekordbox_id  = dev->rekordbox_id,
+        .source_player = dev->track_source_player,
+        .slot          = dev->track_slot,
+    };
+}
 
 /* Check if media slot changed and handle accordingly */
 void check_media_change(cdj_device_t *dev);

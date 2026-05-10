@@ -35,8 +35,7 @@ typedef struct {
     uint32_t pending_query_ip;
     uint8_t  pending_query_target;
     uint8_t  pending_source_slot;
-    uint8_t  pending_primary_type;
-    uint8_t  pending_fallback_type;
+    uint8_t  pending_track_type;
 
     /* Private retry state — replaces the globals at prolink.c:1016-1018. */
     int      query_fail_count;
@@ -58,27 +57,12 @@ static int worker_index(uint8_t playing_device) {
  * ============================================================================
  */
 
-static int try_query_once(uint32_t query_ip,
-                          uint8_t  query_target,
-                          uint8_t  source_slot,
-                          uint8_t  track_type,
-                          uint32_t rb_id,
-                          char *title, size_t title_sz,
-                          char *artist, size_t artist_sz) {
-    /* dbserver_query_metadata ignores our_device_param and uses
-     * get_our_device_num() internally — pass 0. */
-    return dbserver_query_metadata(query_ip, 0, query_target,
-                                   source_slot, track_type, rb_id,
-                                   title, title_sz, artist, artist_sz);
-}
-
 static void run_query(dbserver_worker_t *w,
                       uint32_t rb_id,
                       uint32_t query_ip,
                       uint8_t  query_target,
                       uint8_t  source_slot,
-                      uint8_t  primary_type,
-                      uint8_t  fallback_type) {
+                      uint8_t  track_type) {
     /* Dedup: skip if we already emitted for this (rb_id, source_player).
      * Track-source pair is the registry key, so different source players
      * are different tracks even with the same rb_id. */
@@ -91,21 +75,18 @@ static void run_query(dbserver_worker_t *w,
     char title[128]  = {0};
     char artist[128] = {0};
 
-    int rc = try_query_once(query_ip, query_target, source_slot,
-                            primary_type, rb_id,
-                            title, sizeof(title),
-                            artist, sizeof(artist));
+    /* dbserver_query_metadata ignores our_device_param and uses
+     * get_our_device_num() internally — pass 0. We trust the status
+     * packet's track_type; no fallback to the other type. */
+    int rc = dbserver_query_metadata(query_ip, 0, query_target,
+                                     source_slot, track_type, rb_id,
+                                     title, sizeof(title),
+                                     artist, sizeof(artist));
 
-    if (rc != 0 || title[0] == '\0') {
-        /* Try fallback type unless the failure was a transient connect error. */
-        if (rc != CDJ_ERR_CONNECT) {
-            memset(title, 0, sizeof(title));
-            memset(artist, 0, sizeof(artist));
-            rc = try_query_once(query_ip, query_target, source_slot,
-                                fallback_type, rb_id,
-                                title, sizeof(title),
-                                artist, sizeof(artist));
-        }
+    if (rc == 0 && title[0] == '\0') {
+        logmsg("dbsrv", "[%u@CDJ%u] DBServer returned no rows (playing=CDJ%u slot=%s track_type=%u)",
+               rb_id, query_target, w->playing_device,
+               cdj_slot_name(source_slot), track_type);
     }
 
     if (rc == 0 && title[0] != '\0') {
@@ -122,7 +103,8 @@ static void run_query(dbserver_worker_t *w,
                    w->playing_device, cdj_slot_name(source_slot));
         }
         track_key_t k = { .rekordbox_id = rb_id,
-                          .source_player = query_target };
+                          .source_player = query_target,
+                          .slot          = source_slot };
         track_registry_emit(k, RES_DBSERVER, artist, title, "", "");
         return;
     }
@@ -156,13 +138,11 @@ static void *worker_main(void *arg) {
         uint32_t query_ip     = w->pending_query_ip;
         uint8_t  query_target = w->pending_query_target;
         uint8_t  source_slot  = w->pending_source_slot;
-        uint8_t  primary_t    = w->pending_primary_type;
-        uint8_t  fallback_t   = w->pending_fallback_type;
+        uint8_t  track_type   = w->pending_track_type;
         w->have_pending = 0;
         pthread_mutex_unlock(&w->mu);
 
-        run_query(w, rb_id, query_ip, query_target, source_slot,
-                  primary_t, fallback_t);
+        run_query(w, rb_id, query_ip, query_target, source_slot, track_type);
     }
 
     logmsg("dbsrv", "DBServer worker stopped for CDJ%u", w->playing_device);
@@ -241,7 +221,7 @@ int dbserver_thread_enqueue(uint8_t playing_device,
                             uint32_t rekordbox_id,
                             uint32_t query_ip, uint8_t query_target,
                             uint8_t source_slot,
-                            uint8_t primary_type, uint8_t fallback_type) {
+                            uint8_t track_type) {
     int idx = worker_index(playing_device);
     if (idx < 0) return -EINVAL;
 
@@ -253,13 +233,12 @@ int dbserver_thread_enqueue(uint8_t playing_device,
     }
 
     pthread_mutex_lock(&w->mu);
-    w->have_pending           = 1;
-    w->pending_rb_id          = rekordbox_id;
-    w->pending_query_ip       = query_ip;
-    w->pending_query_target   = query_target;
-    w->pending_source_slot    = source_slot;
-    w->pending_primary_type   = primary_type;
-    w->pending_fallback_type  = fallback_type;
+    w->have_pending          = 1;
+    w->pending_rb_id         = rekordbox_id;
+    w->pending_query_ip      = query_ip;
+    w->pending_query_target  = query_target;
+    w->pending_source_slot   = source_slot;
+    w->pending_track_type    = track_type;
     pthread_cond_signal(&w->cv);
     pthread_mutex_unlock(&w->mu);
 

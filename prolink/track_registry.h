@@ -1,9 +1,14 @@
 /*
  * track_registry.h - Per-key candidate registry for CDJ track resolution
  *
- * Replaces the resolver cascade in prolink.c. Each (rekordbox_id, source_player)
- * key has a slot per resolver (OneLibrary, PDB, DBServer). Resolvers emit into
- * their own slot; readers compose a winner.
+ * Replaces the resolver cascade in prolink.c. Each (rekordbox_id, source_player,
+ * slot) key has a per-resolver candidate (OneLibrary, PDB, DBServer). Resolvers
+ * emit into their own slot; readers compose a winner.
+ *
+ * The slot field discriminates same-id-different-media (a track on USB vs SD
+ * on the same player is a different track) and same-id-different-namespace
+ * (rekordbox_id on USB/SD/Link vs CD-text track number on SLOT_CD share an
+ * integer space but mean different things).
  *
  * Composition policy:
  *   - title/artist: DBServer wins (CDJ-live, no parsing); OneLibrary/PDB
@@ -31,8 +36,9 @@ typedef enum {
 } resolver_id_t;
 
 typedef struct {
-    uint32_t rekordbox_id;
-    uint8_t  source_player;     /* CDJ holding the media (1..6) */
+    uint32_t rekordbox_id;       /* For SLOT_CD this is the CD track number */
+    uint8_t  source_player;      /* CDJ holding the media (1..6) */
+    uint8_t  slot;               /* cdj_slot_t — SLOT_USB / SLOT_SD / SLOT_CD / SLOT_LINK / ... */
 } track_key_t;
 
 typedef struct {
@@ -116,12 +122,14 @@ int track_registry_winner(track_key_t key, track_identity_t *out);
  * Eviction
  * ============================================================================
  *
- * Drop all entries with the given source_player. Called on USB/SD/CD removal
- * or media swap — the rekordbox_id namespace is per-export, so the same
- * (rb_id, source_player) on a new mount may name a different track.
+ * Drop all entries with the given (source_player, slot). Called on USB/SD/CD
+ * removal or media swap — the rekordbox_id namespace is per-export, so the
+ * same (rb_id, source_player, slot) on a new mount may name a different
+ * track. Other slots on the same player are untouched (USB removal does not
+ * invalidate SD entries).
  *
  * Returns the number of entries evicted.
  */
-int track_registry_evict_source(uint8_t source_player);
+int track_registry_evict_source_slot(uint8_t source_player, uint8_t slot);
 
 #endif /* CLUBTAGGER_TRACK_REGISTRY_H */

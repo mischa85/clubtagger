@@ -40,7 +40,7 @@ void dbserver_thread_stop(uint8_t playing_device);
 /* Enqueue a query for the worker matching this playing deck. Latest
  * request overwrites pending — at most one query per worker is in flight
  * or queued at a time. The worker emits the result into the track
- * registry under (rekordbox_id, query_target) on success.
+ * registry under (rekordbox_id, query_target, source_slot) on success.
  *
  * playing_device is the deck that issued the lookup (where to TCP-connect).
  * query_ip is its IP — passed per-call rather than cached so IP changes
@@ -50,13 +50,15 @@ void dbserver_thread_stop(uint8_t playing_device);
  * Link Export).
  * source_slot is the slot field for the DBServer request (USB or SD on
  * the source player's media).
+ * track_type is what the status packet reported. We trust it — no
+ * fallback to the other type. Empty results are logged as "weird".
  *
  * Returns 0 if enqueued, -ENOENT if no worker exists for this device. */
 int dbserver_thread_enqueue(uint8_t playing_device,
                             uint32_t rekordbox_id,
                             uint32_t query_ip, uint8_t query_target,
                             uint8_t source_slot,
-                            uint8_t primary_type, uint8_t fallback_type);
+                            uint8_t track_type);
 
 /* Stop and join all workers. Called from main.c at shutdown, after the
  * prolink thread has stopped. */

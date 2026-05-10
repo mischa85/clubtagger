@@ -39,7 +39,9 @@ void track_registry_destroy(void) {
  */
 
 static int key_eq(track_key_t a, track_key_t b) {
-    return a.rekordbox_id == b.rekordbox_id && a.source_player == b.source_player;
+    return a.rekordbox_id == b.rekordbox_id
+        && a.source_player == b.source_player
+        && a.slot          == b.slot;
 }
 
 static key_entry_t *find_entry_locked(track_key_t key) {
@@ -104,8 +106,8 @@ int track_registry_emit(track_key_t key, resolver_id_t resolver,
         e = alloc_entry_locked(key, now);
         if (!e) {
             pthread_mutex_unlock(&g_track_registry.mu);
-            logmsg("registry", "emit: full (REG_MAX_KEYS=%d), dropping rb_id=%u src=%u",
-                   REG_MAX_KEYS, key.rekordbox_id, key.source_player);
+            logmsg("registry", "emit: full (REG_MAX_KEYS=%d), dropping rb_id=%u src=%u slot=%u",
+                   REG_MAX_KEYS, key.rekordbox_id, key.source_player, key.slot);
             return -ENOSPC;
         }
     }
@@ -236,20 +238,22 @@ int track_registry_winner(track_key_t key, track_identity_t *out) {
  * ============================================================================
  */
 
-int track_registry_evict_source(uint8_t source_player) {
+int track_registry_evict_source_slot(uint8_t source_player, uint8_t slot) {
     int evicted = 0;
     pthread_mutex_lock(&g_track_registry.mu);
     for (int i = 0; i < REG_MAX_KEYS; i++) {
         key_entry_t *e = &g_track_registry.entries[i];
-        if (e->active && e->key.source_player == source_player) {
+        if (e->active
+            && e->key.source_player == source_player
+            && e->key.slot          == slot) {
             memset(e, 0, sizeof(*e));
             evicted++;
         }
     }
     pthread_mutex_unlock(&g_track_registry.mu);
     if (evicted > 0) {
-        logmsg("registry", "evicted %d entries for source_player=%u",
-               evicted, source_player);
+        logmsg("registry", "evicted %d entries for source_player=%u slot=%u",
+               evicted, source_player, slot);
     }
     return evicted;
 }

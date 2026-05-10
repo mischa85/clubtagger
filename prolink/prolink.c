@@ -8,7 +8,6 @@
 #include "prolink_protocol.h"
 #include "cdj_types.h"
 #include "track_cache.h"
-#include "dbserver.h"
 #include "dbserver_thread.h"
 #include "pdb_parser.h"
 #include "onelibrary.h"
@@ -44,9 +43,6 @@ uint8_t get_prolink_packet_type(const uint8_t *data) {
  * Shared Helpers (used by both main and zero-data status paths)
  * ============================================================================
  */
-
-/* Forward declaration — defined in Track Name Resolution section below */
-void dbserver_reset_retry(void);
 
 /* Dump media-relevant bytes (verbose debug). No change-suppression — keep simple
  * to avoid the static-array bookkeeping that crashed previously. */
@@ -142,14 +138,13 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
     if (*present && !old) {
         logmsg("cdj", "💾 Device %d: %s inserted", dev->device_num, name);
         *loaded = false; *attempt = 0; *interval = 10;
-        dbserver_reset_retry();
     }
     if (!*present && old) {
         logmsg("cdj", "💾 Device %d: %s removed", dev->device_num, name);
         *loaded = false; *attempt = 0; *interval = 10;
         remove_pdb_database(dev->ip_addr, slot);
         remove_onelibrary(dev->ip_addr, slot);
-        track_registry_evict_source(dev->device_num);
+        track_registry_evict_source_slot(dev->device_num, slot);
     }
 }
 
@@ -686,25 +681,41 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         
         /* Skip lookup if no track loaded or we already have a title. Rate-limited
          * by lookup_backoff, which doubles on failure (5s → 60s) and resets on
-         * track change, successful resolution, or db-load completion. */
+         * track change, successful resolution, or db-load completion.
+         *
+         * reg_id is the per-slot identifier: rekordbox_id for USB/SD/Link,
+         * track number for CD. They live in different namespaces but share
+         * the same gate. */
         time_t now_lookup = time(NULL);
+        uint32_t reg_id = (dev->track_slot == SLOT_CD)
+                          ? dev->track_id : dev->rekordbox_id;
         int title_blocks_lookup = dev->track_title[0] != '\0';
         uint16_t backoff = dev->lookup_backoff ? dev->lookup_backoff : 5;
-        int need_lookup = (dev->rekordbox_id > 0) &&
+        int need_lookup = (reg_id > 0) &&
                           !title_blocks_lookup &&
                           (now_lookup - dev->last_lookup_time >= backoff);
 
-        if ((track_changed && dev->rekordbox_id > 0) || need_lookup) {
+        if ((track_changed && reg_id > 0) || need_lookup) {
             dev->last_lookup_time = now_lookup;
 
             int found = 0;
             int retry_later = 0;  /* 1 = temporary skip, will retry */
 
             if (dev->track_slot == SLOT_CD) {
-                logmsg("cdj", "[%u@CDJ%u] DECK %d: Trying DBServer (CD-text)",
-                       dev->rekordbox_id, dev->track_source_player, device_num);
-                retry_later = try_resolve_track_name(dev);
-                found = (dev->track_title[0] != '\0');
+                /* CD-text: query the playing CDJ itself; the worker emits
+                 * into the registry under (track_id, dev->device_num, SLOT_CD).
+                 * Result is consumed by the readers below (confidence) and
+                 * by ws_server / auto-tag via dev_track_key(dev). */
+                int erc = dbserver_thread_enqueue(dev->device_num,
+                                                  dev->track_id,
+                                                  dev->ip_addr, dev->device_num,
+                                                  SLOT_CD,
+                                                  TRACK_UNANALYZED);
+                if (erc != 0) {
+                    logmsg("cdj", "[CD %u@CDJ%u] DBServer enqueue failed (rc=%d)",
+                           dev->track_id, dev->device_num, erc);
+                }
+                retry_later = 1;
             } else if (dev->track_slot > 0) {
                 uint32_t src_ip;
                 uint8_t  src_slot;
@@ -758,7 +769,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                dev->rekordbox_id, dev->track_source_player,
                                ol_artist, ol_title);
                         track_key_t k = { .rekordbox_id = dev->rekordbox_id,
-                                          .source_player = dev->track_source_player };
+                                          .source_player = dev->track_source_player,
+                                          .slot          = src_slot };
                         track_registry_emit(k, RES_ONELIBRARY,
                                             ol_artist, ol_title, ol_isrc, ol_anlz);
                     } else {
@@ -785,16 +797,13 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                          * that's dev itself; for Link Export it's track_source_player. */
                         uint8_t query_target = (dev->track_source_player > 0)
                                              ? dev->track_source_player : dev->device_num;
-                        uint8_t prim = dev->track_type;
-                        uint8_t fall = (dev->track_type == TRACK_REKORDBOX)
-                                     ? TRACK_UNANALYZED : TRACK_REKORDBOX;
                         logmsg("cdj", "[%u@CDJ%u] DECK %d: Enqueuing DBServer query (target=%u slot=%s)",
                                dev->rekordbox_id, dev->track_source_player, device_num,
                                query_target, cdj_slot_name(src_slot));
                         int erc = dbserver_thread_enqueue(dev->device_num,
                                                           dev->rekordbox_id,
                                                           dev->ip_addr, query_target,
-                                                          src_slot, prim, fall);
+                                                          src_slot, dev->track_type);
                         if (erc != 0) {
                             logmsg("cdj", "[%u@CDJ%u] DBServer enqueue failed (playing=CDJ%u rc=%d)",
                                    dev->rekordbox_id, dev->track_source_player,
@@ -832,7 +841,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                dev->rekordbox_id, dev->track_source_player,
                                pdb->artist, pdb->title);
                         track_key_t k = { .rekordbox_id = dev->rekordbox_id,
-                                          .source_player = dev->track_source_player };
+                                          .source_player = dev->track_source_player,
+                                          .slot          = src_slot };
                         track_registry_emit(k, RES_PDB,
                                             pdb->artist, pdb->title,
                                             (pdb->has_isrc ? pdb->isrc : ""),
@@ -857,10 +867,24 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
              * Identity comes from the registry winner (composed across
              * all resolvers) — DBServer wins title/artist when present,
              * OneLibrary/PDB enrich with ISRC when they agree. */
-            track_key_t res_key = { .rekordbox_id = dev->rekordbox_id,
-                                    .source_player = dev->track_source_player };
+            track_key_t res_key = dev_track_key(dev);
             track_identity_t res_id;
             int have_id = track_registry_winner(res_key, &res_id);
+
+            /* Project registry → dev fields. Async resolvers (DBServer worker
+             * including CD-text) emit into the registry; this copy is what
+             * makes log_track_loaded, the title gate, and dev-reading
+             * consumers (ws_server) observe the result. */
+            if (have_id && res_id.title[0]) {
+                if (!dev->track_title[0])
+                    utf8_safe_copy(dev->track_title, res_id.title, sizeof(dev->track_title));
+                if (!dev->track_artist[0] && res_id.artist[0])
+                    utf8_safe_copy(dev->track_artist, res_id.artist, sizeof(dev->track_artist));
+                if (!dev->track_isrc[0] && res_id.isrc[0])
+                    utf8_safe_copy(dev->track_isrc, res_id.isrc, sizeof(dev->track_isrc));
+                if (!found) found = 1;
+            }
+
             if (found && have_id && res_id.title[0]) {
                 int didx = (int)(dev - devices);
                 confidence_signal(didx, SIG_CDJ_LOADED, 0,
@@ -875,8 +899,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
          * is the "have data" flag; we keep retrying until it's set. */
         time_t now_wf = time(NULL);
         uint16_t wf_backoff = dev->waveform_backoff ? dev->waveform_backoff : 10;
-        track_key_t wf_key = { .rekordbox_id = dev->rekordbox_id,
-                               .source_player = dev->track_source_player };
+        track_key_t wf_key = dev_track_key(dev);
         track_identity_t wf_id;
         int have_wf_id = track_registry_winner(wf_key, &wf_id);
         if (have_wf_id && wf_id.anlz_path[0] && !dev->waveform_data
@@ -1054,216 +1077,6 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
                    raw_bpm == 0xffffffff ? 0.0f : raw_bpm / 10.0f,
                    pitch_raw / 6400.0f);
     }
-}
-
-/*
- * ============================================================================
- * Track Name Resolution
- * ============================================================================
- */
-
-/* Rate limiting for dbserver queries */
-static time_t last_query_time = 0;
-static uint32_t last_query_id = 0;
-static int query_fail_count = 0;
-
-/* Reset DBServer retry state (call on media change).
- * Forward-declared before parse_cdj_status which calls it. */
-void dbserver_reset_retry(void) {
-    query_fail_count = 0;
-    last_query_time = 0;
-    last_query_id = 0;
-}
-
-/* Returns: 0 = done (success or permanent failure), 1 = temporary skip (retry later) */
-int try_resolve_track_name(cdj_device_t *dev) {
-    if (!dev || !dev->active) return 0;
-    
-    /* Rate limit: don't query same track more than once per 5 seconds */
-    time_t now = time(NULL);
-    if (dev->rekordbox_id == last_query_id && now - last_query_time < 5) {
-        return 1;  /* Rate limited - will retry later, don't mark as failed */
-    }
-    
-    /* Exponential backoff after failures: 5s, 10s, 20s, 40s, capped at 60s */
-    {
-        int backoff = 5;
-        if (query_fail_count > 2) backoff = 10;
-        if (query_fail_count > 5) backoff = 20;
-        if (query_fail_count > 8) backoff = 40;
-        if (query_fail_count > 12) backoff = 60;
-        if (now - last_query_time < backoff) {
-            return 1;  /* Backing off - will retry later */
-        }
-    }
-    
-    uint8_t target_device = dev->device_num;
-    
-    if (dev->track_slot == SLOT_CD && dev->track_id > 0) {
-        char title[128] = {0};
-        char artist[128] = {0};
-        
-        vlogmsg("cdj", "[CD] Querying CD-text for track %d on %s (target=%d)",
-                   dev->track_id, ip_to_str(dev->ip_addr), target_device);
-        
-        int dbresult = dbserver_query_metadata(dev->ip_addr, 0, target_device,
-                                               SLOT_CD, TRACK_UNANALYZED,
-                                               dev->track_id, 
-                                               title, sizeof(title), 
-                                               artist, sizeof(artist));
-        
-        if (dbresult == 0 && title[0] != '\0') {
-            utf8_safe_copy(dev->track_title, title, sizeof(dev->track_title));
-            if (artist[0] != '\0') {
-                utf8_safe_copy(dev->track_artist, artist, sizeof(dev->track_artist));
-            }
-            vlogmsg("cdj", "[CD] Got CD-text: %s - %s", artist, title);
-        } else {
-            snprintf(dev->track_title, sizeof(dev->track_title), 
-                    "CD Track %d", dev->track_id);
-            if (dbresult != 0) {
-                logmsg("cdj", "[CD] CD-text query failed (track=%d result=%d)", dev->track_id, dbresult);
-            }
-        }
-        return 0;  /* CD done */
-    }
-    else if (dev->rekordbox_id > 0 && dev->track_slot > 0) {
-        /* USB/SD/Link track - try dbserver query */
-        char title[128] = {0};
-        char artist[128] = {0};
-        
-        /* Use the track type from the status packet */
-        uint8_t primary_type = dev->track_type;
-        uint8_t fallback_type = (dev->track_type == TRACK_REKORDBOX) ? TRACK_UNANALYZED : TRACK_REKORDBOX;
-        
-        /* Resolve source device for Link tracks */
-        uint32_t query_ip;
-        uint8_t  query_slot;
-        resolve_source_device(dev, &query_ip, &query_slot);
-        uint8_t query_target = target_device;
-
-        /* DBServer-specific Link checks: slot conflict and undiscovered source */
-        if (dev->track_source_player > 0 && dev->track_source_player != dev->device_num) {
-            if (query_ip == our_ip) {
-                /* Slot conflict — source device shows our IP, real device not announced yet */
-                last_query_time = now;
-                last_query_id = dev->rekordbox_id;
-                vlogmsg("cdj", "[DBSERVER] Link track src_player=%d shows our IP - slot conflict, will retry",
-                           dev->track_source_player);
-                return 1;
-            }
-            if (query_ip == dev->ip_addr) {
-                /* resolve_source_device couldn't find the source — not discovered yet */
-                last_query_time = now;
-                last_query_id = dev->rekordbox_id;
-                vlogmsg("cdj", "[DBSERVER] Link track src_player=%d not found yet, will retry",
-                           dev->track_source_player);
-                return 1;
-            }
-            query_target = dev->track_source_player;  /* DMST target = source player */
-            vlogmsg("cdj", "[DBSERVER] Link track: src_player=%d src_slot=%s src_ip=%s",
-                       dev->track_source_player, cdj_slot_name(query_slot), ip_to_str(query_ip));
-        }
-        
-        /* Track query for rate limiting */
-        last_query_time = now;
-        last_query_id = dev->rekordbox_id;
-        
-        vlogmsg("cdj", "[DBSERVER] Query for slot=%s id=%u (target=%d)",
-                   cdj_slot_name(query_slot), dev->rekordbox_id, query_target);
-        
-        /* Strategy 1: Try with detected track type first */
-        int result = dbserver_query_metadata(query_ip, 0, query_target,
-                                            query_slot, primary_type,
-                                            dev->rekordbox_id,
-                                            title, sizeof(title),
-                                            artist, sizeof(artist));
-        
-        vlogmsg("cdj", "[DBSERVER] Result=%d title='%s'", result, title);
-        
-        /* Track failures for backoff */
-        if (result != 0) {
-            query_fail_count++;
-            if (result == CDJ_ERR_CONNECT) {
-                if (query_fail_count <= 2) {
-                    logmsg("cdj", "DBServer connection failed for track %u (will retry)",
-                           dev->rekordbox_id);
-                } else if (query_fail_count == 3) {
-                    logmsg("cdj", "DBServer connection failed for track %u (retrying silently)",
-                           dev->rekordbox_id);
-                }
-                return 1;  /* Temporary — retry later with increasing backoff */
-            }
-            if (query_fail_count <= 3) {
-                logmsg("cdj", "DBServer query failed for track %u (attempt %d)",
-                       dev->rekordbox_id, query_fail_count);
-            }
-        } else {
-            query_fail_count = 0;
-        }
-        
-        if (result == 0 && title[0] != '\0') {
-            utf8_safe_copy(dev->track_title, title, sizeof(dev->track_title));
-            if (artist[0] != '\0') {
-                utf8_safe_copy(dev->track_artist, artist, sizeof(dev->track_artist));
-            }
-            if (artist[0]) {
-                logmsg("cdj", "🎵 %s - %s (via DBServer)", artist, title);
-            } else {
-                logmsg("cdj", "🎵 %s (via DBServer)", title);
-            }
-
-            track_cache_entry_t *tc = add_track_cache(dev->rekordbox_id, dev->track_source_player);
-            if (tc) {
-                utf8_safe_copy(tc->title, title, sizeof(tc->title));
-                utf8_safe_copy(tc->artist, artist, sizeof(tc->artist));
-                tc->track_num = dev->track_number;
-            }
-            track_key_t k = { .rekordbox_id = dev->rekordbox_id,
-                              .source_player = dev->track_source_player };
-            track_registry_emit(k, RES_DBSERVER, artist, title, "", "");
-            return 0;  /* Success */
-        }
-
-        /* Strategy 2: Try with fallback track type */
-        if (result != CDJ_ERR_CONNECT) {
-            memset(title, 0, sizeof(title));
-            memset(artist, 0, sizeof(artist));
-            result = dbserver_query_metadata(query_ip, 0, query_target,
-                                            query_slot, fallback_type,
-                                            dev->rekordbox_id,
-                                            title, sizeof(title),
-                                            artist, sizeof(artist));
-            if (result == 0 && title[0] != '\0') {
-                utf8_safe_copy(dev->track_title, title, sizeof(dev->track_title));
-                if (artist[0] != '\0') {
-                    utf8_safe_copy(dev->track_artist, artist, sizeof(dev->track_artist));
-                }
-                if (artist[0]) {
-                    logmsg("cdj", "🎵 %s - %s (via DBServer)", artist, title);
-                } else {
-                    logmsg("cdj", "🎵 %s (via DBServer)", title);
-                }
-
-                track_cache_entry_t *tc = add_track_cache(dev->rekordbox_id, dev->track_source_player);
-                if (tc) {
-                    utf8_safe_copy(tc->title, title, sizeof(tc->title));
-                    utf8_safe_copy(tc->artist, artist, sizeof(tc->artist));
-                    tc->track_num = dev->track_number;
-                }
-                track_key_t k = { .rekordbox_id = dev->rekordbox_id,
-                                  .source_player = dev->track_source_player };
-                track_registry_emit(k, RES_DBSERVER, artist, title, "", "");
-                return 0;
-            }
-        }
-    }
-    else if (dev->track_slot > 0) {
-        /* No rekordbox_id available */
-        vlogmsg("cdj", "[DBSERVER] Skip query - rekordbox_id=%u slot=%s", 
-                   dev->rekordbox_id, cdj_slot_name(dev->track_slot));
-    }
-    return 0;
 }
 
 /*

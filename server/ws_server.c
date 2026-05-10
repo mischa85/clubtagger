@@ -10,6 +10,7 @@
 #include "../prolink/cdj_types.h"
 #include "../prolink/onelibrary.h"
 #include "../prolink/track_registry.h"
+#include "../prolink/prolink.h"
 #include "../confidence.h"
 #include "../db/database.h"
 
@@ -589,8 +590,7 @@ void *ws_main(void *arg) {
                 if (!dev->active || dev->device_type != DEVICE_TYPE_CDJ) continue;
                 if (now - dev->last_seen > 10) continue;
 
-                track_key_t tk = { .rekordbox_id = dev->rekordbox_id,
-                                   .source_player = dev->track_source_player };
+                track_key_t tk = dev_track_key(dev);
                 track_identity_t id;
                 track_registry_winner(tk, &id);
 
