@@ -42,7 +42,8 @@ PROLINK_SRC := prolink/prolink_thread.c \
                prolink/track_cache.c \
                prolink/track_registry.c \
                prolink/onelibrary.c \
-               prolink/onelibrary_thread.c
+               prolink/onelibrary_thread.c \
+               prolink/waveform_thread.c
 
 SRC      += $(PROLINK_SRC)
 OBJ      := $(SRC:.c=.o)

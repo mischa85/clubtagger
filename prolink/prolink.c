@@ -11,12 +11,12 @@
 #include "dbserver_thread.h"
 #include "pdb_thread.h"
 #include "onelibrary_thread.h"
+#include "waveform_thread.h"
 #include "registration.h"
 #include "nfs_client.h"
 #include "nfs_protocol.h"
 #include "track_registry.h"
 #include "../confidence.h"
-#include "../server/ws_server.h"
 #include "../common.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -648,11 +648,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->track_depth = 0;
             dev->track_format = 0;
             dev->track_anlz_path[0] = '\0';
-            if (dev->waveform_data) { free(dev->waveform_data); dev->waveform_data = NULL; }
-            dev->waveform_len = 0;
+            waveform_thread_clear(dev->device_num);
             dev->waveform_last_attempt = 0;
             dev->waveform_backoff = 10;   /* Start fresh on track change */
-            ws_broadcast_waveform(dev->device_num, NULL, 0); /* Clear UI waveform */
             dev->track_db_src = DB_SRC_NONE;
             dev->lookup_backoff = 5;    /* Reset backoff for new track */
             dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
@@ -827,25 +825,28 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
 
-        /* Fetch and cache waveform data. Backoff (10s → 300s) prevents
-         * re-running the 3-extension loop on every status packet (10/sec)
-         * for tracks the CDJ hasn't indexed yet. waveform_data being non-NULL
-         * is the "have data" flag; we keep retrying until it's set. */
+        /* Waveform: enqueue an async fetch via the worker thread. Producer-side
+         * backoff (10s → 300s) gates re-enqueues so we don't flood the worker
+         * mailbox on every status tick (10/sec) for tracks the CDJ hasn't
+         * indexed yet. waveform_data being non-NULL is the "have data" flag;
+         * worker installs it under waveform_mu (gated on rekordbox_id match).
+         * The worker doesn't report failures back — we grow the backoff
+         * optimistically and the next tick will re-enqueue if data is still
+         * missing. */
         time_t now_wf = time(NULL);
         uint16_t wf_backoff = dev->waveform_backoff ? dev->waveform_backoff : 10;
         track_key_t wf_key = dev_track_key(dev);
         track_identity_t wf_id;
         int have_wf_id = track_registry_winner(wf_key, &wf_id);
-        if (have_wf_id && wf_id.anlz_path[0] && !dev->waveform_data
+        pthread_mutex_lock(&waveform_mu);
+        int have_wf_data = (dev->waveform_data != NULL);
+        pthread_mutex_unlock(&waveform_mu);
+        if (have_wf_id && wf_id.anlz_path[0] && !have_wf_data
             && registration_state == REG_ACTIVE
             && now_wf - dev->waveform_last_attempt >= wf_backoff) {
             uint32_t wf_ip;
             uint8_t  wf_slot;
             resolve_source_device(dev, &wf_ip, &wf_slot);
-            /* Waveforms come from the source CDJ's NFS export — read the
-             * source device's discovered port. For local tracks this is
-             * dev itself; for Link tracks it's the player that owns the
-             * media. */
             const cdj_device_t *wf_src = dev;
             if (dev->track_source_player > 0 &&
                 dev->track_source_player != dev->device_num) {
@@ -856,50 +857,17 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             uint16_t wf_mport = wf_src->mount_port;
 
             dev->waveform_last_attempt = now_wf;
-            uint8_t *tmp = malloc(ANLZ_MAX_SIZE);
-            if (!tmp) {
-                logmsg("cdj", "[%u@CDJ%u] 🌊 Device %d: waveform malloc(%d) failed",
-                       dev->rekordbox_id, dev->track_source_player,
-                       dev->device_num, ANLZ_MAX_SIZE);
-            } else {
-                size_t anlz_read = 0;
-                char ext_path[256];
-                int fetched = 0;
+            /* Grow backoff optimistically; the next tick will re-enqueue if the
+             * worker found nothing. 10 → 20 → 40 → 80 → 160 → 300 cap. */
+            uint16_t b = dev->waveform_backoff ? dev->waveform_backoff * 2 : 10;
+            dev->waveform_backoff = (b > 300) ? 300 : b;
 
-                /* Modern → legacy: .2EX (CDJ-3000+), .EXT (NXS2 color), .DAT (legacy) */
-                const char *exts[] = { ".2EX", ".EXT", ".DAT", NULL };
-                pthread_mutex_lock(&nfs_fetch_mu);
-                for (int ei = 0; exts[ei] && !fetched; ei++) {
-                    strncpy(ext_path, wf_id.anlz_path, sizeof(ext_path) - 1);
-                    ext_path[sizeof(ext_path) - 1] = '\0';
-                    char *dot = strrchr(ext_path, '.');
-                    if (dot) strncpy(dot, exts[ei], ext_path + sizeof(ext_path) - dot - 1);
-
-                    int rc = nfs_fetch_path(wf_ip, wf_nport, wf_mport, wf_slot,
-                                            ext_path, tmp, ANLZ_MAX_SIZE, &anlz_read);
-                    if (rc == 0 && anlz_read > 0) {
-                        logmsg("cdj", "[%u@CDJ%u] 🌊 Waveform: %s (%zu bytes)",
-                               dev->rekordbox_id, dev->track_source_player,
-                               exts[ei] + 1, anlz_read);
-                        dev->waveform_data = realloc(tmp, anlz_read);
-                        if (!dev->waveform_data) dev->waveform_data = tmp;
-                        dev->waveform_len = anlz_read;
-                        ws_broadcast_waveform(dev->device_num, dev->waveform_data, dev->waveform_len);
-                        fetched = 1;
-                    } else if (rc == -ENOENT) {
-                        /* Expected for extensions this track doesn't have — fall through quietly. */
-                    }
-                }
-                pthread_mutex_unlock(&nfs_fetch_mu);
-                if (!fetched) {
-                    /* Grow the backoff: 10 → 20 → 40 → 80 → 160 → 300 cap */
-                    uint16_t b = dev->waveform_backoff ? dev->waveform_backoff * 2 : 10;
-                    dev->waveform_backoff = (b > 300) ? 300 : b;
-                    logmsg("cdj", "[%u@CDJ%u] 🌊 Device %d: no waveform for track id=%u (tried .2EX/.EXT/.DAT, retry in %ds)",
-                           dev->rekordbox_id, dev->track_source_player,
-                           dev->device_num, dev->track_id, dev->waveform_backoff);
-                    free(tmp);
-                }
+            int erc = waveform_thread_enqueue(dev->device_num, dev->rekordbox_id,
+                                              wf_ip, wf_nport, wf_mport, wf_slot,
+                                              wf_id.anlz_path);
+            if (erc != 0) {
+                logmsg("cdj", "[%u@CDJ%u] 🌊 waveform enqueue failed rc=%d",
+                       dev->rekordbox_id, dev->device_num, erc);
             }
         }
 

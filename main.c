@@ -15,6 +15,7 @@
 #include "prolink/dbserver_thread.h"
 #include "prolink/onelibrary_thread.h"
 #include "prolink/pdb_thread.h"
+#include "prolink/waveform_thread.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -587,7 +588,8 @@ int main(int argc, char **argv) {
                 app.prolink = NULL;
             } else {
                 logmsg("main", "CDJ sniffer started on %s", app.cfg.prolink_interface);
-                
+                waveform_thread_start();
+
                 /* CDJ tagging is now handled by the confidence model */
             }
         }
@@ -679,6 +681,7 @@ cleanup:
     dbserver_thread_stop_all();
     onelibrary_thread_stop_all();
     pdb_thread_stop_all();
+    waveform_thread_stop();
     db_close(&app);
     track_registry_destroy();
 

@@ -11,6 +11,7 @@
 #include "../prolink/onelibrary.h"
 #include "../prolink/track_registry.h"
 #include "../prolink/prolink.h"
+#include "../prolink/waveform_thread.h"
 #include "../confidence.h"
 #include "../db/database.h"
 
@@ -459,27 +460,36 @@ void *ws_main(void *arg) {
                 ws_text(fd, msg, len);
             }
 
-            /* Send cached waveforms for all active decks */
+            /* Send cached waveforms for all active decks. Snapshot the bytes
+             * under waveform_mu (worker thread can free/replace dev->waveform_data
+             * at any time), then send without holding the mutex so a slow client
+             * doesn't block the worker. */
             if (app->prolink) {
                 for (int d = 0; d < MAX_DEVICES; d++) {
                     cdj_device_t *dev = &devices[d];
-                    if (dev->active && dev->waveform_data && dev->waveform_len > 0) {
-                        /* Build waveform frame and send to this client only */
-                        uint8_t hdr[5] = {
-                            0xFF, dev->device_num,
-                            (uint8_t)((dev->waveform_len >> 16) & 0xFF),
-                            (uint8_t)((dev->waveform_len >> 8) & 0xFF),
-                            (uint8_t)(dev->waveform_len & 0xFF)
-                        };
-                        uint8_t *frame = malloc(5 + dev->waveform_len);
+                    if (!dev->active) continue;
+
+                    pthread_mutex_lock(&waveform_mu);
+                    size_t wlen = dev->waveform_len;
+                    uint8_t *frame = NULL;
+                    if (dev->waveform_data && wlen > 0) {
+                        frame = malloc(5 + wlen);
                         if (frame) {
-                            memcpy(frame, hdr, 5);
-                            memcpy(frame + 5, dev->waveform_data, dev->waveform_len);
-                            pthread_mutex_lock(&ws_send_mu);
-                            ws_send_frame(fd, 0x02, frame, 5 + dev->waveform_len);
-                            pthread_mutex_unlock(&ws_send_mu);
-                            free(frame);
+                            frame[0] = 0xFF;
+                            frame[1] = dev->device_num;
+                            frame[2] = (uint8_t)((wlen >> 16) & 0xFF);
+                            frame[3] = (uint8_t)((wlen >> 8) & 0xFF);
+                            frame[4] = (uint8_t)(wlen & 0xFF);
+                            memcpy(frame + 5, dev->waveform_data, wlen);
                         }
+                    }
+                    pthread_mutex_unlock(&waveform_mu);
+
+                    if (frame) {
+                        pthread_mutex_lock(&ws_send_mu);
+                        ws_send_frame(fd, 0x02, frame, 5 + wlen);
+                        pthread_mutex_unlock(&ws_send_mu);
+                        free(frame);
                     }
                 }
             }
