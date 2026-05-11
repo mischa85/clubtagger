@@ -73,9 +73,6 @@ static inline track_key_t dev_track_key(const cdj_device_t *dev) {
  * Read by update_slot_media when spawning the per-slot worker. */
 extern const char *prolink_olib_key;
 
-/* Check if media slot changed and handle accordingly */
-void check_media_change(cdj_device_t *dev);
-
 /* Sweep for CDJs that have stopped sending keepalives. Stops their dbserver
  * worker and clears identity fields so the next announce re-fires the
  * was_new path with a fresh worker. Call once per second from the prolink

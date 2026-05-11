@@ -122,15 +122,13 @@ static void log_track_loaded(const cdj_device_t *dev)
            dev->name[0] ? dev->name : "?");
 }
 
-/* Update media presence for one slot (USB or SD). Handles insert/remove logging,
- * fetch state reset, and database cleanup. */
+/* Update media presence for one slot (USB or SD). Spawns / stops the
+ * per-slot OneLibrary and PDB workers on insert / remove and evicts
+ * registry entries sourced from the slot. */
 static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot)
 {
     uint8_t *present   = (slot == SLOT_USB) ? &dev->usb_present : &dev->sd_present;
     uint8_t *local_raw = (slot == SLOT_USB) ? &dev->usb_local_raw : &dev->sd_local_raw;
-    bool    *loaded    = (slot == SLOT_USB) ? &dev->usb_db_loaded : &dev->sd_db_loaded;
-    time_t  *attempt   = (slot == SLOT_USB) ? &dev->usb_fetch_attempt : &dev->sd_fetch_attempt;
-    uint16_t *interval = (slot == SLOT_USB) ? &dev->usb_fetch_interval : &dev->sd_fetch_interval;
     const char *name   = (slot == SLOT_USB) ? "USB" : "SD";
 
     uint8_t old = *present;
@@ -139,7 +137,6 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
 
     if (*present && !old) {
         logmsg("cdj", "💾 Device %d: %s inserted", dev->device_num, name);
-        *loaded = false; *attempt = 0; *interval = 10;
         if (prolink_olib_key && prolink_olib_key[0]) {
             int rc = onelibrary_thread_spawn(dev->device_num, slot, dev->ip_addr,
                                              dev->nfs_port, dev->mount_port,
@@ -158,7 +155,6 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
     }
     if (!*present && old) {
         logmsg("cdj", "💾 Device %d: %s removed", dev->device_num, name);
-        *loaded = false; *attempt = 0; *interval = 10;
         pdb_thread_stop(dev->device_num, slot);
         onelibrary_thread_stop(dev->device_num, slot);
         track_registry_evict_source_slot(dev->device_num, slot);
@@ -458,9 +454,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         if (dev->track_slot == 0 && dev->device_type == DEVICE_TYPE_CDJ) {
             dev->track_slot = SLOT_USB;
         }
-        
-        check_media_change(dev);
-        
+
         time_t now = time(NULL);
         static time_t last_beat_ui_update = 0;
         if (now != last_beat_ui_update) {
@@ -652,8 +646,6 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             dev->waveform_last_attempt = 0;
             dev->waveform_backoff = 10;   /* Start fresh on track change */
             dev->track_db_src = DB_SRC_NONE;
-            dev->lookup_backoff = 5;    /* Reset backoff for new track */
-            dev->last_lookup_time = 0;  /* Allow immediate lookup for new track */
             dev->logged_rekordbox_id = 0;  /* Allow new track to be logged */
             dev->play_started = dev->playing ? time(NULL) : 0;  /* Reset play timer on track change */
             /* Reset confidence for this deck — new track starts at 0 */
@@ -667,27 +659,20 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             }
         }
         
-        /* Skip lookup if no track loaded or we already have a title. Rate-limited
-         * by lookup_backoff, which doubles on failure (5s → 60s) and resets on
-         * track change, successful resolution, or db-load completion.
+        /* Enqueue resolver lookups while we don't have a title yet. The
+         * resolver workers dedupe via per-slot pending mailboxes, so re-
+         * enqueueing on every status tick (10/sec) is cheap. As soon as
+         * any resolver emits a winner, the registry projection below sets
+         * dev->track_title and this gate stops further enqueues.
          *
          * reg_id is the per-slot identifier: rekordbox_id for USB/SD/Link,
          * track number for CD. They live in different namespaces but share
          * the same gate. */
-        time_t now_lookup = time(NULL);
         uint32_t reg_id = (dev->track_slot == SLOT_CD)
                           ? dev->track_id : dev->rekordbox_id;
-        int title_blocks_lookup = dev->track_title[0] != '\0';
-        uint16_t backoff = dev->lookup_backoff ? dev->lookup_backoff : 5;
-        int need_lookup = (reg_id > 0) &&
-                          !title_blocks_lookup &&
-                          (now_lookup - dev->last_lookup_time >= backoff);
 
-        if ((track_changed && reg_id > 0) || need_lookup) {
-            dev->last_lookup_time = now_lookup;
-
+        if (reg_id > 0 && dev->track_title[0] == '\0') {
             int found = 0;
-            int retry_later = 0;  /* 1 = temporary skip, will retry */
 
             if (dev->track_slot == SLOT_CD) {
                 /* CD-text: query the playing CDJ itself; the worker emits
@@ -703,7 +688,6 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     logmsg("cdj", "[CD %u@CDJ%u] DBServer enqueue failed (rc=%d)",
                            dev->track_id, dev->device_num, erc);
                 }
-                retry_later = 1;
             } else if (dev->track_slot > 0) {
                 uint32_t src_ip;
                 uint8_t  src_slot;
@@ -738,7 +722,6 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                dev->rekordbox_id, dev->track_source_player,
                                dev->track_source_player, cdj_slot_name(src_slot), ol_erc);
                     }
-                    retry_later = 1;
                 }
 
                 /* 3. DBServer — async via per-playing-deck worker. The
@@ -761,7 +744,6 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                dev->rekordbox_id, dev->track_source_player,
                                dev->device_num, erc);
                     }
-                    retry_later = 1;
                 }
 
                 /* 4. PDB — async via per-(source_player, slot) worker. The
@@ -776,17 +758,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                                dev->rekordbox_id, dev->track_source_player,
                                dev->track_source_player, cdj_slot_name(src_slot), pdb_erc);
                     }
-                    retry_later = 1;
                 }
-            }
-            
-            /* Failure → grow backoff (5→10→20→40→60). Success → reset to 5.
-             * retry_later means "try again soon, this wasn't a real miss". */
-            if (!found && !retry_later && dev->rekordbox_id > 0) {
-                uint16_t b = dev->lookup_backoff ? dev->lookup_backoff * 2 : 5;
-                dev->lookup_backoff = (b > 60) ? 60 : b;
-            } else if (found) {
-                dev->lookup_backoff = 5;
             }
 
             /* Signal confidence model when metadata is resolved.
@@ -995,25 +967,3 @@ void parse_position(const uint8_t *data, size_t len, uint32_t src_ip) {
     }
 }
 
-/*
- * ============================================================================
- * Media Change Detection
- * ============================================================================
- */
-
-void check_media_change(cdj_device_t *dev) {
-    if (!dev) return;
-    
-    if (dev->track_slot != dev->last_slot && dev->last_slot != 0) {
-        vlogmsg("cdj", "[MEDIA] Device %d changed from %s to %s",
-                   dev->device_num, cdj_slot_name(dev->last_slot), 
-                   cdj_slot_name(dev->track_slot));
-        
-        dev->db_fetched = 0;
-        dev->track_title[0] = '\0';
-        dev->track_artist[0] = '\0';
-        dev->track_isrc[0] = '\0';
-    }
-    
-    dev->last_slot = dev->track_slot;
-}

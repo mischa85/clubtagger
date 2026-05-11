@@ -146,27 +146,13 @@ typedef struct {
     size_t   waveform_len;        /* Length of waveform_data */
     time_t   waveform_last_attempt; /* Last NFS fetch attempt for current track */
     uint16_t waveform_backoff;    /* Seconds to wait between waveform fetches (10→300, doubles on failure, resets on track change) */
-    uint16_t lookup_backoff;    /* Seconds to wait between retries (5→60, doubles on failure, resets on success/track-change/db-load) */
-    time_t   last_lookup_time;  /* Last lookup attempt time */
-    
-    /* Database fetch tracking */
-    uint8_t  db_fetched;        /* Have we fetched DB for this slot? */
-    uint8_t  last_slot;         /* Last slot seen (detect changes) */
-    time_t   db_fetch_time;     /* When we fetched the DB */
-    
+
     /* Media presence (from status packets) */
-    /* PATCH(2026-03): usb_present / sd_present are written but never read — dead fields, candidate for removal */
     uint8_t  usb_present;       /* USB available (usb_local != 0) */
     uint8_t  sd_present;        /* SD available (sd_local != 0) */
     uint8_t  usb_local_raw;     /* Raw usb_local byte (0x37) for local vs Link detection */
     uint8_t  sd_local_raw;      /* Raw sd_local byte (0x38) */
-    bool     usb_db_loaded;     /* In-memory DB present, lookups for this slot will work */
-    bool     sd_db_loaded;
-    time_t   usb_fetch_attempt; /* Last USB fetch attempt time */
-    time_t   sd_fetch_attempt;  /* Last SD fetch attempt time */
-    uint16_t usb_fetch_interval; /* Current retry interval in seconds (doubles on failure, caps at 300) */
-    uint16_t sd_fetch_interval;  /* Current retry interval in seconds */
-    
+
     /* On-air and playback tracking (for CDJ-only tagging) */
     uint8_t  on_air;            /* Currently on-air (from DJM) */
     uint8_t  on_air_available;  /* Have we ever seen on_air change? */
