@@ -137,7 +137,8 @@ static void run_lookup(olib_worker_t *w, uint32_t rb_id) {
     track_key_t k = { .rekordbox_id = rb_id,
                       .source_player = w->source_player,
                       .slot          = w->slot };
-    track_registry_emit(k, RES_ONELIBRARY, artist, title, isrc, anlz);
+    track_registry_emit(k, RES_ONELIBRARY, artist, title, isrc, anlz,
+                        bitrate, srate, depth, format);
 }
 
 /*

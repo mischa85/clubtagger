@@ -810,6 +810,12 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     utf8_safe_copy(dev->track_artist, res_id.artist, sizeof(dev->track_artist));
                 if (!dev->track_isrc[0] && res_id.isrc[0])
                     utf8_safe_copy(dev->track_isrc, res_id.isrc, sizeof(dev->track_isrc));
+                if (!dev->track_anlz_path[0] && res_id.anlz_path[0])
+                    utf8_safe_copy(dev->track_anlz_path, res_id.anlz_path, sizeof(dev->track_anlz_path));
+                if (!dev->track_bitrate    && res_id.bitrate)      dev->track_bitrate    = res_id.bitrate;
+                if (!dev->track_samplerate && res_id.sample_rate)  dev->track_samplerate = res_id.sample_rate;
+                if (!dev->track_depth      && res_id.sample_depth) dev->track_depth      = res_id.sample_depth;
+                if (!dev->track_format     && res_id.file_type)    dev->track_format     = res_id.file_type;
                 if (!found) found = 1;
             }
 

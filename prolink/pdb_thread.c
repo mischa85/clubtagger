@@ -139,7 +139,9 @@ static void run_lookup(pdb_worker_t *w, uint32_t rb_id) {
     track_registry_emit(k, RES_PDB,
                         t->artist, t->title,
                         (t->has_isrc ? t->isrc : ""),
-                        t->anlz_path);
+                        t->anlz_path,
+                        t->bitrate, t->sample_rate,
+                        t->sample_depth, t->file_type);
 }
 
 /*

@@ -46,7 +46,13 @@ typedef struct {
     char     artist[128];
     char     title[128];
     char     isrc[64];
-    char     anlz_path[256];    /* OneLibrary only; empty otherwise */
+    char     anlz_path[256];    /* OneLibrary / PDB; empty for DBServer */
+    /* Audio-file metadata. OneLibrary + PDB carry these; DBServer leaves zero.
+     * Adopted into the winner under the same agreement rule as isrc/anlz_path. */
+    uint32_t bitrate;           /* kbps, 0 = unknown */
+    uint32_t sample_rate;       /* Hz, 0 = unknown */
+    uint8_t  sample_depth;      /* bits, 0 = unknown */
+    uint8_t  file_type;         /* cdj_file_format_t, 0 = unknown */
     time_t   resolved_at;
 } candidate_t;
 
@@ -65,6 +71,12 @@ typedef struct {
     char     title[128];
     char     isrc[64];
     char     anlz_path[256];
+
+    /* Audio-file metadata (from the OneLibrary/PDB enrichment slot). */
+    uint32_t bitrate;
+    uint32_t sample_rate;
+    uint8_t  sample_depth;
+    uint8_t  file_type;
 
     resolver_id_t primary;      /* Resolver whose title/artist won; RES__COUNT if none */
     uint32_t resolved_by;       /* bitmask of (1u << resolver_id_t) */
@@ -104,7 +116,9 @@ void track_registry_destroy(void);
  */
 int track_registry_emit(track_key_t key, resolver_id_t resolver,
                         const char *artist, const char *title,
-                        const char *isrc, const char *anlz_path);
+                        const char *isrc, const char *anlz_path,
+                        uint32_t bitrate, uint32_t sample_rate,
+                        uint8_t sample_depth, uint8_t file_type);
 
 /*
  * ============================================================================

@@ -105,7 +105,7 @@ static void run_query(dbserver_worker_t *w,
         track_key_t k = { .rekordbox_id = rb_id,
                           .source_player = query_target,
                           .slot          = source_slot };
-        track_registry_emit(k, RES_DBSERVER, artist, title, "", "");
+        track_registry_emit(k, RES_DBSERVER, artist, title, "", "", 0, 0, 0, 0);
         return;
     }
 

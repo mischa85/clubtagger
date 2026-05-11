@@ -92,7 +92,9 @@ static int slots_agree(const candidate_t *a, const candidate_t *b) {
 
 int track_registry_emit(track_key_t key, resolver_id_t resolver,
                         const char *artist, const char *title,
-                        const char *isrc, const char *anlz_path) {
+                        const char *isrc, const char *anlz_path,
+                        uint32_t bitrate, uint32_t sample_rate,
+                        uint8_t sample_depth, uint8_t file_type) {
     if ((unsigned)resolver >= RES__COUNT) {
         logmsg("registry", "emit: invalid resolver id %d", (int)resolver);
         return -EINVAL;
@@ -118,7 +120,11 @@ int track_registry_emit(track_key_t key, resolver_id_t resolver,
     copy_field(slot->title,     sizeof(slot->title),     title);
     copy_field(slot->isrc,      sizeof(slot->isrc),      isrc);
     copy_field(slot->anlz_path, sizeof(slot->anlz_path), anlz_path);
-    slot->resolved_at = now;
+    slot->bitrate      = bitrate;
+    slot->sample_rate  = sample_rate;
+    slot->sample_depth = sample_depth;
+    slot->file_type    = file_type;
+    slot->resolved_at  = now;
 
     pthread_mutex_unlock(&g_track_registry.mu);
     return 0;
@@ -196,6 +202,10 @@ int track_registry_winner(track_key_t key, track_identity_t *out) {
         if (adopt) {
             copy_field(out->isrc,      sizeof(out->isrc),      enrich->isrc);
             copy_field(out->anlz_path, sizeof(out->anlz_path), enrich->anlz_path);
+            out->bitrate      = enrich->bitrate;
+            out->sample_rate  = enrich->sample_rate;
+            out->sample_depth = enrich->sample_depth;
+            out->file_type    = enrich->file_type;
             out->resolved_by |= (1u << enrich_id);
         }
     }
