@@ -1,11 +1,9 @@
 /*
- * pdb_parser.c - Rekordbox PDB Database Parser
- *
- * Parse rekordbox export.pdb files to extract track metadata.
+ * pdb.c - Rekordbox PDB database: fetch over NFS + parse pages.
  * Reference: https://djl-analysis.deepsymmetry.org/rekordbox-export-analysis/exports.html
  */
 
-#include "pdb_parser.h"
+#include "pdb.h"
 #include "pdb_protocol.h"
 #include "nfs_client.h"
 #include "cdj_types.h"
@@ -17,102 +15,6 @@
 #include <errno.h>
 
 extern int verbose;
-
-/*
- * ============================================================================
- * Database Storage
- * ============================================================================
- */
-
-pdb_database_t pdb_databases[MAX_DATABASES];
-int pdb_database_count = 0;
-
-/*
- * ============================================================================
- * Database Management
- * ============================================================================
- */
-
-pdb_database_t *find_pdb_database(uint32_t device_ip, uint8_t slot) {
-    for (int i = 0; i < pdb_database_count; i++) {
-        if (pdb_databases[i].device_ip == device_ip && 
-            pdb_databases[i].slot == slot) {
-            return &pdb_databases[i];
-        }
-    }
-    return NULL;
-}
-
-pdb_database_t *create_pdb_database(uint32_t device_ip, uint8_t slot) {
-    pdb_database_t *db;
-    
-    if (pdb_database_count >= MAX_DATABASES) {
-        /* Evict oldest - just reset header, track array cleared by parse_pdb_file */
-        time_t oldest = time(NULL);
-        int oldest_idx = 0;
-        for (int i = 0; i < MAX_DATABASES; i++) {
-            if (pdb_databases[i].fetched_at < oldest) {
-                oldest = pdb_databases[i].fetched_at;
-                oldest_idx = i;
-            }
-        }
-        db = &pdb_databases[oldest_idx];
-    } else {
-        db = &pdb_databases[pdb_database_count++];
-    }
-    
-    /* Reset header fields only - track array handled by parse_pdb_file() */
-    db->device_ip = device_ip;
-    db->slot = slot;
-    db->track_count = 0;
-    db->fetched_at = 0;
-    db->fetch_in_progress = 0;
-    db->fetch_failed = 0;
-    return db;
-}
-
-void remove_pdb_database(uint32_t device_ip, uint8_t slot) {
-    for (int i = 0; i < pdb_database_count; i++) {
-        if (pdb_databases[i].device_ip == device_ip && 
-            pdb_databases[i].slot == slot) {
-            int track_count = pdb_databases[i].track_count;
-            
-            /* Shift remaining databases down */
-            for (int j = i; j < pdb_database_count - 1; j++) {
-                pdb_databases[j] = pdb_databases[j + 1];
-            }
-            pdb_database_count--;
-            
-            vlogmsg("cdj", "🗑️ Removed database: %s @ %s (%d tracks)", 
-                       slot == SLOT_USB ? "USB" : (slot == SLOT_SD ? "SD" : "?"),
-                       ip_to_str(device_ip), track_count);
-            return;
-        }
-    }
-}
-
-TrackID *lookup_pdb_track(uint32_t rekordbox_id, uint32_t device_ip, uint8_t slot) {
-    for (int d = 0; d < pdb_database_count; d++) {
-        pdb_database_t *db = &pdb_databases[d];
-        if (device_ip != 0 && (db->device_ip != device_ip || db->slot != slot))
-            continue;
-        for (int t = 0; t < db->track_count; t++) {
-            if (db->tracks[t].rekordbox_id == rekordbox_id) {
-                if (verbose) {
-                    vlogmsg("cdj", "[PDB] Found track %u: \"%s\" (from %s @ %s)", 
-                               rekordbox_id, db->tracks[t].title,
-                               db->slot == SLOT_USB ? "USB" : (db->slot == SLOT_SD ? "SD" : "?"),
-                               ip_to_str(db->device_ip));
-                }
-                return &db->tracks[t];
-            }
-        }
-    }
-    if (verbose && pdb_database_count > 0) {
-        vlogmsg("cdj", "[PDB] Track %u not found in %d databases", rekordbox_id, pdb_database_count);
-    }
-    return NULL;
-}
 
 /*
  * ============================================================================
@@ -598,22 +500,14 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
 }
 
 /*
- * Parse a PDB buffer captured passively from NFS traffic.
- * Used when we observe another device fetching the database.
+ * Passive PDB ingestion from sniffed NFS traffic.
+ *
+ * Disabled — pdb_thread workers own the parsed database per (source_player,
+ * slot) and there is no API for ingesting pre-fetched bytes. The active fetch
+ * path covers our needs; passive sniff was an opportunistic shortcut.
  */
 void parse_pdb_buffer(const uint8_t *data, size_t len, uint32_t device_ip) {
-    /* Use slot 0xFF to indicate passively captured database */
-    pdb_database_t *db = find_pdb_database(device_ip, 0xFF);
-    if (!db) {
-        db = create_pdb_database(device_ip, 0xFF);
-    }
-    
-    if (parse_pdb_file(data, len, db) != 0) {
-        vlogmsg("cdj", "[NFS-SNIFF] Passive PDB parse found no tracks");
-    } else {
-        vlogmsg("cdj", "[NFS-SNIFF] ✅ Passively captured %d tracks from %s",
-                   db->track_count, ip_to_str(device_ip));
-    }
-    
-    db->fetched_at = time(NULL);
+    (void)data; (void)len;
+    vlogmsg("cdj", "[NFS-SNIFF] Passive PDB capture from %s — ignored (disabled)",
+            ip_to_str(device_ip));
 }

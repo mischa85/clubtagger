@@ -7,7 +7,7 @@
 
 #include "nfs_client.h"
 #include "nfs_protocol.h"
-#include "pdb_parser.h"
+#include "pdb.h"
 #include "registration.h"
 #include "../common.h"
 #include <stdio.h>

@@ -37,7 +37,8 @@ PROLINK_SRC := prolink/prolink_thread.c \
                prolink/dbserver_thread.c \
                prolink/nfs_client.c \
                prolink/nfs_observer.c \
-               prolink/pdb_parser.c \
+               prolink/pdb.c \
+               prolink/pdb_thread.c \
                prolink/track_cache.c \
                prolink/track_registry.c \
                prolink/onelibrary.c \

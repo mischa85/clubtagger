@@ -338,7 +338,7 @@ clubtagger/
 │   ├── registration.c # Virtual CDJ registration and slot management
 │   ├── dbserver.c    # DBServer queries (port 1051)
 │   ├── nfs_client.c  # NFS v2 client for database fetching
-│   ├── pdb_parser.c  # Rekordbox export.pdb parser (legacy)
+│   ├── pdb.c         # Rekordbox export.pdb fetch + parser
 │   ├── onelibrary.c  # OneLibrary exportLibrary.db decrypt + SQLite query
 │   └── track_cache.c # In-memory metadata cache
 ├── shazam/           # Audio fingerprinting

@@ -1,11 +1,13 @@
 /*
- * pdb_parser.h - Rekordbox PDB Database Parser
+ * pdb.h - Rekordbox PDB database: fetch over NFS + parse pages.
  *
- * Parse rekordbox export.pdb files to extract track metadata.
+ * Data layer for pdb_thread workers (mirrors onelibrary.{c,h} ↔
+ * onelibrary_thread.{c,h}). The worker owns the parsed pdb_database_t and
+ * drives all lookups; this module just fetches and parses.
  */
 
-#ifndef PDB_PARSER_H
-#define PDB_PARSER_H
+#ifndef CLUBTAGGER_PDB_H
+#define CLUBTAGGER_PDB_H
 
 #include <stdint.h>
 #include <stddef.h>
@@ -36,31 +38,6 @@ typedef struct pdb_database_s {
     uint8_t  fetch_failed;
 } pdb_database_t;
 
-/* Support up to 6 CDJs * 2 slots (USB + SD) = 12 databases */
-#define MAX_DATABASES 12
-
-extern pdb_database_t pdb_databases[MAX_DATABASES];
-extern int pdb_database_count;
-
-/*
- * ============================================================================
- * Database Management
- * ============================================================================
- */
-
-/* Find database for device/slot */
-pdb_database_t *find_pdb_database(uint32_t device_ip, uint8_t slot);
-
-/* Create new database entry */
-pdb_database_t *create_pdb_database(uint32_t device_ip, uint8_t slot);
-
-/* Remove database for device/slot (e.g., when media ejected) */
-void remove_pdb_database(uint32_t device_ip, uint8_t slot);
-
-/* Look up track by rekordbox ID. If device_ip is non-zero, only search
- * the database for that specific device+slot. Otherwise search all. */
-TrackID *lookup_pdb_track(uint32_t rekordbox_id, uint32_t device_ip, uint8_t slot);
-
 /*
  * ============================================================================
  * PDB Parsing
@@ -87,4 +64,4 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
 /* Parse a passively captured PDB buffer (from NFS sniffing) */
 void parse_pdb_buffer(const uint8_t *data, size_t len, uint32_t device_ip);
 
-#endif /* PDB_PARSER_H */
+#endif /* CLUBTAGGER_PDB_H */

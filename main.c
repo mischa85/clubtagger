@@ -14,6 +14,7 @@
 #include "prolink/track_registry.h"
 #include "prolink/dbserver_thread.h"
 #include "prolink/onelibrary_thread.h"
+#include "prolink/pdb_thread.h"
 
 #include <pthread.h>
 #include <signal.h>
@@ -677,6 +678,7 @@ cleanup:
     }
     dbserver_thread_stop_all();
     onelibrary_thread_stop_all();
+    pdb_thread_stop_all();
     db_close(&app);
     track_registry_destroy();
 

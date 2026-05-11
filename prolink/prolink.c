@@ -9,7 +9,7 @@
 #include "cdj_types.h"
 #include "track_cache.h"
 #include "dbserver_thread.h"
-#include "pdb_parser.h"
+#include "pdb_thread.h"
 #include "onelibrary_thread.h"
 #include "registration.h"
 #include "nfs_client.h"
@@ -149,11 +149,17 @@ static void update_slot_media(cdj_device_t *dev, uint8_t new_state, uint8_t slot
                        dev->device_num, name, rc);
             }
         }
+        int prc = pdb_thread_spawn(dev->device_num, slot, dev->ip_addr,
+                                   dev->nfs_port, dev->mount_port);
+        if (prc != 0) {
+            logmsg("cdj", "⚠ Device %d: %s PDB worker spawn failed rc=%d",
+                   dev->device_num, name, prc);
+        }
     }
     if (!*present && old) {
         logmsg("cdj", "💾 Device %d: %s removed", dev->device_num, name);
         *loaded = false; *attempt = 0; *interval = 10;
-        remove_pdb_database(dev->ip_addr, slot);
+        pdb_thread_stop(dev->device_num, slot);
         onelibrary_thread_stop(dev->device_num, slot);
         track_registry_evict_source_slot(dev->device_num, slot);
     }
@@ -240,46 +246,6 @@ static void update_play_state(cdj_device_t *dev, const cdj_status_packet_t *pkt,
 
     uint16_t bpm = BE16_TO_HOST(pkt->bpm_be);
     if (bpm > 0 && bpm < 50000) dev->bpm_raw = bpm;
-}
-
-/* Fetch the PDB for one slot from the prolink thread.
- * OneLibrary is fetched independently by its per-slot worker thread —
- * we don't gate or coordinate from here.
- *
- * Sets *_db_loaded only on PDB success; failure leaves it false and applies
- * exponential backoff (10s → 300s cap). */
-static void fetch_slot_database(cdj_device_t *dev, uint8_t slot, time_t now)
-{
-    bool    *loaded   = (slot == SLOT_USB) ? &dev->usb_db_loaded : &dev->sd_db_loaded;
-    uint8_t  raw      = (slot == SLOT_USB) ? dev->usb_local_raw : dev->sd_local_raw;
-    time_t  *attempt  = (slot == SLOT_USB) ? &dev->usb_fetch_attempt : &dev->sd_fetch_attempt;
-    uint16_t *interval = (slot == SLOT_USB) ? &dev->usb_fetch_interval : &dev->sd_fetch_interval;
-    const char *name  = (slot == SLOT_USB) ? "USB" : "SD";
-
-    if (raw != MEDIA_STATE_LOADED || *loaded) return;
-    if (now - *attempt < *interval) return;
-
-    *attempt = now;
-
-    logmsg("cdj", "📥 Device %d: Fetching %s PDB...", dev->device_num, name);
-    pdb_database_t *pdb = create_pdb_database(dev->ip_addr, slot);
-    pthread_mutex_lock(&nfs_fetch_mu);
-    int prc = (pdb ? fetch_rekordbox_database(dev->ip_addr, slot,
-                                              dev->nfs_port, dev->mount_port, pdb) : -1);
-    pthread_mutex_unlock(&nfs_fetch_mu);
-    if (prc == 0) {
-        logmsg("cdj", "✅ Device %d: %s PDB loaded (%d tracks)",
-               dev->device_num, name, pdb->track_count);
-        *loaded = true; *interval = 10;
-        if (dev->track_slot == slot && dev->track_title[0] == '\0')
-            dev->lookup_backoff = 5;
-        return;
-    }
-
-    if (*interval < 300)
-        *interval = (*interval * 2 > 300) ? 300 : *interval * 2;
-    logmsg("cdj", "📥 Device %d: %s PDB fetch failed, retry in %ds",
-           dev->device_num, name, *interval);
 }
 
 /*
@@ -597,15 +563,6 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         dump_media_bytes(dev, data, len, "media");
         update_media_state(dev, pkt);
 
-        /* Proactively fetch databases when media is detected.
-         * Must wait for registration to be ready (5 keepalives sent) or CDJ will refuse NFS. */
-        if (capture_interface && our_ip != 0 && dev->ip_addr != 0 &&
-            keepalives_sent_active >= MIN_KEEPALIVES_BEFORE_NFS) {
-            time_t fetch_now = time(NULL);
-            fetch_slot_database(dev, SLOT_USB, fetch_now);
-            fetch_slot_database(dev, SLOT_SD, fetch_now);
-        }
-        
         uint16_t old_track = dev->track_id;
         uint8_t old_slot = dev->track_slot;
         uint32_t old_rekordbox = dev->rekordbox_id;
@@ -753,6 +710,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 uint32_t src_ip;
                 uint8_t  src_slot;
                 resolve_source_device(dev, &src_ip, &src_slot);
+                (void)src_ip;  /* src_ip unused on this path; all resolvers key on (source_player, slot) */
 
                 /* 1. Track cache */
                 track_cache_entry_t *tc = find_track_cache(dev->rekordbox_id, dev->track_source_player);
@@ -808,39 +766,19 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     retry_later = 1;
                 }
 
-                /* 4. PDB (parsed export) */
+                /* 4. PDB — async via per-(source_player, slot) worker. The
+                 * worker emits to track_registry; the registry winner is
+                 * picked up on the next prolink tick. */
                 if (!found) {
-                    logmsg("cdj", "[%u@CDJ%u] DECK %d: Trying PDB (src=%s slot=%s)",
-                           dev->rekordbox_id, dev->track_source_player, device_num,
-                           ip_to_str(src_ip), cdj_slot_name(src_slot));
-                    TrackID *pdb = lookup_pdb_track(dev->rekordbox_id, src_ip, src_slot);
-                    if (pdb && pdb->title[0] && pdb->artist[0]) {
-                        utf8_safe_copy(dev->track_title, pdb->title, sizeof(dev->track_title));
-                        utf8_safe_copy(dev->track_artist, pdb->artist, sizeof(dev->track_artist));
-                        if (pdb->has_isrc && pdb->isrc[0])
-                            utf8_safe_copy(dev->track_isrc, pdb->isrc, sizeof(dev->track_isrc));
-                        dev->track_bitrate = pdb->bitrate;
-                        dev->track_format = pdb->file_type;
-                        dev->track_samplerate = pdb->sample_rate;
-                        dev->track_depth = pdb->sample_depth;
-                        if (pdb->anlz_path[0])
-                            strncpy(dev->track_anlz_path, pdb->anlz_path, sizeof(dev->track_anlz_path) - 1);
-                        found = 1;
-                        dev->track_db_src = DB_SRC_PDB;
-                        logmsg("cdj", "[%u@CDJ%u] 🎵 %s - %s (via PDB)",
+                    int pdb_erc = pdb_thread_enqueue(dev->track_source_player,
+                                                     src_slot,
+                                                     dev->rekordbox_id);
+                    if (pdb_erc != 0 && pdb_erc != -ENOENT) {
+                        logmsg("cdj", "[%u@CDJ%u] PDB enqueue failed (src=CDJ%u slot=%s rc=%d)",
                                dev->rekordbox_id, dev->track_source_player,
-                               pdb->artist, pdb->title);
-                        track_key_t k = { .rekordbox_id = dev->rekordbox_id,
-                                          .source_player = dev->track_source_player,
-                                          .slot          = src_slot };
-                        track_registry_emit(k, RES_PDB,
-                                            pdb->artist, pdb->title,
-                                            (pdb->has_isrc ? pdb->isrc : ""),
-                                            pdb->anlz_path);
-                    } else {
-                        logmsg("cdj", "[%u@CDJ%u] DECK %d: PDB miss",
-                               dev->rekordbox_id, dev->track_source_player, device_num);
+                               dev->track_source_player, cdj_slot_name(src_slot), pdb_erc);
                     }
+                    retry_later = 1;
                 }
             }
             

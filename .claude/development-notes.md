@@ -25,7 +25,7 @@ Clubtagger is a DJ track identification system that combines:
 | `prolink/registration.c` | Device registration on the network |
 | `prolink/dbserver.c` | DBServer connection for track metadata |
 | `prolink/nfs_client.c` | NFS client for database fetching |
-| `prolink/pdb_parser.c` | Rekordbox PDB database parser |
+| `prolink/pdb.c` | Rekordbox PDB database fetch + parser |
 | `prolink/onelibrary.c` | OneLibrary (exportLibrary.db) decryption + SQLite |
 | `shazam/id_thread.c` | Audio fingerprint ID and signal emission |
 | `server/ws_server.c` | WebSocket server (binary packet relay + JSON events) |
