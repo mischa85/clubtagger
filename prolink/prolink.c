@@ -710,8 +710,10 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
                 /* 2. OneLibrary — async via per-(source_player, slot) worker.
                  * The worker emits to track_registry; the winner is folded
-                 * into dev fields below. */
-                if (!found) {
+                 * into dev fields below. Only for rekordbox-analyzed tracks:
+                 * the unanalyzed-id namespace can collide with rekordbox_id
+                 * and produce a confident wrong answer. */
+                if (!found && dev->track_type == TRACK_REKORDBOX) {
                     int ol_erc = onelibrary_thread_enqueue(dev->track_source_player,
                                                            src_slot,
                                                            dev->rekordbox_id);
@@ -748,8 +750,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
 
                 /* 4. PDB — async via per-(source_player, slot) worker. The
                  * worker emits to track_registry; the registry winner is
-                 * picked up on the next prolink tick. */
-                if (!found) {
+                 * picked up on the next prolink tick. Rekordbox-only for the
+                 * same reason as OneLibrary above. */
+                if (!found && dev->track_type == TRACK_REKORDBOX) {
                     int pdb_erc = pdb_thread_enqueue(dev->track_source_player,
                                                      src_slot,
                                                      dev->rekordbox_id);
