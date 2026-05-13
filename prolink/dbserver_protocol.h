@@ -173,9 +173,71 @@ static inline uint32_t build_dmst(uint8_t device, uint8_t menu_loc,
  * - Variable: Arguments
  */
 
-#define DBMSG_HEADER_MAGIC_OFF    0
-#define DBMSG_HEADER_TXID_OFF     4
-#define DBMSG_HEADER_TYPE_OFF     8
+/* Wire-format offsets within a DBServer message, relative to msg_start
+ * (the byte position of the magic field's INT32 type prefix). Each header
+ * field is field-tag-prefixed on the wire, so the offsets here include
+ * those prefixes.
+ *
+ *   [INT32 magic ]  5 bytes  @ 0
+ *   [INT32 txid  ]  5 bytes  @ 5
+ *   [INT16 type  ]  3 bytes  @ 10  (value at +11..+12)
+ *   [INT8  argc  ]  2 bytes  @ 13  (value at +14)
+ *   [BINARY tags ]  variable @ 15  (prefix +0, length +1..+4, data +5..)
+ *   [args...     ]           @ 15 + 5 + tags_len
+ *
+ * Argtags blob is variable on responses: requests we send pad to
+ * DBFIELD_TAGS_LEN=12 bytes, but CDJ-3000X replies trim to only as many
+ * tag bytes as argc demands. Compute arg offsets via dbmsg_args_offset()
+ * below — never hardcode. */
+#define DBMSG_OFF_MAGIC           0
+#define DBMSG_OFF_TXID            5
+#define DBMSG_OFF_MSG_TYPE        10
+#define DBMSG_OFF_MSG_TYPE_VALUE  11
+#define DBMSG_OFF_ARGC            13
+#define DBMSG_OFF_ARGC_VALUE      14
+#define DBMSG_OFF_ARGTAGS         15
+#define DBMSG_OFF_ARGTAGS_LEN     16  /* 4-byte BE length of tags blob */
+#define DBMSG_OFF_ARGTAGS_DATA    20  /* tag bytes start here; args follow */
+
+/* Field sizes on the wire including type prefix. */
+#define DBFIELD_SIZE_INT8         2
+#define DBFIELD_SIZE_INT16        3
+#define DBFIELD_SIZE_INT32        5
+
+/* Minimum bytes needed to safely read msg_type from a message header. */
+#define DBMSG_MIN_HEADER_BYTES    (DBMSG_OFF_ARGC)
+
+#include <stddef.h>
+#include <stdint.h>
+
+static inline uint32_t dbmsg_read_be32(const uint8_t *buf) {
+    return ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+           ((uint32_t)buf[2] << 8)  |  (uint32_t)buf[3];
+}
+
+/* Offset (relative to start of resp) where the first argument begins for
+ * the message at msg_start. Returns -1 if the response is too short to
+ * contain the argtags blob. */
+static inline int dbmsg_args_offset(const uint8_t *resp, size_t resp_len,
+                                    size_t msg_start) {
+    if (msg_start + DBMSG_OFF_ARGTAGS_DATA > resp_len) return -1;
+    uint32_t tags_len = dbmsg_read_be32(&resp[msg_start + DBMSG_OFF_ARGTAGS_LEN]);
+    return (int)(msg_start + DBMSG_OFF_ARGTAGS_DATA + tags_len);
+}
+
+/* Read the Nth (0-indexed) INT32 argument given the offset from
+ * dbmsg_args_offset(). Returns 0 on success, -1 on bounds error or wrong
+ * field type. */
+static inline int dbmsg_read_int32_arg(const uint8_t *resp, size_t resp_len,
+                                       int args_offset, int arg_idx,
+                                       uint32_t *out) {
+    if (args_offset < 0) return -1;
+    int off = args_offset + arg_idx * DBFIELD_SIZE_INT32;
+    if (off < 0 || (size_t)off + DBFIELD_SIZE_INT32 > resp_len) return -1;
+    if (resp[off] != DBFIELD_INT32) return -1;
+    *out = dbmsg_read_be32(&resp[off + 1]);
+    return 0;
+}
 #define DBMSG_HEADER_NARGS_OFF   10
 #define DBMSG_HEADER_TAGS_OFF    11
 

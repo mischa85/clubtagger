@@ -50,9 +50,10 @@ static inline int is_dbserver_magic(const uint8_t *buf) {
            buf[4] == (DBSERVER_MAGIC & 0xFF);
 }
 
-/* Extract message type from response at given position (offset 11-12 from message start) */
+/* Extract message type from response at given position. */
 static inline uint16_t get_msg_type(const uint8_t *buf, size_t msg_start) {
-    return (buf[msg_start + 11] << 8) | buf[msg_start + 12];
+    return (buf[msg_start + DBMSG_OFF_MSG_TYPE_VALUE] << 8) |
+            buf[msg_start + DBMSG_OFF_MSG_TYPE_VALUE + 1];
 }
 
 static int add_int32_field(uint8_t *buf, uint32_t value) {
@@ -360,44 +361,38 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
         return -1;
     }
     
-    /* Parse response to get number of items */
-    int num_items = 0;
-    for (int i = 0; i < received - 15; i++) {
-        if (is_dbserver_magic(&resp[i])) {
-            if (i + 13 <= received) {
-                uint16_t rtype = get_msg_type(resp, i);
-                if (verbose > 1) vlogmsg("cdj", "[DBSERVER] Found msg at %d, type=0x%04x", i, rtype);
-                if (rtype == DBMSG_SUCCESS) {
-                    /* Header is 32 bytes: 5(magic)+5(txid)+3(msgtype)+2(argcnt)+17(argtags) */
-                    /* Arg1 at +32 (5 bytes), Arg2 (num_items) at +37 (5 bytes) */
-                    int j = i + 37;  /* Position of second argument */
-                    if (j + 5 <= received && resp[j] == DBFIELD_INT32) {
-                        num_items = (resp[j+1] << 24) | (resp[j+2] << 16) | 
-                                    (resp[j+3] << 8) | resp[j+4];
-                    }
-                    break;
-                }
-            }
-        }
+    /* Parse response: locate the DBMSG_SUCCESS frame and read arg index 1
+     * (num_items). Argtags blob is variable-length on CDJ-3000X replies, so
+     * never hardcode the argument offset — use dbmsg_args_offset(). */
+    uint32_t num_items = 0;
+    for (int i = 0; (size_t)i + DBMSG_MIN_HEADER_BYTES < (size_t)received; i++) {
+        if (!is_dbserver_magic(&resp[i])) continue;
+        if ((size_t)i + DBMSG_OFF_ARGC_VALUE >= (size_t)received) break;
+        uint16_t rtype = get_msg_type(resp, i);
+        if (verbose > 1) vlogmsg("cdj", "[DBSERVER] Found msg at %d, type=0x%04x", i, rtype);
+        if (rtype != DBMSG_SUCCESS) continue;
+        int args_off = dbmsg_args_offset(resp, (size_t)received, (size_t)i);
+        (void)dbmsg_read_int32_arg(resp, (size_t)received, args_off, 1, &num_items);
+        break;
     }
     
-    if (verbose) vlogmsg("cdj", "[DBSERVER] num_items=%d", num_items);
-    if (num_items == 0 || num_items == (int)0xffffffff) {
-        logmsg("cdj", "[DBSERVER] Rekordbox no items (id=%u num_items=%d resp=%s)",
+    if (verbose) vlogmsg("cdj", "[DBSERVER] num_items=%u", num_items);
+    if (num_items == 0 || num_items == 0xffffffffu) {
+        logmsg("cdj", "[DBSERVER] Rekordbox no items (id=%u num_items=%u resp=%s)",
                rekordbox_id, num_items, rb_resp_hex);
         return -1;
     }
-    
+
     /* Step 2: Render menu to get items */
     pos = 0;
     uint8_t tags2[DBFIELD_TAGS_LEN] = {FIELD_INT32, FIELD_INT32, FIELD_INT32, FIELD_INT32, FIELD_INT32, FIELD_INT32};
     pos = build_message_header(msg, db_txid++, DBMSG_RENDER_MENU, 6, tags2);
-    
+
     pos += add_int32_field(msg + pos, build_dmst(device, MENU_LOC_DATA, slot, TRACK_REKORDBOX));
     pos += add_int32_field(msg + pos, 0);
-    pos += add_int32_field(msg + pos, (uint32_t)num_items);
+    pos += add_int32_field(msg + pos, num_items);
     pos += add_int32_field(msg + pos, 0);
-    pos += add_int32_field(msg + pos, (uint32_t)num_items);
+    pos += add_int32_field(msg + pos, num_items);
     pos += add_int32_field(msg + pos, 0);
     
     received = dbserver_transact(sock, msg, pos, resp, sizeof(resp));
@@ -459,7 +454,7 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
     }
 
     if (!found_title && !found_artist) {
-        logmsg("cdj", "[DBSERVER] Rekordbox parse found no strings (id=%u %d bytes num_items=%d): %s",
+        logmsg("cdj", "[DBSERVER] Rekordbox parse found no strings (id=%u %d bytes num_items=%u): %s",
                rekordbox_id, received, num_items, rb_menu_hex);
         return -1;
     }
@@ -499,42 +494,32 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
         return -1;
     }
     
-    /* Parse response for item count.
-     * Response format: [magic 4B][txid 4B][type 2B][nargs 1B][tags 12B][fields...]
-     * The last INT32 field contains the number of menu items available.
-     * CDJ-3000X sends compact responses (~32 bytes). */
-    int num_items = 0;
-    if (received >= 20) {
-        uint16_t rtype = get_msg_type(resp, 0);
-        if (rtype == DBMSG_SUCCESS) {
-            /* Scan backwards for the last INT32 field */
-            for (int i = received - 5; i >= 11; i--) {
-                if (resp[i] == DBFIELD_INT32) {
-                    num_items = (resp[i+1] << 24) | (resp[i+2] << 16) |
-                                (resp[i+3] << 8) | resp[i+4];
-                    break;
-                }
-            }
-        }
+    /* Parse response for item count. The success frame begins at offset 0;
+     * arg index 1 is num_items. Argtags blob length is variable on
+     * CDJ-3000X — dbmsg_args_offset() handles that. */
+    uint32_t num_items = 0;
+    if (get_msg_type(resp, 0) == DBMSG_SUCCESS) {
+        int args_off = dbmsg_args_offset(resp, (size_t)received, 0);
+        (void)dbmsg_read_int32_arg(resp, (size_t)received, args_off, 1, &num_items);
     }
-    vlogmsg("cdj", "[DBSERVER] Unanalyzed: %d items available", num_items);
+    vlogmsg("cdj", "[DBSERVER] Unanalyzed: %u items available", num_items);
 
-    if (num_items == 0 || num_items == (int)0xffffffff || num_items == DBMSG_UNANALYZED_REQ) {
-        logmsg("cdj", "[DBSERVER] Unanalyzed no items (id=%u num_items=%d resp=%s)",
+    if (num_items == 0 || num_items == 0xffffffffu || num_items == DBMSG_UNANALYZED_REQ) {
+        logmsg("cdj", "[DBSERVER] Unanalyzed no items (id=%u num_items=%u resp=%s)",
                track_id, num_items, un_resp_hex);
         return -1;
     }
-    
+
     /* Render menu */
     pos = 0;
     uint8_t tags2[DBFIELD_TAGS_LEN] = {FIELD_INT32, FIELD_INT32, FIELD_INT32, FIELD_INT32, FIELD_INT32, FIELD_INT32};
     pos = build_message_header(msg, db_txid++, DBMSG_RENDER_MENU, 6, tags2);
-    
+
     pos += add_int32_field(msg + pos, build_dmst(device, MENU_LOC_DATA, slot, TRACK_UNANALYZED));
     pos += add_int32_field(msg + pos, 0);
-    pos += add_int32_field(msg + pos, (uint32_t)num_items);
+    pos += add_int32_field(msg + pos, num_items);
     pos += add_int32_field(msg + pos, 0);
-    pos += add_int32_field(msg + pos, (uint32_t)num_items);
+    pos += add_int32_field(msg + pos, num_items);
     pos += add_int32_field(msg + pos, 0);
     
     received = dbserver_transact(sock, msg, pos, resp, sizeof(resp));
@@ -590,7 +575,7 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
     }
 
     if (!found_title && !found_artist) {
-        logmsg("cdj", "[DBSERVER] Unanalyzed parse found no strings (id=%u %d bytes num_items=%d): %s",
+        logmsg("cdj", "[DBSERVER] Unanalyzed parse found no strings (id=%u %d bytes num_items=%u): %s",
                track_id, received, num_items, un_menu_hex);
         return -1;
     }
