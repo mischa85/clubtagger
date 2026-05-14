@@ -1,5 +1,5 @@
 /*
- * id_thread.c - Audio fingerprint identification thread
+ * shazam_thread.c - Shazam audio fingerprint identification thread
  *
  * Monitors all configured SLink channels independently.
  * Fingerprints whichever channel(s) have music above threshold.
@@ -9,7 +9,7 @@
  * 2. If Shazam only → need 2 confirms (source="audio")
  * 3. If Shazam fails 3x and CDJ has track → use CDJ (source="cdj")
  */
-#include "id_thread.h"
+#include "shazam_thread.h"
 #include "../writer/async_writer.h"
 #include "../audio/audio_analysis.h"
 #include "../common.h"
@@ -66,7 +66,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
     }
 
     unsigned r = rms_s16_interleaved(window_s16, got, cfg->channels);
-    vlogmsg("id", "[%s] peek=%zu frames, rms=%u (threshold=%u)", ch_name, got, r, cfg->threshold);
+    vlogmsg("shazam", "[%s] peek=%zu frames, rms=%u (threshold=%u)", ch_name, got, r, cfg->threshold);
 
     if (got == 0 || r < cfg->threshold || got < (size_t)(cfg->rate * cfg->fingerprint_sec * 3 / 4))
         return;
@@ -74,7 +74,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
     time_t nowt = time(NULL);
     unsigned effective_gap = cfg->shazam_gap_sec + *shazam_backoff;
     if (*last_lookup && (unsigned)(nowt - *last_lookup) < effective_gap) {
-        vlogmsg("id", "[%s] throttle: waiting %us between lookups%s",
+        vlogmsg("shazam", "[%s] throttle: waiting %us between lookups%s",
                 ch_name, effective_gap, *shazam_backoff ? " (backoff)" : "");
         return;
     }
@@ -86,7 +86,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
     Fingerprint *fp = vibra_get_fingerprint_from_signed_pcm(
         (const char *)window_s16, bytes, (int)cfg->rate, 16, (int)cfg->channels);
     if (!fp) {
-        logmsg("vibra", "[%s] fingerprint failed", ch_name);
+        logmsg("shazam", "[%s] fingerprint failed", ch_name);
         return;
     }
 
@@ -109,7 +109,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
 
     struct timeval t_start, t_end;
     gettimeofday(&t_start, NULL);
-    logmsg("id", "[%s] Querying Shazam...%s",
+    logmsg("shazam", "[%s] Querying Shazam...%s",
            ch_name, have_cdj ? " (CDJ has track, will compare)" : "");
     atomic_fetch_add(&app->shazam_queries, 1);
     int post_ok = shazam_post(url, ua, body, json, sizeof(json));
@@ -118,7 +118,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
                          (t_end.tv_usec - t_start.tv_usec) / 1000);
 
     if (post_ok == 0) {
-        vlogmsg("id", "[%s] shazam response (%dms): %.500s", ch_name, query_ms, json);
+        vlogmsg("shazam", "[%s] shazam response (%dms): %.500s", ch_name, query_ms, json);
 
         char title[256] = {0}, artist[256] = {0}, isrc[64] = {0};
         json_extract_field(json, "title", title, sizeof(title));
@@ -139,11 +139,11 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
         int shazam_confidence = (int)(100.0 - max_skew * 1500.0);
         if (shazam_confidence < 40) shazam_confidence = 40;
         if (shazam_confidence > 100) shazam_confidence = 100;
-        vlogmsg("id", "[%s] shazam skew: ts=%.4f fs=%.4f → %d%%",
+        vlogmsg("shazam", "[%s] shazam skew: ts=%.4f fs=%.4f → %d%%",
                 ch_name, timeskew, freqskew, shazam_confidence);
 
         if (title[0] || artist[0]) {
-            logmsg("id", "[%s] Shazam result (%dms): %s — %s (%d%%)",
+            logmsg("shazam", "[%s] Shazam result (%dms): %s — %s (%d%%)",
                    ch_name, query_ms, artist, title, shazam_confidence);
             atomic_fetch_add(&app->shazam_matches, 1);
             *shazam_backoff = 0;
@@ -160,7 +160,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
                 if (!dd->track_title[0]) continue;
 
                 if (prolink_isrc_matches(dd->track_isrc, isrc)) {
-                    logmsg("id", "[%u@CDJ%u] Shazam ISRC match: %s - %s",
+                    logmsg("shazam", "[%u@CDJ%u] Shazam ISRC match: %s - %s",
                            dd->rekordbox_id, dd->track_source_player,
                            artist[0] ? artist : "?", title[0] ? title : "?");
                     confidence_signal(di, SIG_ISRC_MATCH, 0,
@@ -170,7 +170,7 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
                 }
                 if (prolink_matches_fingerprint(dd->track_title, dd->track_artist,
                                                 title, artist)) {
-                    logmsg("id", "[%u@CDJ%u] Shazam fuzzy match: %s - %s",
+                    logmsg("shazam", "[%u@CDJ%u] Shazam fuzzy match: %s - %s",
                            dd->rekordbox_id, dd->track_source_player,
                            artist[0] ? artist : "?", title[0] ? title : "?");
                     confidence_signal(di, SIG_FUZZY_MATCH, 0,
@@ -230,13 +230,13 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
             }
         } else {
             if (*shazam_backoff < 10) *shazam_backoff += 5;
-            logmsg("id", "[%s] Shazam: no match (%dms)", ch_name, query_ms);
+            logmsg("shazam", "[%s] Shazam: no match (%dms)", ch_name, query_ms);
             confidence_signal(-1, SIG_SHAZAM_NO_MATCH, 0, NULL, NULL, NULL, 0);
         }
     } else {
         *shazam_backoff = (*shazam_backoff < 30) ? *shazam_backoff + 30 :
                           (*shazam_backoff < 120) ? *shazam_backoff * 2 : 300;
-        logmsg("id", "[%s] Shazam error (%dms, backoff %us)",
+        logmsg("shazam", "[%s] Shazam error (%dms, backoff %us)",
                ch_name, query_ms, *shazam_backoff);
     }
 
@@ -244,13 +244,13 @@ static void id_process_channel(App *app, ChannelState *cs, int ch_idx, const cha
 }
 #endif /* HAVE_VIBRA */
 
-void *id_main(void *arg) {
+void *shazam_main(void *arg) {
     App *app = (App *)arg;
     Config *cfg = &app->cfg;
 
 #ifndef HAVE_VIBRA
-    logmsg("id", "WARNING: libvibra not available, audio fingerprinting disabled");
-    logmsg("id", "Use --cdj-tag for CDJ-only track identification");
+    logmsg("shazam", "WARNING: libvibra not available, audio fingerprinting disabled");
+    logmsg("shazam", "Use --cdj-tag for CDJ-only track identification");
     atomic_store_explicit(&app->shazam_state, SHAZAM_DISABLED, memory_order_release);
     while (g_running) {
         struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
@@ -260,7 +260,7 @@ void *id_main(void *arg) {
 #else
     const int nch = cfg->slink_channel_count;
 
-    logmsg("id", "started: fingerprint=%us interval=%us threshold=%u channels=%d",
+    logmsg("shazam", "started: fingerprint=%us interval=%us threshold=%u channels=%d",
            cfg->fingerprint_sec, cfg->identify_interval_sec, cfg->threshold, nch);
 
     /* Per-channel Shazam state */
@@ -285,7 +285,7 @@ void *id_main(void *arg) {
         }
     }
 
-    logmsg("id", "exit");
+    logmsg("shazam", "exit");
     return NULL;
 #endif /* HAVE_VIBRA */
 }

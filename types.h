@@ -216,7 +216,7 @@ typedef struct {
     Config       cfg;
     ChannelState ch[SLINK_MAX_CHANNELS]; /* per-channel audio pipelines */
     pthread_t    th_cap;
-    pthread_t    th_id;
+    pthread_t    th_shazam;
     pthread_t    th_wrt;
     sqlite3     *db;
     pthread_mutex_t db_mu;

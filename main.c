@@ -5,7 +5,7 @@
 #include "audio/capture.h"
 #include "common.h"
 #include "db/database.h"
-#include "shazam/id_thread.h"
+#include "shazam/shazam_thread.h"
 #include "server/ws_server.h"
 #include "types.h"
 #include "confidence.h"
@@ -543,10 +543,10 @@ int main(int argc, char **argv) {
         cap_running = 1;
     }
     
-    /* Start identification thread (only if audio tagging enabled) */
+    /* Start Shazam thread (only if audio tagging enabled) */
     if (cfg.enable_audio_tag && need_audio) {
-        if (pthread_create(&app.th_id, NULL, id_main, &app) != 0) {
-            logmsg("main", "pthread id failed");
+        if (pthread_create(&app.th_shazam, NULL, shazam_main, &app) != 0) {
+            logmsg("main", "pthread shazam failed");
             g_running = 0;
             goto cleanup;
         }
@@ -670,7 +670,7 @@ int main(int argc, char **argv) {
 cleanup:
     /* Join threads that were started */
     if (cap_running) pthread_join(app.th_cap, NULL);
-    if (id_running) pthread_join(app.th_id, NULL);
+    if (id_running) pthread_join(app.th_shazam, NULL);
     if (wrt_running) pthread_join(app.th_wrt, NULL);
     if (ws_running) pthread_join(app.th_ws, NULL);
     

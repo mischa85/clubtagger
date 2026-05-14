@@ -21,7 +21,7 @@ SRC      := main.c \
             audio/capture_alsa.c \
             audio/capture_afxdp.c \
             shazam/shazam.c \
-            shazam/id_thread.c \
+            shazam/shazam_thread.c \
             writer/async_writer.c \
             writer/writer_thread.c \
             server/ws_server.c \

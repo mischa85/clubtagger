@@ -136,7 +136,7 @@ int shazam_post(const char *url, const char *user_agent, const char *json_body,
                 char *response_buf, size_t response_sz) {
     CURL *curl = curl_easy_init();
     if (!curl) {
-        logmsg("shz", "shazam_post: curl_easy_init() returned NULL (url=%s)",
+        logmsg("shazam", "shazam_post: curl_easy_init() returned NULL (url=%s)",
                url ? url : "(null)");
         return -1;
     }
