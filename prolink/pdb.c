@@ -177,7 +177,7 @@ static int find_artist_name(const uint8_t *data, size_t len, uint32_t page_size,
 
 int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
     if (!data || !db || len < 4096) {
-        logmsg("cdj", "[PDB] parse_pdb_file: invalid args (data=%p db=%p len=%zu)",
+        logmsg("pdb", "parse_pdb_file: invalid args (data=%p db=%p len=%zu)",
                (void *)data, (void *)db, len);
         return -1;
     }
@@ -190,7 +190,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
     uint32_t num_tables = header->num_tables;
 
     if (page_size == 0 || page_size > 65536 || num_tables > 20) {
-        logmsg("cdj", "[PDB] Invalid header: page_size=%u num_tables=%u (file_size=%zu, first 16 bytes: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x)",
+        logmsg("pdb", "Invalid header: page_size=%u num_tables=%u (file_size=%zu, first 16 bytes: %02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x)",
                page_size, num_tables, len,
                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
                data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]);
@@ -198,7 +198,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
     }
     
     if (verbose) {
-        vlogmsg("cdj", "[PDB] File header: page_size=%u num_tables=%u", page_size, num_tables);
+        vlogmsg("pdb", "File header: page_size=%u num_tables=%u", page_size, num_tables);
     }
     
     /* Find TRACKS table (type 0) */
@@ -211,7 +211,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
         const pdb_table_pointer_t *tbl = (const pdb_table_pointer_t *)(data + ptr_offset);
         
         if (verbose) {
-            vlogmsg("cdj", "[PDB] Table %u: type=%u first_page=%u last_page=%u", 
+            vlogmsg("pdb", "Table %u: type=%u first_page=%u last_page=%u", 
                        t, tbl->type, tbl->first_page, tbl->last_page);
         }
         
@@ -222,7 +222,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
     }
     
     if (tracks_first_page == 0) {
-        vlogmsg("cdj", "[PDB] No TRACKS table found");
+        vlogmsg("pdb", "No TRACKS table found");
         return -1;
     }
     
@@ -233,7 +233,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
     while (page_idx != 0 && page_idx != 0x1FFFFFFF && pages_walked < 1000) {
         size_t page_offset = (size_t)page_idx * page_size;
         if (page_offset + page_size > len) {
-            if (verbose) vlogmsg("cdj", "[PDB] Page %u out of bounds", page_idx);
+            if (verbose) vlogmsg("pdb", "Page %u out of bounds", page_idx);
             break;
         }
         
@@ -242,7 +242,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
         
         /* Skip strange pages (only parse data pages) */
         if (!PDB_PAGE_IS_DATA(page->page_flags)) {
-            if (verbose) vlogmsg("cdj", "[PDB] Page %u: skipping (flags 0x%02x)", page_idx, page->page_flags);
+            if (verbose) vlogmsg("pdb", "Page %u: skipping (flags 0x%02x)", page_idx, page->page_flags);
             page_idx = page->next_page;
             continue;
         }
@@ -250,19 +250,19 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
         uint16_t num_row_offsets = PDB_NUM_ROW_OFFSETS(page->row_counts);
 
         if (verbose) {
-            vlogmsg("cdj", "[PDB] Page %u: flags=0x%02x offsets=%u", page_idx, page->page_flags, num_row_offsets);
+            vlogmsg("pdb", "Page %u: flags=0x%02x offsets=%u", page_idx, page->page_flags, num_row_offsets);
         }
 
         for (uint16_t ri = 0; ri < num_row_offsets; ri++) {
             size_t pos = pdb_row_offset(data, len, page_offset, page_size, ri);
             if (!pos) {
                 if (verbose)
-                    vlogmsg("cdj", "[PDB] Page %u row %d: offset returned 0 (empty/deleted slot)", page_idx, ri);
+                    vlogmsg("pdb", "Page %u row %d: offset returned 0 (empty/deleted slot)", page_idx, ri);
                 continue;
             }
             if (pos + sizeof(pdb_track_row_t) > page_offset + page_size) {
                 if (verbose)
-                    vlogmsg("cdj", "[PDB] Page %u row %d: row extends past page (pos=%zu, need %zu, page_end=%zu)",
+                    vlogmsg("pdb", "Page %u row %d: row extends past page (pos=%zu, need %zu, page_end=%zu)",
                            page_idx, ri, pos, pos + sizeof(pdb_track_row_t), page_offset + page_size);
                 continue;
             }
@@ -271,14 +271,14 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
 
             if (row->subtype != PDB_TRACK_SUBTYPE) {
                 if (verbose)
-                    vlogmsg("cdj", "[PDB] Page %u row %d: subtype=0x%04x (expected 0x%04x), raw id=%u, pos=%zu",
+                    vlogmsg("pdb", "Page %u row %d: subtype=0x%04x (expected 0x%04x), raw id=%u, pos=%zu",
                            page_idx, ri, row->subtype, PDB_TRACK_SUBTYPE, row->id, pos - page_offset);
                 continue;
             }
 
             if (row->id == 0 || row->id > 999999) {
                 if (verbose)
-                    vlogmsg("cdj", "[PDB] Page %u row %d: bad track id=%u (out of range)", page_idx, ri, row->id);
+                    vlogmsg("pdb", "Page %u row %d: bad track id=%u (out of range)", page_idx, ri, row->id);
                 continue;
             }
 
@@ -293,12 +293,12 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
 
             if (duplicate) {
                 if (verbose)
-                    vlogmsg("cdj", "[PDB] Page %u row %d: duplicate track id=%u, skipping", page_idx, ri, row->id);
+                    vlogmsg("pdb", "Page %u row %d: duplicate track id=%u, skipping", page_idx, ri, row->id);
                 continue;
             }
 
             if (db->track_count >= MAX_PDB_TRACKS) {
-                vlogmsg("cdj", "[PDB] Warning: reached max tracks (%d), some tracks may be missing", MAX_PDB_TRACKS);
+                vlogmsg("pdb", "Warning: reached max tracks (%d), some tracks may be missing", MAX_PDB_TRACKS);
                 break;
             }
             
@@ -321,7 +321,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
                 parse_devicesql_string(data, len, pos + title_offset,
                                        track->title, sizeof(track->title));
             } else if (verbose) {
-                vlogmsg("cdj", "[PDB] Track %u: title_offset=%u out of range", row->id, title_offset);
+                vlogmsg("pdb", "Track %u: title_offset=%u out of range", row->id, title_offset);
             }
 
             /* Look up artist name from Artists table */
@@ -329,7 +329,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
                 int art_rc = find_artist_name(data, len, page_size, row->artist_id,
                                 track->artist, sizeof(track->artist));
                 if (art_rc < 0 && verbose)
-                    vlogmsg("cdj", "[PDB] Track %u: artist_id=%u not found in Artists table", row->id, row->artist_id);
+                    vlogmsg("pdb", "Track %u: artist_id=%u not found in Artists table", row->id, row->artist_id);
             }
 
             /* Read ISRC from string_offsets[PDB_STR_ISRC] (index 0) */
@@ -353,7 +353,7 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
             
             track->valid = (track->title[0] != '\0' || track->artist[0] != '\0');
             
-            vlogmsg("cdj", "[PDB] Parsed track ID=%u: \"%s\" by \"%s\" (%d BPM)%s%s", 
+            vlogmsg("pdb", "Parsed track ID=%u: \"%s\" by \"%s\" (%d BPM)%s%s", 
                        track->rekordbox_id, track->title, 
                        track->artist[0] ? track->artist : "(unknown)", track->bpm,
                        track->has_isrc ? " ISRC=" : "", track->has_isrc ? track->isrc : "");
@@ -362,11 +362,11 @@ int parse_pdb_file(const uint8_t *data, size_t len, pdb_database_t *db) {
         }
         
         if (verbose)
-            vlogmsg("cdj", "[PDB] Page %u: parsed %d tracks (next_page=%u)", page_idx, db->track_count, page->next_page);
+            vlogmsg("pdb", "Page %u: parsed %d tracks (next_page=%u)", page_idx, db->track_count, page->next_page);
         page_idx = page->next_page;
     }
 
-    vlogmsg("cdj", "[PDB] Walked %d pages, found %d tracks", pages_walked, db->track_count);
+    vlogmsg("pdb", "Walked %d pages, found %d tracks", pages_walked, db->track_count);
     
     return db->track_count > 0 ? 0 : -1;
 }
@@ -385,7 +385,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
 
     if (!db) return -1;
     if (nfs_port == 0 || mount_port == 0) {
-        logmsg("cdj", "❌ fetch_rekordbox_database: missing ports for %s slot %s (nfs=%u mount=%u) — announce portmap discovery did not complete",
+        logmsg("pdb", "❌ fetch_rekordbox_database: missing ports for %s slot %s (nfs=%u mount=%u) — announce portmap discovery did not complete",
                ip_to_str(device_ip), cdj_slot_name(slot), nfs_port, mount_port);
         db->fetch_failed = 1;
         return -1;
@@ -397,13 +397,13 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
         case 2: export_path = "/B/"; break;  /* SD card */
         case 3: export_path = "/C/"; break;  /* USB */
         default:
-            vlogmsg("cdj", "❌ Unknown slot type %d", slot);
+            vlogmsg("pdb", "❌ Unknown slot type %d", slot);
             db->fetch_in_progress = 0;
             db->fetch_failed = 1;
             return -1;
     }
 
-    vlogmsg("cdj", "📥 Fetching database from %s (slot %s, export %s, nfs=%u mount=%u)...",
+    vlogmsg("pdb", "📥 Fetching database from %s (slot %s, export %s, nfs=%u mount=%u)...",
                 ip_to_str(device_ip), cdj_slot_name(slot), export_path,
                 nfs_port, mount_port);
 
@@ -413,7 +413,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     int mrc = nfs_mount_to_port(device_ip, mount_port, export_path,
                                 root_fh, &root_fh_len);
     if (mrc != 0) {
-        logmsg("cdj", "❌ Mount failed for %s on slot %s%s",
+        logmsg("pdb", "❌ Mount failed for %s on slot %s%s",
                export_path, cdj_slot_name(slot),
                mrc == -ENOENT ? " (export NOENT — slot has no rekordbox media)" : "");
         db->fetch_in_progress = 0;
@@ -421,12 +421,12 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
         return mrc == -ENOENT ? -ENOENT : -1;
     }
 
-    vlogmsg("cdj", "✅ Mounted %s", export_path);
+    vlogmsg("pdb", "✅ Mounted %s", export_path);
 
     /* Step 3: Lookup PIONEER directory */
     int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh);
     if (lrc != 0) {
-        logmsg("cdj", "❌ PIONEER not found on %s slot %s%s",
+        logmsg("pdb", "❌ PIONEER not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
                lrc == -ENOENT ? " (NOENT — non-rekordbox media)" : "");
         db->fetch_in_progress = 0;
@@ -437,7 +437,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     /* Step 4: Lookup rekordbox directory */
     lrc = nfs_lookup(device_ip, nfs_port, pioneer_fh, "rekordbox", rb_fh);
     if (lrc != 0) {
-        logmsg("cdj", "❌ rekordbox dir not found on %s slot %s%s",
+        logmsg("pdb", "❌ rekordbox dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
                lrc == -ENOENT ? " (NOENT — no rekordbox export on this stick)" : "");
         db->fetch_in_progress = 0;
@@ -448,7 +448,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     /* Step 5: Lookup export.pdb */
     lrc = nfs_lookup(device_ip, nfs_port, rb_fh, "export.pdb", pdb_fh);
     if (lrc != 0) {
-        logmsg("cdj", "❌ export.pdb not found on %s slot %s%s",
+        logmsg("pdb", "❌ export.pdb not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
                lrc == -ENOENT ? " (NOENT — rekordbox dir exists but no export.pdb)" : "");
         db->fetch_in_progress = 0;
@@ -460,18 +460,18 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     #define MAX_PDB_SIZE (8 * 1024 * 1024)
     uint8_t *pdb_data = malloc(MAX_PDB_SIZE);
     if (!pdb_data) {
-        logmsg("cdj", "❌ malloc(%d) failed for PDB buffer", MAX_PDB_SIZE);
+        logmsg("pdb", "❌ malloc(%d) failed for PDB buffer", MAX_PDB_SIZE);
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
         return -1;
     }
 
-    vlogmsg("cdj", "📖 Reading export.pdb...");
+    vlogmsg("pdb", "📖 Reading export.pdb...");
 
     size_t total_read = 0;
     int rrc = nfs_read_file(device_ip, nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read);
     if (rrc != 0) {
-        logmsg("cdj", "❌ Read error fetching export.pdb from %s slot %s (rc=%d)",
+        logmsg("pdb", "❌ Read error fetching export.pdb from %s slot %s (rc=%d)",
                ip_to_str(device_ip), cdj_slot_name(slot), rrc);
         nfs_close_socket();
         free(pdb_data);
@@ -480,16 +480,16 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
         return rrc == -ENOENT ? -ENOENT : -1;
     }
     
-    vlogmsg("cdj", "📄 Downloaded %zu bytes", total_read);
+    vlogmsg("pdb", "📄 Downloaded %zu bytes", total_read);
     
     /* Close NFS socket after download */
     nfs_close_socket();
     
     /* Parse the PDB */
     if (parse_pdb_file(pdb_data, total_read, db) != 0) {
-        logmsg("cdj", "⚠️ PDB parse found no tracks");
+        logmsg("pdb", "⚠️ PDB parse found no tracks");
     } else {
-        logmsg("cdj", "✅ Loaded %d tracks from database", db->track_count);
+        logmsg("pdb", "✅ Loaded %d tracks from database", db->track_count);
     }
     
     free(pdb_data);
@@ -508,6 +508,6 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
  */
 void parse_pdb_buffer(const uint8_t *data, size_t len, uint32_t device_ip) {
     (void)data; (void)len;
-    vlogmsg("cdj", "[NFS-SNIFF] Passive PDB capture from %s — ignored (disabled)",
+    vlogmsg("pdb", "[NFS-SNIFF] Passive PDB capture from %s — ignored (disabled)",
             ip_to_str(device_ip));
 }
