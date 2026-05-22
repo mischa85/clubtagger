@@ -692,7 +692,9 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 uint32_t src_ip;
                 uint8_t  src_slot;
                 resolve_source_device(dev, &src_ip, &src_slot);
-                (void)src_ip;  /* src_ip unused on this path; all resolvers key on (source_player, slot) */
+                /* OneLibrary and PDB key on (source_player, slot) so they
+                 * don't need src_ip; DBServer below dials src_ip directly so
+                 * Link-loaded tracks reach the CDJ that actually holds them. */
 
                 /* 1. Track cache */
                 track_cache_entry_t *tc = find_track_cache(dev->rekordbox_id, dev->track_source_player);
@@ -739,7 +741,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                            query_target, cdj_slot_name(src_slot));
                     int erc = dbserver_thread_enqueue(dev->device_num,
                                                       dev->rekordbox_id,
-                                                      dev->ip_addr, query_target,
+                                                      src_ip, query_target,
                                                       src_slot, dev->track_type);
                     if (erc != 0) {
                         logmsg("cdj", "[%u@CDJ%u] DBServer enqueue failed (playing=CDJ%u rc=%d)",
