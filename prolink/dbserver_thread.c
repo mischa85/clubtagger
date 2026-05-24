@@ -41,6 +41,14 @@ typedef struct {
     int      query_fail_count;
     uint32_t last_emitted_rb_id;
     uint8_t  last_emitted_target;
+
+    /* Failure backoff. After a failed query, skip subsequent queries until
+     * `query_backoff` seconds have elapsed. Doubles on each consecutive
+     * failure (10→300), clears on success. Mirrors the fetch backoffs in
+     * onelibrary_thread.c / pdb_thread.c so a CDJ that's stalled doesn't
+     * see a fresh TCP connect every time the producer re-enqueues. */
+    time_t   query_last_failure;
+    uint16_t query_backoff;
 } dbserver_worker_t;
 
 static dbserver_worker_t *g_workers[MAX_DEVICES];
@@ -72,6 +80,16 @@ static void run_query(dbserver_worker_t *w,
         return;
     }
 
+    /* Failure backoff: skip if we're inside the cooldown window from the
+     * last failed query. The producer backoff already paces re-enqueues
+     * at 1-60s; this layer additionally protects the CDJ from a burst of
+     * fresh TCP connects when it's stalled. */
+    time_t now_q = time(NULL);
+    if (w->query_backoff &&
+        (now_q - w->query_last_failure) < w->query_backoff) {
+        return;
+    }
+
     char title[128]  = {0};
     char artist[128] = {0};
 
@@ -91,6 +109,7 @@ static void run_query(dbserver_worker_t *w,
 
     if (rc == 0 && title[0] != '\0') {
         w->query_fail_count = 0;
+        w->query_backoff = 0;
         w->last_emitted_rb_id = rb_id;
         w->last_emitted_target = query_target;
         if (artist[0]) {
@@ -109,13 +128,18 @@ static void run_query(dbserver_worker_t *w,
         return;
     }
 
-    /* Failure — log lightly and grow private fail count. The next
-     * track-change re-enqueue will retry; we don't loop here. */
+    /* Failure — log lightly, grow backoff, grow private fail count. The
+     * next enqueue inside the cooldown will be skipped silently above. */
     w->query_fail_count++;
+    w->query_last_failure = now_q;
+    {
+        uint16_t b = w->query_backoff ? w->query_backoff * 2 : 10;
+        w->query_backoff = (b > 300) ? 300 : b;
+    }
     if (w->query_fail_count <= 3) {
-        logmsg("dbsrv", "[%u@CDJ%u] DBServer query failed (playing=CDJ%u slot=%s rc=%d attempt=%d)",
+        logmsg("dbsrv", "[%u@CDJ%u] DBServer query failed (playing=CDJ%u slot=%s rc=%d attempt=%d backoff=%us)",
                rb_id, query_target, w->playing_device,
-               cdj_slot_name(source_slot), rc, w->query_fail_count);
+               cdj_slot_name(source_slot), rc, w->query_fail_count, w->query_backoff);
     }
 }
 
