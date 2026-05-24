@@ -146,6 +146,8 @@ typedef struct {
     size_t   waveform_len;        /* Length of waveform_data */
     time_t   waveform_last_attempt; /* Last NFS fetch attempt for current track */
     uint16_t waveform_backoff;    /* Seconds to wait between waveform fetches (10→300, doubles on failure, resets on track change) */
+    time_t   enqueue_last_attempt;  /* Last resolver-enqueue tick (for producer backoff) */
+    uint16_t enqueue_backoff;       /* Seconds between resolver-enqueue rounds (1→60, doubles each attempt, resets on track change) */
 
     /* Media presence (from status packets) */
     uint8_t  usb_present;       /* USB available (usb_local != 0) */

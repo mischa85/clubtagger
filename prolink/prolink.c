@@ -646,6 +646,8 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
             waveform_thread_clear(dev->device_num);
             dev->waveform_last_attempt = 0;
             dev->waveform_backoff = 10;   /* Start fresh on track change */
+            dev->enqueue_last_attempt = 0;
+            dev->enqueue_backoff = 1;
             dev->track_db_src = DB_SRC_NONE;
             dev->logged_rekordbox_id = 0;  /* Allow new track to be logged */
             dev->play_started = dev->playing ? time(NULL) : 0;  /* Reset play timer on track change */
@@ -675,7 +677,24 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         if (reg_id > 0 && dev->track_title[0] == '\0') {
             int found = 0;
 
-            if (dev->track_slot == SLOT_CD) {
+            /* Producer-side backoff. Without it, the gate would re-fire the
+             * full resolver-enqueue chain at every status tick (~10Hz) for as
+             * long as track_title stays empty — which under any downstream
+             * stall (registry full, workers stuck) is indefinite and saturates
+             * the logs. Cap at 1→60s, doubling per attempt; reset on track
+             * change. Projection below still runs every tick so winners get
+             * picked up the moment they land. */
+            time_t now_eq = time(NULL);
+            uint16_t eq_backoff = dev->enqueue_backoff ? dev->enqueue_backoff : 1;
+            int may_enqueue = (now_eq - dev->enqueue_last_attempt) >= eq_backoff;
+
+            if (may_enqueue) {
+                dev->enqueue_last_attempt = now_eq;
+                uint16_t b = dev->enqueue_backoff ? dev->enqueue_backoff * 2 : 1;
+                dev->enqueue_backoff = (b > 60) ? 60 : b;
+            }
+
+            if (may_enqueue && dev->track_slot == SLOT_CD) {
                 /* CD-text: query the playing CDJ itself; the worker emits
                  * into the registry under (track_id, dev->device_num, SLOT_CD).
                  * Result is consumed by the readers below (confidence) and
@@ -689,7 +708,7 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                     logmsg("cdj", "[CD %u@CDJ%u] DBServer enqueue failed (rc=%d)",
                            dev->track_id, dev->device_num, erc);
                 }
-            } else if (dev->track_slot > 0) {
+            } else if (may_enqueue && dev->track_slot > 0) {
                 uint32_t src_ip;
                 uint8_t  src_slot;
                 resolve_source_device(dev, &src_ip, &src_slot);
