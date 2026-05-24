@@ -53,6 +53,7 @@ static key_entry_t *find_entry_locked(track_key_t key) {
 }
 
 static key_entry_t *alloc_entry_locked(track_key_t key, time_t now) {
+    /* Prefer an inactive slot. */
     for (int i = 0; i < REG_MAX_KEYS; i++) {
         key_entry_t *e = &g_track_registry.entries[i];
         if (!e->active) {
@@ -63,7 +64,26 @@ static key_entry_t *alloc_entry_locked(track_key_t key, time_t now) {
             return e;
         }
     }
-    return NULL;
+    /* Full — evict the oldest by first_seen. A busy night accumulates more
+     * than REG_MAX_KEYS unique (rb_id, source, slot) tuples, and without
+     * eviction every track past the cap silently fails to register. */
+    int oldest = 0;
+    for (int i = 1; i < REG_MAX_KEYS; i++) {
+        if (g_track_registry.entries[i].first_seen <
+            g_track_registry.entries[oldest].first_seen) {
+            oldest = i;
+        }
+    }
+    key_entry_t *e = &g_track_registry.entries[oldest];
+    logmsg("registry", "LRU evict rb_id=%u src=%u slot=%u (age=%lds) for rb_id=%u src=%u slot=%u",
+           e->key.rekordbox_id, e->key.source_player, e->key.slot,
+           (long)(now - e->first_seen),
+           key.rekordbox_id, key.source_player, key.slot);
+    memset(e, 0, sizeof(*e));
+    e->active     = 1;
+    e->key        = key;
+    e->first_seen = now;
+    return e;
 }
 
 static void copy_field(char *dst, size_t dst_sz, const char *src) {
@@ -106,12 +126,6 @@ int track_registry_emit(track_key_t key, resolver_id_t resolver,
     key_entry_t *e = find_entry_locked(key);
     if (!e) {
         e = alloc_entry_locked(key, now);
-        if (!e) {
-            pthread_mutex_unlock(&g_track_registry.mu);
-            logmsg("registry", "emit: full (REG_MAX_KEYS=%d), dropping rb_id=%u src=%u slot=%u",
-                   REG_MAX_KEYS, key.rekordbox_id, key.source_player, key.slot);
-            return -ENOSPC;
-        }
     }
 
     candidate_t *slot = &e->slots[resolver];
