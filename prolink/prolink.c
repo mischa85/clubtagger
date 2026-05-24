@@ -185,12 +185,13 @@ void prolink_sweep_disappeared_cdjs(void) {
                dev->device_num, dev->name,
                (long)(now - dev->last_seen));
 
-        if (dev->device_type == DEVICE_TYPE_CDJ) {
-            dbserver_thread_stop(dev->device_num);
-        }
-
-        /* Clear identity so the next announce re-fires was_new and respawns
-         * the worker fresh (no stale dedup state from the prior session). */
+        /* Leave the DBServer worker alive. CDJs only send announce packets
+         * on boot — a transient hiccup (WiFi blip, brief stall) resumes via
+         * status packets, which never re-trigger was_new and so never re-
+         * spawn the worker. Keeping the worker means a returning CDJ stays
+         * usable; on a true reboot the fresh announce re-fires was_new and
+         * dbserver_thread_spawn is idempotent. Worker state is just dedup
+         * hints that overwrite naturally. */
         dev->name[0]   = '\0';
         dev->last_seen = 0;
     }
