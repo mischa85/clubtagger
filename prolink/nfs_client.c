@@ -407,7 +407,17 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     int eof = 0;
     time_t deadline = time(NULL) + 10;  /* Hard 10-second limit for entire read */
 
-    #define NFS_READ_CHUNK 8192
+    /* 4 KB chunks (one SQLite/PDB page). The CDJ-3000X plays from these
+     * files via random page access, so unused pages can be unreadable
+     * over NFS while the CDJ itself never touches them. Reading a page
+     * at a time lets us isolate which pages are bad. */
+    #define NFS_READ_CHUNK 4096
+
+    /* NFSERR_IO skip tracking: zero-fill bad pages and continue, but
+     * bail if many fail in a row — the file is too damaged to be useful. */
+    int    skipped_consecutive = 0;
+    size_t skipped_total       = 0;
+    const int SKIP_CONSEC_MAX  = 4;
 
     while (!eof && total_read < buf_len) {
         if (time(NULL) > deadline) {
@@ -458,6 +468,29 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         uint32_t nfs_stat = RPC_GET_U32(response + rpos);
 
         if (nfs_stat != NFS_OK) {
+            /* NFSERR_IO at a specific page: the CDJ's NFS server refuses to
+             * serve this byte range. The CDJ itself plays fine because it
+             * only touches pages it needs (random access via SQLite/PDB
+             * indexes). Zero-fill and continue — if SQLite/PDB never needs
+             * this page, the parse succeeds anyway. */
+            if (nfs_stat == NFSERR_IO) {
+                size_t skip = NFS_READ_CHUNK;
+                if (total_read + skip > buf_len) skip = buf_len - total_read;
+                memset(buf + total_read, 0, skip);
+                logmsg("nfs", "READ on %s:%u nfs_stat=5 (IO) at offset=%zu — zero-filled %zu bytes, continuing",
+                       ip_to_str(server_ip), nfs_port, total_read, skip);
+                total_read += skip;
+                skipped_total += skip;
+                skipped_consecutive++;
+                free(response);
+                if (skipped_consecutive >= SKIP_CONSEC_MAX) {
+                    logmsg("nfs", "READ on %s:%u: %d consecutive IO errors — giving up at offset=%zu",
+                           ip_to_str(server_ip), nfs_port, skipped_consecutive, total_read);
+                    *bytes_read = total_read;
+                    return -1;
+                }
+                continue;
+            }
             const char *stat_label =
                 (nfs_stat == NFSERR_NOENT)  ? " (NOENT — file not present)" :
                 (nfs_stat == NFSERR_STALE)  ? " (STALE — filehandle expired)" :
@@ -467,6 +500,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
             free(response);
             return (nfs_stat == NFSERR_NOENT) ? -ENOENT : -1;
         }
+        skipped_consecutive = 0;
         
         /* Skip status + fattr to get to data length */
         rpos += sizeof(uint32_t) + sizeof(nfs_fattr_t);
@@ -500,6 +534,10 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     }
     
     *bytes_read = total_read;
+    if (skipped_total > 0) {
+        logmsg("nfs", "READ on %s:%u: completed with %zu bytes zero-filled across IO-error pages (read=%zu)",
+               ip_to_str(server_ip), nfs_port, skipped_total, total_read);
+    }
     return 0;
 }
 
