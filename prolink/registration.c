@@ -249,12 +249,15 @@ void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_nam
     logmsg("cdj", "⚠️ Slot %d conflict with %s — yielding, will re-register",
            our_device_num, device_name ? device_name : "unknown");
 
-    /* Update device entry to reflect the real CDJ (not CLUBTAGGER) */
+    /* Clear the entry so the announce handler immediately following sees
+     * was_new=true and runs its first-time path: portmap discovery and
+     * DBServer worker spawn. If we leave our own name in dev->name, was_new
+     * fails to fire and the takeover CDJ ends up without nfs/mount ports
+     * or a worker. */
     cdj_device_t *dev = find_device(conflicting_device_num);
-    if (dev && device_name) {
-        strncpy(dev->name, device_name, sizeof(dev->name) - 1);
-        dev->device_type = DEVICE_TYPE_CDJ;
-        dev->last_seen = time(NULL);
+    if (dev) {
+        dev->name[0]   = '\0';
+        dev->last_seen = 0;
     }
 
     /* Release slot and restart the registration state machine.
