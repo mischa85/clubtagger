@@ -363,9 +363,9 @@
                         ? `<div class="cdj-detail-wrap">
                              <canvas class="cdj-detail" id="detail-${d.n}"></canvas>
                              <div class="cdj-zoom">
-                               <button onclick="cycleZoom(-1)" title="Zoom in">+</button>
+                               <button class="cdj-zoom-btn" data-dir="-1" title="Zoom in">+</button>
                                <div class="cdj-zoom-level">${zoomLabel()}</div>
-                               <button onclick="cycleZoom(1)" title="Zoom out">&minus;</button>
+                               <button class="cdj-zoom-btn" data-dir="1" title="Zoom out">&minus;</button>
                              </div>
                            </div>`
                         : `<div class="cdj-detail-fallback">${progressBar}</div>`
@@ -385,7 +385,7 @@
                             ${d.sync ? '<span class="cdj-badge cdj-badge-sync">SYNC</span>' : ''}
                             ${d.master_tempo ? '<span class="cdj-badge cdj-badge-mt">MT</span>' : ''}
                         </div>
-                        <span class="cdj-lcd cdj-time" id="cdj-time-${d.n}" onclick="rawDecks[${d.n}].timeMode=rawDecks[${d.n}].timeMode==='elapsed'?'remain':'elapsed'">${timeLCD.main}<span class="cdj-time-frac" id="cdj-frac-${d.n}">${timeLCD.frac}</span></span>
+                        <span class="cdj-lcd cdj-time cdj-time-toggle" id="cdj-time-${d.n}" data-deck="${d.n}">${timeLCD.main}<span class="cdj-time-frac" id="cdj-frac-${d.n}">${timeLCD.frac}</span></span>
                         <span class="cdj-lcd cdj-pitch-sign">${pitch.sign}</span>
                         <span class="cdj-lcd cdj-pitch-int">${pitch.int}</span><span class="cdj-lcd cdj-pitch-dot">.</span><span class="cdj-lcd cdj-pitch-frac">${pitch.frac}</span>
                         <span class="cdj-unit cdj-pitch-pct">%</span>
@@ -832,7 +832,31 @@
         updateZoomLabels();
         renderAllDetails();
     }
-    /* Expose to onclick handlers in deck template */
+
+    /* Status packets rebuild decksEl.innerHTML ~30×/sec. Inline onclick targets
+     * inside the deck template get destroyed between mousedown and mouseup, so
+     * the click event silently never fires (worst in Brave). Delegate to the
+     * stable parent — pointerdown fires immediately on press, before any rebuild. */
+    if (decksEl) {
+        decksEl.addEventListener('pointerdown', (e) => {
+            const zoomBtn = e.target.closest('.cdj-zoom-btn');
+            if (zoomBtn) {
+                e.preventDefault();
+                const dir = parseInt(zoomBtn.dataset.dir, 10);
+                if (!isNaN(dir)) cycleZoom(dir);
+                return;
+            }
+            const timeEl = e.target.closest('.cdj-time-toggle');
+            if (timeEl) {
+                e.preventDefault();
+                const n = parseInt(timeEl.dataset.deck, 10);
+                const deck = rawDecks[n];
+                if (deck) deck.timeMode = deck.timeMode === 'elapsed' ? 'remain' : 'elapsed';
+                return;
+            }
+        });
+    }
+
     window.cycleZoom = cycleZoom;
     window.zoomLabel = zoomLabel;
     window.rawDecks = rawDecks;
