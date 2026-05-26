@@ -407,11 +407,10 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     int eof = 0;
     time_t deadline = time(NULL) + 10;  /* Hard 10-second limit for entire read */
 
-    /* 4 KB chunks (one SQLite/PDB page). The CDJ-3000X plays from these
-     * files via random page access, so unused pages can be unreadable
-     * over NFS while the CDJ itself never touches them. Reading a page
-     * at a time lets us isolate which pages are bad. */
-    #define NFS_READ_CHUNK 4096
+    /* 8 KB chunks. The CDJ-3000X NFS server appears to have an 8K-aligned
+     * page cache; reading in smaller chunks (4K tested) triggers IO errors
+     * on pages that 8K reads serve fine. Keep this at 8192. */
+    #define NFS_READ_CHUNK 8192
 
     /* NFSERR_IO skip tracking: zero-fill bad pages and continue, but
      * bail if many fail in a row — the file is too damaged to be useful. */
