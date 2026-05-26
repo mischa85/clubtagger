@@ -3,6 +3,7 @@
  */
 #include "common.h"
 
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -33,6 +34,12 @@ struct xsk_socket *g_xsk = NULL;
 
 /* Activity log ring buffer */
 activity_log_t g_activity_log = {0};
+
+/* Serializes the entire log line (tag + body + newline) so concurrent
+ * threads can't interleave their output, and protects the activity-log
+ * ring write that follows. Without this, the multi-fprintf path lets
+ * two messages bleed into each other in stdout/syslog. */
+static pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void activity_log_push(const char *tag, const char *fmt, va_list ap) {
     char msg[ACTIVITY_MSG_LEN];
@@ -74,28 +81,51 @@ int activity_log_since(uint32_t since_seq, char *buf, size_t buf_len) {
 }
 
 void logmsg(const char *tag, const char *fmt, ...) {
+    char line[1024];
+    int off = snprintf(line, sizeof(line), "[%s] ", tag);
+    if (off < 0 || (size_t)off >= sizeof(line)) return;
+
     va_list ap, ap2;
     va_start(ap, fmt);
     va_copy(ap2, ap);
-    fprintf(stderr, "[%s] ", tag);
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
-    fflush(stderr);
+    int n = vsnprintf(line + off, sizeof(line) - off, fmt, ap);
     va_end(ap);
-    /* Push to activity log for web UI */
+    if (n < 0) { va_end(ap2); return; }
+
+    size_t len = (size_t)off + (size_t)n;
+    if (len >= sizeof(line) - 1) len = sizeof(line) - 2;
+    line[len]   = '\n';
+    line[len+1] = '\0';
+
+    pthread_mutex_lock(&log_mutex);
+    fputs(line, stderr);
+    fflush(stderr);
     activity_log_push(tag, fmt, ap2);
+    pthread_mutex_unlock(&log_mutex);
     va_end(ap2);
 }
 
 void vlogmsg(const char *tag, const char *fmt, ...) {
     if (!g_verbose) return;
+    char line[1024];
+    int off = snprintf(line, sizeof(line), "[%s] ", tag);
+    if (off < 0 || (size_t)off >= sizeof(line)) return;
+
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "[%s] ", tag);
-    vfprintf(stderr, fmt, ap);
-    fprintf(stderr, "\n");
-    fflush(stderr);
+    int n = vsnprintf(line + off, sizeof(line) - off, fmt, ap);
     va_end(ap);
+    if (n < 0) return;
+
+    size_t len = (size_t)off + (size_t)n;
+    if (len >= sizeof(line) - 1) len = sizeof(line) - 2;
+    line[len]   = '\n';
+    line[len+1] = '\0';
+
+    pthread_mutex_lock(&log_mutex);
+    fputs(line, stderr);
+    fflush(stderr);
+    pthread_mutex_unlock(&log_mutex);
 }
 
 void now_timestamp(char *out, size_t out_sz) {
