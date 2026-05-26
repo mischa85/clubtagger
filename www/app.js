@@ -363,8 +363,9 @@
                         ? `<div class="cdj-detail-wrap">
                              <canvas class="cdj-detail" id="detail-${d.n}"></canvas>
                              <div class="cdj-zoom">
-                               <button onclick="cycleZoom(-1)">+</button>
-                               <button onclick="cycleZoom(1)">&minus;</button>
+                               <button onclick="cycleZoom(-1)" title="Zoom in">+</button>
+                               <div class="cdj-zoom-level">${zoomLabel()}</div>
+                               <button onclick="cycleZoom(1)" title="Zoom out">&minus;</button>
                              </div>
                            </div>`
                         : `<div class="cdj-detail-fallback">${progressBar}</div>`
@@ -762,8 +763,24 @@
     }
 
     /* Render scrolling detail waveform (centered on playhead) */
-    var zoomLevels = [5, 10, 20, 30]; /* seconds visible */
+    /* Numbers are seconds visible; 'full' means whole-track. */
+    var zoomLevels = [5, 10, 20, 30, 60, 120, 'full'];
     var zoomIndex = 1; /* default 10 seconds */
+    try {
+        const saved = parseInt(localStorage.getItem('zoomIndex'), 10);
+        if (!isNaN(saved) && saved >= 0 && saved < zoomLevels.length) zoomIndex = saved;
+    } catch (e) {}
+
+    function zoomLabel() {
+        const z = zoomLevels[zoomIndex];
+        return z === 'full' ? 'FULL' : (z + 's');
+    }
+
+    function resolveVisibleSec(trackLenSec) {
+        const z = zoomLevels[zoomIndex];
+        if (z === 'full') return trackLenSec > 0 ? trackLenSec : 30;
+        return z;
+    }
 
     function renderDetail(canvas, wf, playheadMs, trackLenSec) {
         if (!canvas || !wf) return;
@@ -775,7 +792,7 @@
 
         /* 150 entries per second for detail waveforms */
         const eps = (wf.entries > 0 && trackLenSec > 0) ? wf.entries / trackLenSec : 150;
-        const visibleSec = zoomLevels[zoomIndex] || 10;
+        const visibleSec = resolveVisibleSec(trackLenSec);
         const visibleEntries = Math.round(visibleSec * eps);
         const centerEntry = Math.floor((playheadMs / 1000) * eps);
         const startEntry = centerEntry - Math.floor(visibleEntries / 2);
@@ -790,11 +807,34 @@
         ctx.fillRect(cx - 1, 0, 2, h);
     }
 
+    /* Force a re-render of every deck's detail waveform — used after zoom
+     * changes so paused decks update immediately instead of waiting for the
+     * next playhead tick (which only fires while playing). */
+    function renderAllDetails() {
+        for (const n in rawDecks) {
+            const d = rawDecks[n];
+            if (!d || !d.waveform || !d.waveform.detail) continue;
+            const dc = document.getElementById('detail-' + n);
+            if (!dc) continue;
+            const durMs = trackDurationMs(d);
+            renderDetail(dc, d.waveform.detail, d.playhead_ms || 0, durMs / 1000);
+        }
+    }
+
+    function updateZoomLabels() {
+        const txt = zoomLabel();
+        document.querySelectorAll('.cdj-zoom-level').forEach(el => { el.textContent = txt; });
+    }
+
     function cycleZoom(dir) {
         zoomIndex = Math.max(0, Math.min(zoomLevels.length - 1, zoomIndex + dir));
+        try { localStorage.setItem('zoomIndex', String(zoomIndex)); } catch (e) {}
+        updateZoomLabels();
+        renderAllDetails();
     }
     /* Expose to onclick handlers in deck template */
     window.cycleZoom = cycleZoom;
+    window.zoomLabel = zoomLabel;
     window.rawDecks = rawDecks;
 
     function handleBinaryFrame(data) {
@@ -1109,4 +1149,21 @@
     } else {
         connect();
     }
+
+    /* ──────── Theme switcher (default / mono / stage) ──────── */
+    const THEMES = ['default', 'mono', 'stage'];
+    function applyTheme(name) {
+        if (!THEMES.includes(name)) name = 'default';
+        document.body.setAttribute('data-theme', name);
+        try { localStorage.setItem('theme', name); } catch (e) {}
+        document.querySelectorAll('#theme-switch button').forEach(b => {
+            b.classList.toggle('active', b.dataset.theme === name);
+        });
+    }
+    let savedTheme = 'default';
+    try { savedTheme = localStorage.getItem('theme') || 'default'; } catch (e) {}
+    applyTheme(savedTheme);
+    document.querySelectorAll('#theme-switch button').forEach(b => {
+        b.addEventListener('click', () => applyTheme(b.dataset.theme));
+    });
 })();
