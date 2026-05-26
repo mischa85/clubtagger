@@ -412,16 +412,18 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
      * on pages that 8K reads serve fine. Keep this at 8192. */
     #define NFS_READ_CHUNK 8192
 
-    /* NFSERR_IO skip tracking: zero-fill bad pages and continue, but
-     * bail if many fail in a row — the file is too damaged to be useful. */
-    int    skipped_consecutive = 0;
-    size_t skipped_total       = 0;
-    const int SKIP_CONSEC_MAX  = 4;
+    /* NFSERR_IO skip tracking: zero-fill bad pages and continue. The 10s
+     * deadline above bounds runaway loops; there is no consecutive-error
+     * cap because some files have long contiguous bad clusters (likely
+     * sparse pages on marginal flash that the CDJ itself never reads). */
+    size_t skipped_total = 0;
+    int    skipped_pages = 0;
 
     while (!eof && total_read < buf_len) {
         if (time(NULL) > deadline) {
-            logmsg("nfs", "READ timeout after %zu bytes (10s limit) from %s:%u",
-                   total_read, ip_to_str(server_ip), nfs_port);
+            size_t good = total_read - skipped_total;
+            logmsg("nfs", "READ timeout from %s:%u: %zu bytes after 10s (good=%zu, zero-filled=%zu across %d bad page(s))",
+                   ip_to_str(server_ip), nfs_port, total_read, good, skipped_total, skipped_pages);
             *bytes_read = total_read;
             return -1;
         }
@@ -476,18 +478,10 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                 size_t skip = NFS_READ_CHUNK;
                 if (total_read + skip > buf_len) skip = buf_len - total_read;
                 memset(buf + total_read, 0, skip);
-                logmsg("nfs", "READ on %s:%u nfs_stat=5 (IO) at offset=%zu — zero-filled %zu bytes, continuing",
-                       ip_to_str(server_ip), nfs_port, total_read, skip);
-                total_read += skip;
+                total_read   += skip;
                 skipped_total += skip;
-                skipped_consecutive++;
+                skipped_pages++;
                 free(response);
-                if (skipped_consecutive >= SKIP_CONSEC_MAX) {
-                    logmsg("nfs", "READ on %s:%u: %d consecutive IO errors — giving up at offset=%zu",
-                           ip_to_str(server_ip), nfs_port, skipped_consecutive, total_read);
-                    *bytes_read = total_read;
-                    return -1;
-                }
                 continue;
             }
             const char *stat_label =
@@ -499,7 +493,6 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
             free(response);
             return (nfs_stat == NFSERR_NOENT) ? -ENOENT : -1;
         }
-        skipped_consecutive = 0;
         
         /* Skip status + fattr to get to data length */
         rpos += sizeof(uint32_t) + sizeof(nfs_fattr_t);
@@ -534,8 +527,9 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     
     *bytes_read = total_read;
     if (skipped_total > 0) {
-        logmsg("nfs", "READ on %s:%u: completed with %zu bytes zero-filled across IO-error pages (read=%zu)",
-               ip_to_str(server_ip), nfs_port, skipped_total, total_read);
+        size_t good = total_read - skipped_total;
+        logmsg("nfs", "READ on %s:%u done: %zu bytes total — good=%zu, zero-filled=%zu across %d bad page(s)",
+               ip_to_str(server_ip), nfs_port, total_read, good, skipped_total, skipped_pages);
     }
     return 0;
 }
