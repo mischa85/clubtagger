@@ -256,8 +256,9 @@ void handle_slot_conflict(uint8_t conflicting_device_num, const char *device_nam
      * or a worker. */
     cdj_device_t *dev = find_device(conflicting_device_num);
     if (dev) {
-        dev->name[0]   = '\0';
-        dev->last_seen = 0;
+        dev->name[0]        = '\0';
+        dev->supported_libs = 0;
+        dev->last_seen      = 0;
     }
 
     /* Release slot and restart the registration state machine.

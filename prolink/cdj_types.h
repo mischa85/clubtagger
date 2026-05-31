@@ -162,6 +162,10 @@ typedef struct {
     uint32_t logged_rekordbox_id; /* Last track logged to DB for this deck */
     
     time_t   last_seen;
+
+    /* Track-library formats this model resolves IDs through. Recomputed
+     * whenever dev->name is updated. See cdj_lib_t below for use. */
+    int      supported_libs;       /* cdj_lib_t bitmask */
 } cdj_device_t;
 
 /*
@@ -223,5 +227,21 @@ cdj_device_t *find_device(uint8_t device_num);
 
 /* Find another CDJ's device number (for queries) */
 uint8_t find_other_cdj_device_num(uint32_t exclude_ip);
+
+/* Track-library formats a player resolves IDs through.
+ * PDB:  legacy rekordbox export.pdb (CDJ-2000 line, CDJ-3000, XDJ-1000)
+ * DLP:  Device Library Plus / OneLibrary sqlite-backed library
+ *       (CDJ-3000X, XDJ-AZ, OMNIS-DUO, OPUS-QUAD)
+ * Same numeric track ID can map to different rows across formats on the
+ * same media, so enqueues to a resolver must match the playing player's
+ * supported lib. Unknown name returns both (safe fallback before the
+ * first packet identifies the model). */
+typedef enum {
+    CDJ_LIB_NONE                = 0,
+    CDJ_LIB_REKORDBOX_PDB       = 1u << 0,
+    CDJ_LIB_DEVICE_LIBRARY_PLUS = 1u << 1
+} cdj_lib_t;
+
+cdj_lib_t cdj_libs_for_name(const char *name);
 
 #endif /* CDJ_TYPES_H */

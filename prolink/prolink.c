@@ -192,8 +192,9 @@ void prolink_sweep_disappeared_cdjs(void) {
          * usable; on a true reboot the fresh announce re-fires was_new and
          * dbserver_thread_spawn is idempotent. Worker state is just dedup
          * hints that overwrite naturally. */
-        dev->name[0]   = '\0';
-        dev->last_seen = 0;
+        dev->name[0]        = '\0';
+        dev->supported_libs = 0;
+        dev->last_seen      = 0;
     }
 }
 
@@ -283,6 +284,7 @@ void parse_keepalive(const uint8_t *data, size_t len, uint32_t src_ip) {
         if (dev) {
             uint8_t was_new = (dev->name[0] == '\0');
             strncpy(dev->name, name, sizeof(dev->name) - 1);
+            dev->supported_libs = cdj_libs_for_name(dev->name);
             dev->ip_addr = src_ip;
             
             /* Device type from packet, also auto-detect from name.
@@ -437,12 +439,15 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         memcpy(name, beat->device_name, 20);
         name[20] = '\0';
         for (int i = 19; i >= 0 && name[i] == ' '; i--) name[i] = '\0';
-        if (name[0]) strncpy(dev->name, name, sizeof(dev->name) - 1);
-        
+        if (name[0]) {
+            strncpy(dev->name, name, sizeof(dev->name) - 1);
+            dev->supported_libs = cdj_libs_for_name(dev->name);
+        }
+
         if (dev->device_type == 0 && strstr(name, "CDJ") != NULL) {
             dev->device_type = DEVICE_TYPE_CDJ;
         }
-        
+
         /* BPM from beat packet */
         uint16_t bpm = BE16_TO_HOST(beat->bpm_be);
         if (bpm > 2000 && bpm < 25000) {
@@ -542,8 +547,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
         memcpy(name, pkt->device_name, 20);
         name[20] = '\0';
         for (int i = 19; i >= 0 && name[i] == ' '; i--) name[i] = '\0';
-        if (name[0]) strncpy(dev->name, name, sizeof(dev->name) - 1);
-        
+        if (name[0]) {
+            strncpy(dev->name, name, sizeof(dev->name) - 1);
+            dev->supported_libs = cdj_libs_for_name(dev->name);
+        }
+
         /* Infer device type from name if not already set */
         if (dev->device_type == 0) {
             if (strstr(name, "CDJ") != NULL) {
@@ -734,8 +742,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                  * The worker emits to track_registry; the winner is folded
                  * into dev fields below. Only for rekordbox-analyzed tracks:
                  * the unanalyzed-id namespace can collide with rekordbox_id
-                 * and produce a confident wrong answer. */
-                if (!found && dev->track_type == TRACK_REKORDBOX) {
+                 * and produce a confident wrong answer. Library gate skips
+                 * legacy PDB-only players — the numeric ID they send comes
+                 * from PDB, so a DLP lookup returns a wrong-row answer. */
+                if (!found && dev->track_type == TRACK_REKORDBOX &&
+                    (dev->supported_libs & CDJ_LIB_DEVICE_LIBRARY_PLUS)) {
                     int ol_erc = onelibrary_thread_enqueue(dev->track_source_player,
                                                            src_slot,
                                                            dev->rekordbox_id);
@@ -773,8 +784,11 @@ void parse_cdj_status(const uint8_t *data, size_t len, uint32_t src_ip) {
                 /* 4. PDB — async via per-(source_player, slot) worker. The
                  * worker emits to track_registry; the registry winner is
                  * picked up on the next prolink tick. Rekordbox-only for the
-                 * same reason as OneLibrary above. */
-                if (!found && dev->track_type == TRACK_REKORDBOX) {
+                 * same reason as OneLibrary above. Library gate skips DLP
+                 * players (CDJ-3000X et al.) — the numeric ID they send was
+                 * resolved via the sqlite lib, so a PDB hit is a wrong row. */
+                if (!found && dev->track_type == TRACK_REKORDBOX &&
+                    (dev->supported_libs & CDJ_LIB_REKORDBOX_PDB)) {
                     int pdb_erc = pdb_thread_enqueue(dev->track_source_player,
                                                      src_slot,
                                                      dev->rekordbox_id);

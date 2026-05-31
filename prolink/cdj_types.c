@@ -113,3 +113,18 @@ uint8_t find_other_cdj_device_num(uint32_t exclude_ip) {
     /* No other CDJ found - return 1 as fallback */
     return 1;
 }
+
+cdj_lib_t cdj_libs_for_name(const char *name) {
+    if (!name || !name[0]) {
+        /* Unknown player — assume both, so enqueues fall through until the
+         * first packet that identifies the model. */
+        return CDJ_LIB_REKORDBOX_PDB | CDJ_LIB_DEVICE_LIBRARY_PLUS;
+    }
+    if (strstr(name, "CDJ-3000X") != NULL
+     || strstr(name, "XDJ-AZ")    != NULL
+     || strstr(name, "OMNIS-DUO") != NULL
+     || strstr(name, "OPUS-QUAD") != NULL) {
+        return CDJ_LIB_DEVICE_LIBRARY_PLUS;
+    }
+    return CDJ_LIB_REKORDBOX_PDB;
+}
