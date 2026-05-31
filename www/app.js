@@ -410,23 +410,10 @@
             `;
         }).join('');
 
-        /* Re-render waveforms after DOM rebuild */
-        for (const d of active) {
-            if (d.waveform) {
-                const posMs = d.playhead_ms || 0;
-                const durMs = trackDurationMs(d);
-                const durSec = durMs / 1000;
-                const pct = (durMs > 0 && posMs > 0) ? Math.min(100, posMs / durMs * 100) : 0;
-                if (d.waveform.detail) {
-                    const dc = document.getElementById('detail-' + d.n);
-                    if (dc) renderDetail(dc, d.waveform.detail, posMs, durSec);
-                }
-                if (d.waveform.preview) {
-                    const oc = document.getElementById('overview-' + d.n);
-                    if (oc) renderOverview(oc, d.waveform.preview, pct);
-                }
-            }
-        }
+        /* Canvases are freshly minted by the innerHTML rebuild — every active
+         * deck needs its waveform painted. The rAF scheduler will pick these
+         * up immediately after this function returns (same frame). */
+        for (const d of active) markWaveDirty(d.n);
     }
 
 
@@ -543,7 +530,7 @@
         }
 
         d.lastUpdate = Date.now();
-        renderDecks();
+        markStructDirty();
         updateDeckFromRaw(devNum);
     }
 
@@ -568,19 +555,11 @@
         if (ms > 0) {
             const pct = durMs > 0 ? Math.min(100, ms / durMs * 100) : 0;
 
+            /* Waveform redraw via the rAF scheduler — coalesces with status-
+             * packet structure updates and caps at the display refresh rate. */
+            markWaveDirty(devNum);
+
             const wf = rawDecks[devNum].waveform;
-
-            /* Scrolling detail waveform */
-            const detailCanvas = document.getElementById('detail-' + devNum);
-            if (detailCanvas && wf && wf.detail) {
-                renderDetail(detailCanvas, wf.detail, ms, durSec);
-            }
-
-            /* Overview strip */
-            const overviewCanvas = document.getElementById('overview-' + devNum);
-            if (overviewCanvas && wf && wf.preview) {
-                renderOverview(overviewCanvas, wf.preview, pct);
-            }
 
             /* Time display (LCD: main + frac spans) */
             const timeEl = document.getElementById('cdj-time-' + devNum);
@@ -691,9 +670,14 @@
        mode='bottom': grows upward from bottom (overview). */
     function draw3band(ctx, wf, startEntry, count, x0, w, h, peak, mode) {
         if (!peak) {
-            peak = 1;
-            for (let i = 0; i < wf.entries * 3; i++)
-                if (wf.data[i] > peak) peak = wf.data[i];
+            /* Peak is invariant — cache on the waveform after the first pass. */
+            if (!wf._peak) {
+                let p = 1;
+                for (let i = 0; i < wf.entries * 3; i++)
+                    if (wf.data[i] > p) p = wf.data[i];
+                wf._peak = p;
+            }
+            peak = wf._peak;
         }
         const colW = w / count;
         const fromCenter = (mode === 'center');
@@ -747,8 +731,13 @@
         if (!canvas || !wf) return;
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
-        const w = canvas.width = canvas.clientWidth * dpr;
-        const h = canvas.height = canvas.clientHeight * dpr;
+        /* Assigning canvas.width clears the canvas and triggers a reflow even
+         * when the value is identical — only resize when the layout changed. */
+        const want_w = canvas.clientWidth * dpr;
+        const want_h = canvas.clientHeight * dpr;
+        if (canvas.width !== want_w) canvas.width = want_w;
+        if (canvas.height !== want_h) canvas.height = want_h;
+        const w = canvas.width, h = canvas.height;
         ctx.clearRect(0, 0, w, h);
 
         if (wf.type === '3band') draw3band(ctx, wf, 0, wf.entries, 0, w, h, 0, 'bottom');
@@ -786,8 +775,11 @@
         if (!canvas || !wf) return;
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
-        const w = canvas.width = canvas.clientWidth * dpr;
-        const h = canvas.height = canvas.clientHeight * dpr;
+        const want_w = canvas.clientWidth * dpr;
+        const want_h = canvas.clientHeight * dpr;
+        if (canvas.width !== want_w) canvas.width = want_w;
+        if (canvas.height !== want_h) canvas.height = want_h;
+        const w = canvas.width, h = canvas.height;
         ctx.clearRect(0, 0, w, h);
 
         /* 150 entries per second for detail waveforms */
@@ -807,17 +799,50 @@
         ctx.fillRect(cx - 1, 0, 2, h);
     }
 
-    /* Force a re-render of every deck's detail waveform — used after zoom
-     * changes so paused decks update immediately instead of waiting for the
-     * next playhead tick (which only fires while playing). */
-    function renderAllDetails() {
-        for (const n in rawDecks) {
-            const d = rawDecks[n];
-            if (!d || !d.waveform || !d.waveform.detail) continue;
+    /* ── rAF render scheduler ─────────────────────────────────────────
+     * Network packets arrive faster than the display refreshes — status
+     * packets at ~30Hz × N decks, position packets at the same rate.
+     * Without batching, the main thread re-renders the same canvases
+     * many times per frame and the browser discards all but one. Coalesce
+     * via requestAnimationFrame so we do at most one paint per deck per
+     * frame, and cap total work at the display rate (60Hz typical).
+     *   _structDirty → renderDecks() rebuilds the deck-grid innerHTML
+     *   _waveDirty   → repaint waveforms for these deck numbers       */
+    let _waveDirty = new Set();
+    let _structDirty = false;
+    let _rafScheduled = false;
+
+    function scheduleRender() {
+        if (_rafScheduled) return;
+        _rafScheduled = true;
+        requestAnimationFrame(() => {
+            _rafScheduled = false;
+            if (_structDirty) {
+                _structDirty = false;
+                renderDecks();   /* marks every active deck waveform-dirty */
+            }
+            if (_waveDirty.size > 0) {
+                for (const n of _waveDirty) renderDeckWaves(n);
+                _waveDirty.clear();
+            }
+        });
+    }
+    function markStructDirty()      { _structDirty = true; scheduleRender(); }
+    function markWaveDirty(n)       { _waveDirty.add(String(n)); scheduleRender(); }
+    function markAllWavesDirty()    { for (const n in rawDecks) _waveDirty.add(n); scheduleRender(); }
+
+    function renderDeckWaves(n) {
+        const d = rawDecks[n];
+        if (!d || !d.waveform) return;
+        const durMs = trackDurationMs(d);
+        const pct = durMs > 0 ? Math.min(100, (d.playhead_ms || 0) / durMs * 100) : 0;
+        if (d.waveform.detail) {
             const dc = document.getElementById('detail-' + n);
-            if (!dc) continue;
-            const durMs = trackDurationMs(d);
-            renderDetail(dc, d.waveform.detail, d.playhead_ms || 0, durMs / 1000);
+            if (dc) renderDetail(dc, d.waveform.detail, d.playhead_ms || 0, durMs / 1000);
+        }
+        if (d.waveform.preview) {
+            const oc = document.getElementById('overview-' + n);
+            if (oc) renderOverview(oc, d.waveform.preview, pct);
         }
     }
 
@@ -830,7 +855,7 @@
         zoomIndex = Math.max(0, Math.min(zoomLevels.length - 1, zoomIndex + dir));
         try { localStorage.setItem('zoomIndex', String(zoomIndex)); } catch (e) {}
         updateZoomLabels();
-        renderAllDetails();
+        markAllWavesDirty();
     }
 
     /* Status packets rebuild decksEl.innerHTML ~30×/sec. Inline onclick targets
@@ -1119,21 +1144,10 @@
                 if (d.playing) {
                     d.playhead_ms += 30;
                     var durMs = trackDurationMs(d);
-                    var durSec = durMs / 1000;
                     if (durMs > 0 && d.playhead_ms > durMs) d.playhead_ms = 0;
                     d.beat_in_bar = (Math.floor(d.playhead_ms / 500) % 4) + 1;
 
-                    /* Update detail waveform */
-                    var dc = document.getElementById('detail-' + n);
-                    if (dc && d.waveform && d.waveform.detail)
-                        renderDetail(dc, d.waveform.detail, d.playhead_ms, durSec);
-
-                    /* Update overview */
-                    var oc = document.getElementById('overview-' + n);
-                    if (oc && d.waveform && d.waveform.preview) {
-                        var pct = durMs > 0 ? Math.min(100, d.playhead_ms / durMs * 100) : 0;
-                        renderOverview(oc, d.waveform.preview, pct);
-                    }
+                    markWaveDirty(n);
 
                     /* Update time (LCD: main + frac) */
                     var te = document.getElementById('cdj-time-' + n);
