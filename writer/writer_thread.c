@@ -10,12 +10,43 @@
 #include "../audio/audio_buffer.h"
 #include "../common.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+
+int writer_init_channel(ChannelState *cs, const Config *cfg) {
+    size_t buf_size = (size_t)cfg->frames_per_read * cfg->channels * cfg->bytes_per_sample;
+    unsigned window_size = (unsigned)((cfg->sustain_sec * cfg->rate +
+                                       (cfg->frames_per_read - 1)) / cfg->frames_per_read);
+
+    cs->wrt_buf = (uint8_t *)malloc(buf_size);
+    if (!cs->wrt_buf) {
+        logmsg("wrt", "wrt_buf alloc failed (%zu bytes)", buf_size);
+        return -ENOMEM;
+    }
+
+    cs->wrt_window = (unsigned *)calloc(window_size, sizeof(unsigned));
+    if (!cs->wrt_window) {
+        logmsg("wrt", "wrt_window alloc failed (%u entries)", window_size);
+        free(cs->wrt_buf);
+        cs->wrt_buf = NULL;
+        return -ENOMEM;
+    }
+    cs->wrt_window_size = window_size;
+    return 0;
+}
+
+void writer_free_channel(ChannelState *cs) {
+    free(cs->wrt_window);
+    cs->wrt_window = NULL;
+    cs->wrt_window_size = 0;
+    free(cs->wrt_buf);
+    cs->wrt_buf = NULL;
+}
 
 /* Per-channel writer state (stack-allocated in writer_main) */
 typedef struct {

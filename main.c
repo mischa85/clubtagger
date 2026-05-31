@@ -461,37 +461,19 @@ int main(int argc, char **argv) {
         size_t ring_frames = (size_t)cfg.ring_sec * cfg.rate;
         size_t max_write_frames = cfg.max_file_sec > 0
             ? (size_t)cfg.max_file_sec * cfg.rate : ring_frames;
-        size_t cap_buf_size = cfg.frames_per_read * cfg.channels * cfg.bytes_per_sample;
-        size_t id_fb = cfg.channels * cfg.bytes_per_sample;
-        size_t id_buf_frames = (size_t)cfg.fingerprint_sec * cfg.rate;
-        unsigned wrt_window_size = (unsigned)((cfg.sustain_sec * cfg.rate +
-                                    (cfg.frames_per_read - 1)) / cfg.frames_per_read);
 
         for (int c = 0; c < nch; c++) {
             ChannelState *cs = &app.ch[c];
             if (asyncwr_init(&cs->aw, cfg.channels, cfg.rate, cfg.bytes_per_sample,
                              ring_frames, max_write_frames,
                              cfg.outdir, cfg.prefix, cfg.format) != 0) {
-                logmsg("main", "audio buffer alloc failed (ch %d)", c);
+                logmsg("main", "asyncwr_init failed (ch %d)", c);
                 goto cleanup;
             }
-            cs->cap_buf = (uint8_t *)malloc(cap_buf_size);
-            if (!cs->cap_buf) { logmsg("main", "cap_buf alloc failed"); goto cleanup; }
-
-            if (cfg.enable_record) {
-                cs->wrt_buf = (uint8_t *)malloc(cap_buf_size);
-                if (!cs->wrt_buf) { logmsg("main", "wrt_buf alloc failed"); goto cleanup; }
-                cs->wrt_window_size = wrt_window_size;
-                cs->wrt_window = (unsigned *)calloc(wrt_window_size, sizeof(unsigned));
-                if (!cs->wrt_window) { logmsg("main", "wrt_window alloc failed"); goto cleanup; }
-            }
-            if (cfg.enable_audio_tag && cfg.slink_channels[c].shazam) {
-                cs->id_buf_frames = id_buf_frames;
-                cs->id_buf = (uint8_t *)malloc(id_buf_frames * id_fb);
-                if (!cs->id_buf) { logmsg("main", "id_buf alloc failed"); goto cleanup; }
-                cs->id_buf_s16 = (int16_t *)malloc(sizeof(int16_t) * id_buf_frames * cfg.channels);
-                if (!cs->id_buf_s16) { logmsg("main", "id_buf_s16 alloc failed"); goto cleanup; }
-            }
+            if (capture_init_channel(cs, &cfg) != 0) goto cleanup;
+            if (cfg.enable_record && writer_init_channel(cs, &cfg) != 0) goto cleanup;
+            if (cfg.enable_audio_tag && cfg.slink_channels[c].shazam &&
+                shazam_init_channel(cs, &cfg) != 0) goto cleanup;
         }
     }
 
@@ -688,11 +670,9 @@ cleanup:
     /* Free per-channel buffers */
     for (int c = 0; c < SLINK_MAX_CHANNELS; c++) {
         ChannelState *cs = &app.ch[c];
-        if (cs->id_buf_s16) free(cs->id_buf_s16);
-        if (cs->id_buf) free(cs->id_buf);
-        if (cs->wrt_window) free(cs->wrt_window);
-        if (cs->wrt_buf) free(cs->wrt_buf);
-        if (cs->cap_buf) free(cs->cap_buf);
+        shazam_free_channel(cs);
+        writer_free_channel(cs);
+        capture_free_channel(cs);
         asyncwr_free(&cs->aw);
     }
     

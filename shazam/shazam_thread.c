@@ -19,12 +19,44 @@
 #include "../confidence.h"
 #include "../prolink/cdj_types.h"
 
+#include <errno.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
+
+int shazam_init_channel(ChannelState *cs, const Config *cfg) {
+    size_t frames    = (size_t)cfg->fingerprint_sec * cfg->rate;
+    size_t frame_b   = (size_t)cfg->channels * cfg->bytes_per_sample;
+    size_t buf_bytes = frames * frame_b;
+    size_t s16_bytes = sizeof(int16_t) * frames * cfg->channels;
+
+    cs->id_buf = (uint8_t *)malloc(buf_bytes);
+    if (!cs->id_buf) {
+        logmsg("shazam", "id_buf alloc failed (%zu bytes)", buf_bytes);
+        return -ENOMEM;
+    }
+
+    cs->id_buf_s16 = (int16_t *)malloc(s16_bytes);
+    if (!cs->id_buf_s16) {
+        logmsg("shazam", "id_buf_s16 alloc failed (%zu bytes)", s16_bytes);
+        free(cs->id_buf);
+        cs->id_buf = NULL;
+        return -ENOMEM;
+    }
+    cs->id_buf_frames = frames;
+    return 0;
+}
+
+void shazam_free_channel(ChannelState *cs) {
+    free(cs->id_buf_s16);
+    cs->id_buf_s16 = NULL;
+    free(cs->id_buf);
+    cs->id_buf = NULL;
+    cs->id_buf_frames = 0;
+}
 
 #ifdef HAVE_VIBRA
 /* External vibra library functions */

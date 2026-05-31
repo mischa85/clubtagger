@@ -9,6 +9,12 @@
 /* Main capture thread entry point - dispatches to appropriate backend */
 void *capture_main(void *arg);
 
+/* Per-channel capture buffer lifecycle.
+ * capture_init_channel allocates cs->cap_buf; returns 0 or -ENOMEM.
+ * capture_free_channel is safe on a partially-/never-initialized channel. */
+int  capture_init_channel(ChannelState *cs, const Config *cfg);
+void capture_free_channel(ChannelState *cs);
+
 #ifdef HAVE_PCAP
 /* S/PDIF capture via libpcap */
 void *capture_pcap(void *arg);

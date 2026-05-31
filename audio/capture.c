@@ -5,12 +5,29 @@
 #include "../writer/async_writer.h"
 #include "../common.h"
 
+#include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 #ifdef __linux__
 #include <sched.h>
 #endif
+
+int capture_init_channel(ChannelState *cs, const Config *cfg) {
+    size_t cap_buf_size = (size_t)cfg->frames_per_read * cfg->channels * cfg->bytes_per_sample;
+    cs->cap_buf = (uint8_t *)malloc(cap_buf_size);
+    if (!cs->cap_buf) {
+        logmsg("cap", "cap_buf alloc failed (%zu bytes)", cap_buf_size);
+        return -ENOMEM;
+    }
+    return 0;
+}
+
+void capture_free_channel(ChannelState *cs) {
+    free(cs->cap_buf);
+    cs->cap_buf = NULL;
+}
 
 void *capture_main(void *arg) {
     App *app = (App *)arg;
