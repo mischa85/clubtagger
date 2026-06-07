@@ -11,6 +11,11 @@
 #include <stddef.h>
 #include <pthread.h>
 
+/* Upper bound on a single NFS fetch (OneLibrary exportLibrary.db, PDB
+ * export.pdb). Doubles as the OOM guard for the read buffer: the buffer is
+ * sized to the file's real length when LOOKUP reports it, clamped to this. */
+#define NFS_MAX_FETCH_SIZE (64u * 1024 * 1024)  /* 64 MB */
+
 /*
  * Serializes all NFS fetch transactions across threads. The NFS client
  * holds a single shared UDP socket + xid counter; concurrent fetches
