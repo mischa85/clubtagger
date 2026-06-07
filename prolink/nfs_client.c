@@ -308,10 +308,12 @@ int nfs_mount_to_port(uint32_t server_ip, uint16_t mount_port, const char *expor
  */
 
 /* NFS LOOKUP - find file handle (NFSv2 - fixed 32-byte handles) */
-int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh, 
-               const char *name, uint8_t *file_fh) {
+int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
+               const char *name, uint8_t *file_fh, uint32_t *out_size) {
     uint8_t request[512];
     uint8_t response[1024];
+
+    if (out_size) *out_size = 0;
     
     if (verbose) {
         vlogmsg("cdj", "[NFS] LOOKUP '%s' in dir fh[0..3]=%02x%02x%02x%02x (port %u)", 
@@ -386,12 +388,22 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     /* File handle - NFSv2 is fixed 32 bytes */
     nfs_lookup_reply_t *reply = (nfs_lookup_reply_t *)(response + sizeof(rpc_reply_header_t));
     memcpy(file_fh, reply->fh, NFS_FHSIZE);
-    
+
+    /* The fattr follows the fh in the LOOKUP reply (status + fh + fattr).
+     * Hand the file size back so the caller can size its read buffer to the
+     * real length instead of a worst-case cap. */
+    if (out_size &&
+        received >= (int)(sizeof(rpc_reply_header_t) + sizeof(nfs_lookup_reply_t) + sizeof(nfs_fattr_t))) {
+        const nfs_fattr_t *fattr =
+            (const nfs_fattr_t *)(response + sizeof(rpc_reply_header_t) + sizeof(nfs_lookup_reply_t));
+        *out_size = RPC_GET_U32((const uint8_t *)&fattr->size);
+    }
+
     if (verbose) {
-        vlogmsg("cdj", "[NFS] LOOKUP '%s' OK -> fh[0..3]=%02x%02x%02x%02x", 
+        vlogmsg("cdj", "[NFS] LOOKUP '%s' OK -> fh[0..3]=%02x%02x%02x%02x",
                     name, file_fh[0], file_fh[1], file_fh[2], file_fh[3]);
     }
-    
+
     return 0;
 }
 
@@ -590,7 +602,7 @@ int nfs_fetch_path(uint32_t server_ip, uint16_t nfs_port, uint16_t mount_port,
     char *component = strtok_r(pathbuf, "/", &saveptr);
     while (component) {
         char *next = strtok_r(NULL, "/", &saveptr);
-        int lk = nfs_lookup(server_ip, nfs_port, dir_fh, component, file_fh);
+        int lk = nfs_lookup(server_ip, nfs_port, dir_fh, component, file_fh, NULL);
         if (lk != 0) {
             if (lk == -ENOENT) {
                 logmsg("nfs", "fetch_path: NOENT at '%s' in %s — file not present (will not retry)",

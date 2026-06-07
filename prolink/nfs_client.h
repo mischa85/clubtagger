@@ -81,10 +81,12 @@ int nfs_mount_to_port(uint32_t server_ip, uint16_t mount_port,
  * ============================================================================
  */
 
-/* Lookup a file by name in directory */
+/* Lookup a file by name in directory. If out_size is non-NULL it receives the
+ * file's size in bytes from the reply's fattr (0 if unavailable) — use it to
+ * size the read buffer before fetching. */
 int nfs_lookup(uint32_t server_ip, uint16_t nfs_port,
                const uint8_t *dir_fh, const char *name,
-               uint8_t *file_fh);
+               uint8_t *file_fh, uint32_t *out_size);
 
 /* Read file contents */
 int nfs_read_file(uint32_t server_ip, uint16_t nfs_port,

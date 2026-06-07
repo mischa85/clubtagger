@@ -424,7 +424,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     vlogmsg("pdb", "✅ Mounted %s", export_path);
 
     /* Step 3: Lookup PIONEER directory */
-    int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh);
+    int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh, NULL);
     if (lrc != 0) {
         logmsg("pdb", "❌ PIONEER not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -435,7 +435,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     }
 
     /* Step 4: Lookup rekordbox directory */
-    lrc = nfs_lookup(device_ip, nfs_port, pioneer_fh, "rekordbox", rb_fh);
+    lrc = nfs_lookup(device_ip, nfs_port, pioneer_fh, "rekordbox", rb_fh, NULL);
     if (lrc != 0) {
         logmsg("pdb", "❌ rekordbox dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -446,7 +446,8 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     }
 
     /* Step 5: Lookup export.pdb */
-    lrc = nfs_lookup(device_ip, nfs_port, rb_fh, "export.pdb", pdb_fh);
+    uint32_t pdb_size = 0;
+    lrc = nfs_lookup(device_ip, nfs_port, rb_fh, "export.pdb", pdb_fh, &pdb_size);
     if (lrc != 0) {
         logmsg("pdb", "❌ export.pdb not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -456,20 +457,26 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
         return lrc == -ENOENT ? -ENOENT : -1;
     }
 
-    /* Step 6: Read the file (up to 8MB) */
-    #define MAX_PDB_SIZE (8 * 1024 * 1024)
-    uint8_t *pdb_data = malloc(MAX_PDB_SIZE);
+    /* Step 6: Size the buffer to the real file length (clamped to the fetch
+     * cap as the OOM guard); fall back to the cap if LOOKUP gave no size. */
+    size_t alloc = (pdb_size > 0 && pdb_size <= NFS_MAX_FETCH_SIZE)
+                       ? pdb_size : NFS_MAX_FETCH_SIZE;
+    if (pdb_size > NFS_MAX_FETCH_SIZE) {
+        logmsg("pdb", "⚠️ export.pdb is %u bytes, exceeds %u-byte cap — fetch will be partial",
+               pdb_size, NFS_MAX_FETCH_SIZE);
+    }
+    uint8_t *pdb_data = malloc(alloc);
     if (!pdb_data) {
-        logmsg("pdb", "❌ malloc(%d) failed for PDB buffer", MAX_PDB_SIZE);
+        logmsg("pdb", "❌ malloc(%zu) failed for PDB buffer", alloc);
         db->fetch_in_progress = 0;
         db->fetch_failed = 1;
         return -1;
     }
 
-    vlogmsg("pdb", "📖 Reading export.pdb...");
+    vlogmsg("pdb", "📖 Reading export.pdb (%u bytes)...", pdb_size);
 
     size_t total_read = 0;
-    int rrc = nfs_read_file(device_ip, nfs_port, pdb_fh, pdb_data, MAX_PDB_SIZE, &total_read);
+    int rrc = nfs_read_file(device_ip, nfs_port, pdb_fh, pdb_data, alloc, &total_read);
     if (rrc != 0) {
         logmsg("pdb", "❌ Read error fetching export.pdb from %s slot %s (rc=%d)",
                ip_to_str(device_ip), cdj_slot_name(slot), rrc);

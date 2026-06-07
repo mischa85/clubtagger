@@ -44,7 +44,6 @@ extern const char *capture_interface;
 #define OLIB_SALT_SIZE     16
 #define OLIB_KEY_SIZE      32     /* AES-256 */
 #define OLIB_KDF_ITER      256000
-#define OLIB_MAX_FILE_SIZE (16 * 1024 * 1024)  /* 16 MB max */
 
 static const char SQLITE_MAGIC[16] = "SQLite format 3";
 
@@ -383,21 +382,22 @@ int fetch_onelibrary_database(onelibrary_t *out, uint32_t device_ip, uint8_t slo
     }
 
     /* Step 3: Lookup PIONEER/rekordbox/exportLibrary.db */
-    int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh);
+    int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh, NULL);
     if (lrc != 0) {
         logmsg("olib", "PIONEER dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
                lrc == -ENOENT ? " (NOENT)" : "");
         return lrc == -ENOENT ? -ENOENT : -1;
     }
-    lrc = nfs_lookup(device_ip, nfs_port, pioneer_fh, "rekordbox", rb_fh);
+    lrc = nfs_lookup(device_ip, nfs_port, pioneer_fh, "rekordbox", rb_fh, NULL);
     if (lrc != 0) {
         logmsg("olib", "rekordbox dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
                lrc == -ENOENT ? " (NOENT — non-rekordbox media)" : "");
         return lrc == -ENOENT ? -ENOENT : -1;
     }
-    lrc = nfs_lookup(device_ip, nfs_port, rb_fh, "exportLibrary.db", olib_fh);
+    uint32_t olib_size = 0;
+    lrc = nfs_lookup(device_ip, nfs_port, rb_fh, "exportLibrary.db", olib_fh, &olib_size);
     if (lrc != 0) {
         logmsg("olib", "exportLibrary.db not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
@@ -405,18 +405,25 @@ int fetch_onelibrary_database(onelibrary_t *out, uint32_t device_ip, uint8_t slo
         return lrc == -ENOENT ? -ENOENT : -1;
     }
 
-    /* Step 4: Read the file */
-    uint8_t *encrypted = malloc(OLIB_MAX_FILE_SIZE);
+    /* Step 4: Size the buffer to the real file length (clamped to the fetch
+     * cap as the OOM guard); fall back to the cap if LOOKUP gave no size. */
+    size_t alloc = (olib_size > 0 && olib_size <= NFS_MAX_FETCH_SIZE)
+                       ? olib_size : NFS_MAX_FETCH_SIZE;
+    if (olib_size > NFS_MAX_FETCH_SIZE) {
+        logmsg("olib", "exportLibrary.db is %u bytes, exceeds %u-byte cap — fetch will be partial",
+               olib_size, NFS_MAX_FETCH_SIZE);
+    }
+    uint8_t *encrypted = malloc(alloc);
     if (!encrypted) {
-        logmsg("olib", "malloc(%d) failed for encrypted buffer", OLIB_MAX_FILE_SIZE);
+        logmsg("olib", "malloc(%zu) failed for encrypted buffer", alloc);
         return -1;
     }
 
-    vlogmsg("olib", "📖 Reading exportLibrary.db...");
+    vlogmsg("olib", "📖 Reading exportLibrary.db (%u bytes)...", olib_size);
 
     size_t total_read = 0;
     int rrc = nfs_read_file(device_ip, nfs_port, olib_fh, encrypted,
-                            OLIB_MAX_FILE_SIZE, &total_read);
+                            alloc, &total_read);
     if (rrc != 0) {
         logmsg("olib", "Read error fetching exportLibrary.db from %s slot %s (rc=%d)",
                ip_to_str(device_ip), cdj_slot_name(slot), rrc);
