@@ -136,9 +136,13 @@ static int build_rpc_call(uint8_t *buf, uint32_t xid, uint32_t prog, uint32_t ve
     return pos;
 }
 
-/* Send RPC and receive reply using persistent socket */
-static int nfs_rpc_call(uint32_t server_ip, uint16_t port, const uint8_t *request, 
-                        size_t req_len, uint8_t *response, size_t max_resp) {
+/* Send RPC and receive reply using persistent socket.
+ * max_retries bounds the send/recv attempts: 3 for normal calls, 1 for the
+ * cheap probes the read loop fires while skipping over a silent region (a
+ * silent chunk costs max_retries × SO_RCVTIMEO, so probes must stay at 1). */
+static int nfs_rpc_call(uint32_t server_ip, uint16_t port, const uint8_t *request,
+                        size_t req_len, uint8_t *response, size_t max_resp,
+                        int max_retries) {
     /* Ensure socket is initialized */
     nfs_init_socket();
     if (nfs_sock < 0) {
@@ -157,7 +161,7 @@ static int nfs_rpc_call(uint32_t server_ip, uint16_t port, const uint8_t *reques
     ssize_t received = -1;
     int send_errno = 0;
     int recv_errno = 0;
-    for (int retry = 0; retry < 3; retry++) {
+    for (int retry = 0; retry < max_retries; retry++) {
         /* Send request */
         if (sendto(nfs_sock, request, req_len, 0, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
             send_errno = errno;
@@ -173,8 +177,8 @@ static int nfs_rpc_call(uint32_t server_ip, uint16_t port, const uint8_t *reques
     }
 
     if (received <= 0) {
-        logmsg("nfs", "rpc_call to %s:%u: no reply after 3 retries (send_errno=%d:%s recv_errno=%d:%s)",
-               ip_to_str(server_ip), port,
+        logmsg("nfs", "rpc_call to %s:%u: no reply after %d tr%s (send_errno=%d:%s recv_errno=%d:%s)",
+               ip_to_str(server_ip), port, max_retries, max_retries == 1 ? "y" : "ies",
                send_errno, send_errno ? strerror(send_errno) : "ok",
                recv_errno, recv_errno ? strerror(recv_errno) : "timeout");
     }
@@ -204,7 +208,7 @@ int rpc_portmap_getport(uint32_t server_ip, uint32_t program, uint32_t version) 
     pos += sizeof(portmap_getport_args_t);
     
     /* Send to portmapper on port 111 */
-    int received = nfs_rpc_call(server_ip, PORTMAPPER_PORT, request, pos, response, sizeof(response));
+    int received = nfs_rpc_call(server_ip, PORTMAPPER_PORT, request, pos, response, sizeof(response), 3);
     
     if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(portmap_getport_reply_t))) {
         logmsg("nfs", "PORTMAP getport(prog=%u vers=%u) from %s:111: short/no reply (%d bytes)",
@@ -260,7 +264,7 @@ int nfs_mount_to_port(uint32_t server_ip, uint16_t mount_port, const char *expor
         vlogmsg("cdj", "[NFS] Mount %s:%d export=%s", ip_to_str(server_ip), mount_port, export_path);
     }
     
-    int received = nfs_rpc_call(server_ip, mount_port, request, pos, response, sizeof(response));
+    int received = nfs_rpc_call(server_ip, mount_port, request, pos, response, sizeof(response), 3);
 
     /* Minimum: RPC reply header (24) + mount status (4) = 28 bytes.
      * Mount error replies carry no file handle. */
@@ -339,7 +343,7 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     }
     while (pos % 4 != 0) request[pos++] = 0;
     
-    int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, sizeof(response));
+    int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, sizeof(response), 3);
 
     /* Minimum: RPC reply header (24) + NFS status (4) = 28 bytes.
      * NFS error replies (NOENT/STALE/ACCES) carry no file handle, so they
@@ -415,84 +419,108 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                     file_fh[0], file_fh[1], file_fh[2], file_fh[3], nfs_port);
     }
     
-    size_t total_read = 0;
-    int eof = 0;
-    time_t deadline = time(NULL) + 10;  /* Hard 10-second limit for entire read */
+    /* Offset-addressed fill into a pre-zeroed buffer: any region we cannot
+     * read simply stays zero, so a "hole" costs nothing to represent. We fill
+     * [0, target) by offset; target is the real file size once the first good
+     * reply reports it, otherwise the caller's buffer cap.
+     *
+     * Two kinds of gap are crossed without aborting the whole fetch:
+     *   - NFSERR_IO: the server replies instantly, so skip one 8K page.
+     *   - transport silence: the server never replies (≈ retries × SO_RCVTIMEO),
+     *     so it is expensive — skip a stride that doubles on each consecutive
+     *     silent probe (8K → 1MB) and drop probes to a single attempt. A good
+     *     read resets the stride and restores robust 3-attempt reads. This
+     *     crosses a dead region in a handful of cheap probes instead of
+     *     thousands of stalls, which is also far gentler on the CDJ. */
+    #define NFS_READ_CHUNK    8192
+    #define NFS_READ_DEADLINE 20                 /* whole-file backstop (s)   */
+    #define NFS_PROBE_MAX     (1 * 1024 * 1024)  /* max silent-skip stride    */
 
-    /* 8 KB chunks. The CDJ-3000X NFS server appears to have an 8K-aligned
-     * page cache; reading in smaller chunks (4K tested) triggers IO errors
-     * on pages that 8K reads serve fine. Keep this at 8192. */
-    #define NFS_READ_CHUNK 8192
+    memset(buf, 0, buf_len);
 
-    /* NFSERR_IO skip tracking: zero-fill bad pages and continue. The 10s
-     * deadline above bounds runaway loops; there is no consecutive-error
-     * cap because some files have long contiguous bad clusters (likely
-     * sparse pages on marginal flash that the CDJ itself never reads). */
-    size_t skipped_total = 0;
-    int    skipped_pages = 0;
+    size_t   off       = 0;               /* next read position / fill offset */
+    size_t   target    = buf_len;         /* refined to file size on 1st read */
+    size_t   got       = 0;               /* bytes actually filled from server*/
+    size_t   holes     = 0;               /* bytes left as zero (skipped)     */
+    int      skips     = 0;               /* number of skip events            */
+    size_t   stride    = NFS_READ_CHUNK;  /* grows during a silent run        */
+    uint32_t file_size = 0;
+    int      got_first = 0;               /* read at least one good chunk?    */
+    int      eof       = 0;
+    time_t   deadline  = time(NULL) + NFS_READ_DEADLINE;
 
-    while (!eof && total_read < buf_len) {
+    while (!eof && off < target) {
         if (time(NULL) > deadline) {
-            size_t good = total_read - skipped_total;
-            logmsg("nfs", "READ timeout from %s:%u: %zu bytes after 10s (good=%zu, zero-filled=%zu across %d bad page(s))",
-                   ip_to_str(server_ip), nfs_port, total_read, good, skipped_total, skipped_pages);
-            *bytes_read = total_read;
-            return -1;
+            logmsg("nfs", "READ timeout from %s:%u after %ds at offset=%zu of %u — keeping partial",
+                   ip_to_str(server_ip), nfs_port, NFS_READ_DEADLINE, off, file_size);
+            break;  /* keep what we have — the rest is already zero */
         }
+
+        /* Cheap single-attempt probes while skipping a silent run; robust
+         * 3-attempt reads otherwise. */
+        int recovering = (stride > NFS_READ_CHUNK);
+
         uint8_t request[256];
         uint8_t *response = malloc(NFS_READ_CHUNK + 256);
         if (!response) {
             logmsg("nfs", "READ malloc failed (chunk=%d) at offset=%zu",
-                   NFS_READ_CHUNK + 256, total_read);
-            return -1;
+                   NFS_READ_CHUNK + 256, off);
+            break;
         }
-        
-        /* Use NFS version 2 */
+
         int pos = build_rpc_call(request, ++nfs_xid, NFS_PROGRAM, NFS_VERSION, NFS_PROC_READ, NULL, 0);
-        
-        /* NFS READ arguments using struct */
         nfs_read_args_t *args = (nfs_read_args_t *)(request + pos);
         memcpy(args->fh, file_fh, NFS_FHSIZE);
-        RPC_PUT_U32((uint8_t *)&args->offset, (uint32_t)total_read);
+        RPC_PUT_U32((uint8_t *)&args->offset, (uint32_t)off);
         RPC_PUT_U32((uint8_t *)&args->count, NFS_READ_CHUNK);
         RPC_PUT_U32((uint8_t *)&args->totalcount, 0);  /* Unused in NFSv2 */
         pos += sizeof(nfs_read_args_t);
-        
-        int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response, NFS_READ_CHUNK + 256);
+
+        int received = nfs_rpc_call(server_ip, nfs_port, request, pos, response,
+                                    NFS_READ_CHUNK + 256, recovering ? 1 : 3);
+
+        /* Transport silence: no usable reply. Can't even read offset 0 → the
+         * file is unreachable, hard-fail. Mid-file → leave the stride as a
+         * hole, skip ahead, and double the stride so a long dead region is
+         * crossed in a few probes. */
         if (received < (int)(sizeof(rpc_reply_header_t) + sizeof(uint32_t))) {
-            logmsg("nfs", "READ on %s:%u: transport short reply (%d bytes) at offset=%zu",
-                   ip_to_str(server_ip), nfs_port, received, total_read);
             free(response);
-            return -1;
+            if (!got_first) {
+                logmsg("nfs", "READ on %s:%u: no reply at offset 0 — file unreadable",
+                       ip_to_str(server_ip), nfs_port);
+                *bytes_read = 0;
+                return -1;
+            }
+            size_t skip = stride;
+            if (off + skip > target) skip = target - off;
+            off    += skip;
+            holes  += skip;
+            skips++;
+            stride  = (stride * 2 > NFS_PROBE_MAX) ? NFS_PROBE_MAX : stride * 2;
+            continue;
         }
 
-        /* Check RPC reply status */
         rpc_reply_header_t *rpc = (rpc_reply_header_t *)response;
-        uint32_t reply_stat = RPC_GET_U32((uint8_t *)&rpc->reply_stat);
-        if (reply_stat != RPC_MSG_ACCEPTED) {
-            logmsg("nfs", "READ on %s:%u: RPC rejected (reply_stat=%u) at offset=%zu",
-                   ip_to_str(server_ip), nfs_port, reply_stat, total_read);
+        if (RPC_GET_U32((uint8_t *)&rpc->reply_stat) != RPC_MSG_ACCEPTED) {
+            logmsg("nfs", "READ on %s:%u: RPC rejected at offset=%zu",
+                   ip_to_str(server_ip), nfs_port, off);
             free(response);
-            return -1;
+            if (!got_first) { *bytes_read = 0; return -1; }
+            off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
+            continue;
         }
 
-        /* Read NFS status — valid even on 28-byte error replies (no fattr) */
+        /* NFS status — valid even on 28-byte error replies (no fattr) */
         int rpos = sizeof(rpc_reply_header_t);
         uint32_t nfs_stat = RPC_GET_U32(response + rpos);
 
         if (nfs_stat != NFS_OK) {
-            /* NFSERR_IO at a specific page: the CDJ's NFS server refuses to
-             * serve this byte range. The CDJ itself plays fine because it
-             * only touches pages it needs (random access via SQLite/PDB
-             * indexes). Zero-fill and continue — if SQLite/PDB never needs
-             * this page, the parse succeeds anyway. */
             if (nfs_stat == NFSERR_IO) {
-                size_t skip = NFS_READ_CHUNK;
-                if (total_read + skip > buf_len) skip = buf_len - total_read;
-                memset(buf + total_read, 0, skip);
-                total_read   += skip;
-                skipped_total += skip;
-                skipped_pages++;
+                /* Instant error reply — skip exactly one page, cheaply. The
+                 * CDJ itself plays fine because it only touches pages it needs
+                 * (random access via SQLite/PDB indexes), so if the parse never
+                 * needs this page it succeeds anyway. */
+                off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
                 free(response);
                 continue;
             }
@@ -501,47 +529,74 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                 (nfs_stat == NFSERR_STALE)  ? " (STALE — filehandle expired)" :
                 (nfs_stat == NFSERR_ACCES)  ? " (ACCES)" : "";
             logmsg("nfs", "READ on %s:%u nfs_stat=%u%s at offset=%zu",
-                   ip_to_str(server_ip), nfs_port, nfs_stat, stat_label, total_read);
+                   ip_to_str(server_ip), nfs_port, nfs_stat, stat_label, off);
             free(response);
-            return (nfs_stat == NFSERR_NOENT) ? -ENOENT : -1;
+            if (!got_first) {
+                *bytes_read = 0;
+                return (nfs_stat == NFSERR_NOENT) ? -ENOENT : -1;
+            }
+            off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
+            continue;
         }
-        
-        /* Skip status + fattr to get to data length */
+
+        /* Good reply. The fattr follows the 4-byte status; capture the real
+         * file size once and clamp the fill target to it. */
+        if (!got_first &&
+            received >= rpos + (int)sizeof(uint32_t) + (int)sizeof(nfs_fattr_t)) {
+            const nfs_fattr_t *fattr =
+                (const nfs_fattr_t *)(response + rpos + sizeof(uint32_t));
+            file_size = RPC_GET_U32((const uint8_t *)&fattr->size);
+            if (file_size > 0 && file_size <= buf_len) {
+                target = file_size;
+            } else if (file_size > buf_len) {
+                logmsg("nfs", "READ on %s:%u: file is %u bytes, exceeds %zu-byte cap — fetch will be partial",
+                       ip_to_str(server_ip), nfs_port, file_size, buf_len);
+            }
+            /* file_size == 0 is implausible — keep the EOF heuristic + cap. */
+        }
+
+        /* Skip status + fattr to reach the data length */
         rpos += sizeof(uint32_t) + sizeof(nfs_fattr_t);
-        
-        /* Data length */
         uint32_t data_size = RPC_GET_U32(response + rpos);
         rpos += 4;
-        
+
         if (data_size > NFS_READ_CHUNK || rpos + (int)data_size > received) {
             logmsg("nfs", "READ on %s:%u: invalid data_size=%u rpos=%d received=%d at offset=%zu",
-                   ip_to_str(server_ip), nfs_port, data_size, rpos, received, total_read);
+                   ip_to_str(server_ip), nfs_port, data_size, rpos, received, off);
             free(response);
-            return -1;
+            if (!got_first) { *bytes_read = 0; return -1; }
+            off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
+            continue;
         }
-        
+
         if (data_size == 0) {
-            eof = 1;
+            eof = 1;  /* genuine end of file */
         } else {
-            if (total_read + data_size > buf_len) {
-                data_size = buf_len - total_read;
-            }
-            memcpy(buf + total_read, response + rpos, data_size);
-            total_read += data_size;
-            
-            if (data_size < NFS_READ_CHUNK) {
-                eof = 1;
-            }
+            if (off + data_size > target) data_size = target - off;
+            memcpy(buf + off, response + rpos, data_size);
+            off       += data_size;
+            got       += data_size;
+            got_first  = 1;
+            stride     = NFS_READ_CHUNK;  /* success → out of any silent run */
+            if (data_size < NFS_READ_CHUNK) eof = 1;
         }
-        
+
         free(response);
     }
-    
-    *bytes_read = total_read;
-    if (skipped_total > 0) {
-        size_t good = total_read - skipped_total;
-        logmsg("nfs", "READ on %s:%u done: %zu bytes total — good=%zu, zero-filled=%zu across %d bad page(s)",
-               ip_to_str(server_ip), nfs_port, total_read, good, skipped_total, skipped_pages);
+
+    if (!got_first) {
+        logmsg("nfs", "READ on %s:%u: no data read", ip_to_str(server_ip), nfs_port);
+        *bytes_read = 0;
+        return -1;
+    }
+
+    /* On a clean EOF the contiguous end is the true size; otherwise the buffer
+     * is the full, zero-padded logical length. */
+    *bytes_read = eof ? off : target;
+
+    if (holes > 0) {
+        logmsg("nfs", "READ on %s:%u done: got %zu/%u bytes — %zu zero-filled across %d skip(s)",
+               ip_to_str(server_ip), nfs_port, got, file_size, holes, skips);
     }
     return 0;
 }
