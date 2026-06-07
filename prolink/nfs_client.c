@@ -411,6 +411,32 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port, const uint8_t *dir_fh,
     return 0;
 }
 
+/* ----- read-region diagnostics ------------------------------------------
+ * Track which byte ranges of a fetch were read OK, tried-and-failed, or
+ * skipped-untried (the stride jumped forward over them without ever issuing
+ * a read), so a holey read reports its real layout instead of one number. */
+typedef enum { RSEG_OK = 0, RSEG_FAIL, RSEG_UNTRIED } rseg_kind_t;
+
+#define RSEG_MAX   48   /* cap on tracked regions (coalesced runs)      */
+#define RSEG_BAR_W 48   /* width of the at-a-glance visualization bar   */
+
+typedef struct { size_t off, len; rseg_kind_t kind; } rseg_t;
+
+static void rseg_add(rseg_t *segs, int *n, int *truncated,
+                     size_t off, size_t len, rseg_kind_t kind) {
+    if (len == 0) return;
+    if (*n > 0) {
+        rseg_t *last = &segs[*n - 1];
+        if (last->kind == kind && last->off + last->len == off) {
+            last->len += len;   /* coalesce contiguous same-kind runs */
+            return;
+        }
+    }
+    if (*n >= RSEG_MAX) { *truncated = 1; return; }
+    segs[*n] = (rseg_t){ off, len, kind };
+    (*n)++;
+}
+
 /* NFS READ - read file data */
 int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                   uint8_t *buf, size_t buf_len, size_t *bytes_read) {
@@ -441,9 +467,14 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     size_t   off       = 0;               /* next read position / fill offset */
     size_t   target    = buf_len;         /* refined to file size on 1st read */
     size_t   got       = 0;               /* bytes actually filled from server*/
-    size_t   holes     = 0;               /* bytes left as zero (skipped)     */
+    size_t   fail_bytes    = 0;           /* tried, read failed → zero-filled */
+    size_t   untried_bytes = 0;           /* stride skipped, never probed     */
     int      skips     = 0;               /* number of skip events            */
     size_t   stride    = NFS_READ_CHUNK;  /* grows during a silent run        */
+
+    rseg_t   segs[RSEG_MAX];              /* region map for the summary       */
+    int      nsegs     = 0;
+    int      seg_trunc = 0;
     uint32_t file_size = 0;
     int      got_first = 0;               /* read at least one good chunk?    */
     int      eof       = 0;
@@ -493,8 +524,16 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
             }
             size_t skip = stride;
             if (off + skip > target) skip = target - off;
+            /* Only the first chunk was actually requested; the rest of the
+             * stride is jumped over without a probe. */
+            size_t tried = skip < NFS_READ_CHUNK ? skip : NFS_READ_CHUNK;
+            rseg_add(segs, &nsegs, &seg_trunc, off, tried, RSEG_FAIL);
+            fail_bytes += tried;
+            if (skip > tried) {
+                rseg_add(segs, &nsegs, &seg_trunc, off + tried, skip - tried, RSEG_UNTRIED);
+                untried_bytes += skip - tried;
+            }
             off    += skip;
-            holes  += skip;
             skips++;
             stride  = (stride * 2 > NFS_PROBE_MAX) ? NFS_PROBE_MAX : stride * 2;
             continue;
@@ -506,7 +545,9 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                    ip_to_str(server_ip), nfs_port, off);
             free(response);
             if (!got_first) { *bytes_read = 0; return -1; }
-            off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
+            size_t skip = (target - off < NFS_READ_CHUNK) ? target - off : NFS_READ_CHUNK;
+            rseg_add(segs, &nsegs, &seg_trunc, off, skip, RSEG_FAIL);
+            fail_bytes += skip; off += skip; skips++;
             continue;
         }
 
@@ -520,7 +561,9 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                  * CDJ itself plays fine because it only touches pages it needs
                  * (random access via SQLite/PDB indexes), so if the parse never
                  * needs this page it succeeds anyway. */
-                off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
+                size_t skip = (target - off < NFS_READ_CHUNK) ? target - off : NFS_READ_CHUNK;
+                rseg_add(segs, &nsegs, &seg_trunc, off, skip, RSEG_FAIL);
+                fail_bytes += skip; off += skip; skips++;
                 free(response);
                 continue;
             }
@@ -535,7 +578,9 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                 *bytes_read = 0;
                 return (nfs_stat == NFSERR_NOENT) ? -ENOENT : -1;
             }
-            off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
+            size_t skip = (target - off < NFS_READ_CHUNK) ? target - off : NFS_READ_CHUNK;
+            rseg_add(segs, &nsegs, &seg_trunc, off, skip, RSEG_FAIL);
+            fail_bytes += skip; off += skip; skips++;
             continue;
         }
 
@@ -565,7 +610,9 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
                    ip_to_str(server_ip), nfs_port, data_size, rpos, received, off);
             free(response);
             if (!got_first) { *bytes_read = 0; return -1; }
-            off += NFS_READ_CHUNK; holes += NFS_READ_CHUNK; skips++;
+            size_t skip = (target - off < NFS_READ_CHUNK) ? target - off : NFS_READ_CHUNK;
+            rseg_add(segs, &nsegs, &seg_trunc, off, skip, RSEG_FAIL);
+            fail_bytes += skip; off += skip; skips++;
             continue;
         }
 
@@ -574,6 +621,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         } else {
             if (off + data_size > target) data_size = target - off;
             memcpy(buf + off, response + rpos, data_size);
+            rseg_add(segs, &nsegs, &seg_trunc, off, data_size, RSEG_OK);
             off       += data_size;
             got       += data_size;
             got_first  = 1;
@@ -590,13 +638,56 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
         return -1;
     }
 
+    /* A short tail we never reached (deadline/break before target) is untried,
+     * not failed — record it so the map accounts for every byte. */
+    if (!eof && off < target) {
+        rseg_add(segs, &nsegs, &seg_trunc, off, target - off, RSEG_UNTRIED);
+        untried_bytes += target - off;
+    }
+
     /* On a clean EOF the contiguous end is the true size; otherwise the buffer
      * is the full, zero-padded logical length. */
     *bytes_read = eof ? off : target;
 
-    if (holes > 0) {
-        logmsg("nfs", "READ on %s:%u done: got %zu/%u bytes — %zu zero-filled across %d skip(s)",
-               ip_to_str(server_ip), nfs_port, got, file_size, holes, skips);
+    if (fail_bytes > 0 || untried_bytes > 0) {
+        logmsg("nfs", "READ on %s:%u done: %zu/%u read, %zu failed, %zu untried across %d skip(s)",
+               ip_to_str(server_ip), nfs_port, got, file_size,
+               fail_bytes, untried_bytes, skips);
+
+        /* At-a-glance bar: each cell is the dominant status over its slice of
+         * the file. # = read ok, x = failed, . = untried. */
+        char bar[RSEG_BAR_W + 1];
+        size_t span = *bytes_read ? *bytes_read : 1;
+        for (int c = 0; c < RSEG_BAR_W; c++) {
+            size_t cs = (size_t)c       * span / RSEG_BAR_W;
+            size_t ce = (size_t)(c + 1) * span / RSEG_BAR_W;
+            size_t ov[3] = { 0, 0, 0 };
+            for (int i = 0; i < nsegs; i++) {
+                size_t s = segs[i].off, e = s + segs[i].len;
+                size_t lo = s > cs ? s : cs;
+                size_t hi = e < ce ? e : ce;
+                if (lo < hi) ov[segs[i].kind] += hi - lo;
+            }
+            rseg_kind_t dom = RSEG_OK;
+            if (ov[RSEG_FAIL]    > ov[dom]) dom = RSEG_FAIL;
+            if (ov[RSEG_UNTRIED] > ov[dom]) dom = RSEG_UNTRIED;
+            bar[c] = dom == RSEG_OK ? '#' : (dom == RSEG_FAIL ? 'x' : '.');
+        }
+        bar[RSEG_BAR_W] = '\0';
+        logmsg("nfs", "READ on %s:%u  [%s]  (# ok  x fail  . untried)",
+               ip_to_str(server_ip), nfs_port, bar);
+
+        /* One line per region, with hex byte ranges. */
+        for (int i = 0; i < nsegs; i++) {
+            const char *lbl = segs[i].kind == RSEG_OK ? "READ OK"
+                            : segs[i].kind == RSEG_FAIL ? "FAIL" : "UNTRIED";
+            logmsg("nfs", "READ on %s:%u    0x%08zx - 0x%08zx  %-7s  (%zu bytes)",
+                   ip_to_str(server_ip), nfs_port,
+                   segs[i].off, segs[i].off + segs[i].len, lbl, segs[i].len);
+        }
+        if (seg_trunc)
+            logmsg("nfs", "READ on %s:%u    …(more regions than %d, truncated)",
+                   ip_to_str(server_ip), nfs_port, RSEG_MAX);
     }
     return 0;
 }
