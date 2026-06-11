@@ -422,8 +422,8 @@ int fetch_onelibrary_database(onelibrary_t *out, uint32_t device_ip, uint8_t slo
     vlogmsg("olib", "📖 Reading exportLibrary.db (%u bytes)...", olib_size);
 
     size_t total_read = 0;
-    int rrc = nfs_read_file(device_ip, nfs_port, olib_fh, encrypted,
-                            alloc, &total_read);
+    int rrc = nfs_read_file(device_ip, nfs_port, olib_fh, "exportLibrary.db",
+                            encrypted, alloc, &total_read);
     if (rrc != 0) {
         logmsg("olib", "Read error fetching exportLibrary.db from %s slot %s (rc=%d)",
                ip_to_str(device_ip), cdj_slot_name(slot), rrc);

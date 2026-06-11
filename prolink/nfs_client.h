@@ -88,9 +88,10 @@ int nfs_lookup(uint32_t server_ip, uint16_t nfs_port,
                const uint8_t *dir_fh, const char *name,
                uint8_t *file_fh, uint32_t *out_size);
 
-/* Read file contents */
+/* Read file contents. `name` is a label (filename/path) used only in the
+ * coverage log lines; may be NULL. */
 int nfs_read_file(uint32_t server_ip, uint16_t nfs_port,
-                  const uint8_t *file_fh,
+                  const uint8_t *file_fh, const char *name,
                   uint8_t *buf, size_t buf_len, size_t *bytes_read);
 
 /* Fetch a file by path (e.g. "/PIONEER/USBANLZ/.../ANLZ0001.EXT").

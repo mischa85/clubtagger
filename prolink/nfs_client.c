@@ -561,10 +561,11 @@ static int nfs_backfill_gap(uint32_t server_ip, uint16_t nfs_port,
 
 /* NFS READ - read file data */
 int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
-                  uint8_t *buf, size_t buf_len, size_t *bytes_read) {
+                  const char *name, uint8_t *buf, size_t buf_len, size_t *bytes_read) {
+    const char *nm = name ? name : "(file)";
     if (verbose) {
-        vlogmsg("cdj", "[NFS] READ file fh[0..3]=%02x%02x%02x%02x (port %u)",
-                    file_fh[0], file_fh[1], file_fh[2], file_fh[3], nfs_port);
+        vlogmsg("cdj", "[NFS] READ %s fh[0..3]=%02x%02x%02x%02x (port %u)",
+                    nm, file_fh[0], file_fh[1], file_fh[2], file_fh[3], nfs_port);
     }
 
     /* Offset-addressed fill into a pre-zeroed buffer: any region we cannot
@@ -582,8 +583,8 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     size_t   nchunks   = (buf_len + NFS_READ_CHUNK - 1) / NFS_READ_CHUNK;
     uint8_t *status    = calloc(nchunks ? nchunks : 1, 1);
     if (!status)
-        logmsg("nfs", "READ on %s:%u: status alloc failed — coverage map unavailable",
-               ip_to_str(server_ip), nfs_port);
+        logmsg("nfs", "READ %s on %s:%u: status alloc failed — coverage map unavailable",
+               nm, ip_to_str(server_ip), nfs_port);
 
     size_t   off       = 0;               /* next read position / fill offset */
     size_t   target    = buf_len;         /* refined to file size on 1st read */
@@ -600,8 +601,8 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     /* ---- forward pass ---- */
     while (!eof && off < target) {
         if (time(NULL) > deadline) {
-            logmsg("nfs", "READ timeout from %s:%u after %ds at offset=%zu of %u — keeping partial",
-                   ip_to_str(server_ip), nfs_port, NFS_READ_DEADLINE, off, file_size);
+            logmsg("nfs", "READ %s timeout from %s:%u after %ds at offset=%zu of %u — keeping partial",
+                   nm, ip_to_str(server_ip), nfs_port, NFS_READ_DEADLINE, off, file_size);
             break;  /* keep what we have — the rest is already zero */
         }
 
@@ -615,8 +616,8 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
 
         if (r == NREAD_SILENT) {
             if (!got_first) {
-                logmsg("nfs", "READ on %s:%u: no reply at offset 0 — file unreadable",
-                       ip_to_str(server_ip), nfs_port);
+                logmsg("nfs", "READ %s on %s:%u: no reply at offset 0 — file unreadable",
+                       nm, ip_to_str(server_ip), nfs_port);
                 free(status); *bytes_read = 0; return -1;
             }
             /* The probed chunk was tried (failed); the rest of the stride is
@@ -655,8 +656,8 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
             if (fsize > 0 && fsize <= buf_len) {
                 target = fsize;
             } else if (fsize > buf_len) {
-                logmsg("nfs", "READ on %s:%u: file is %u bytes, exceeds %zu-byte cap — fetch will be partial",
-                       ip_to_str(server_ip), nfs_port, fsize, buf_len);
+                logmsg("nfs", "READ %s on %s:%u: file is %u bytes, exceeds %zu-byte cap — fetch will be partial",
+                       nm, ip_to_str(server_ip), nfs_port, fsize, buf_len);
             }
         }
         /* Resumed past a silent run → the CDJ is responsive now, so seek back
@@ -675,7 +676,7 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     }
 
     if (!got_first) {
-        logmsg("nfs", "READ on %s:%u: no data read", ip_to_str(server_ip), nfs_port);
+        logmsg("nfs", "READ %s on %s:%u: no data read", nm, ip_to_str(server_ip), nfs_port);
         free(status); *bytes_read = 0; return -1;
     }
 
@@ -684,8 +685,8 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
     /* A trailing silent run never resumes, so its gap was never back-filled —
      * those chunks stay UNTRIED (the dead tail), which is the honest report. */
     if (refilled)
-        logmsg("nfs", "READ on %s:%u: back-fill recovered %d chunk(s) (%d KB)",
-               ip_to_str(server_ip), nfs_port, refilled,
+        logmsg("nfs", "READ %s on %s:%u: back-fill recovered %d chunk(s) (%d KB)",
+               nm, ip_to_str(server_ip), nfs_port, refilled,
                refilled * NFS_READ_CHUNK / 1024);
 
     /* ---- derive byte counters + region map from the per-chunk status ---- */
@@ -705,46 +706,46 @@ int nfs_read_file(uint32_t server_ip, uint16_t nfs_port, const uint8_t *file_fh,
             rseg_add(segs, &nsegs, &seg_trunc, coff, clen, k);
         }
 
-        if (fail_bytes > 0 || untried_bytes > 0) {
-            logmsg("nfs", "READ on %s:%u done: %zu/%u read, %zu failed, %zu untried across %d skip(s)",
-                   ip_to_str(server_ip), nfs_port, ok_bytes, file_size,
-                   fail_bytes, untried_bytes, skips);
+        /* Always report coverage for every NFS read — clean or holey. */
+        const char *tag = (fail_bytes || untried_bytes) ? "" : " (clean)";
+        logmsg("nfs", "READ %s on %s:%u done: %zu/%u read, %zu failed, %zu untried, %d skip(s)%s",
+               nm, ip_to_str(server_ip), nfs_port, ok_bytes, file_size,
+               fail_bytes, untried_bytes, skips, tag);
 
-            /* At-a-glance bar: each cell is the dominant status over its slice
-             * of the file. # = read ok, x = failed, . = untried. */
-            char bar[RSEG_BAR_W + 1];
-            size_t span = used ? used : 1;
-            for (int b = 0; b < RSEG_BAR_W; b++) {
-                size_t cs = (size_t)b       * span / RSEG_BAR_W;
-                size_t ce = (size_t)(b + 1) * span / RSEG_BAR_W;
-                size_t ov[3] = { 0, 0, 0 };
-                for (int i = 0; i < nsegs; i++) {
-                    size_t s = segs[i].off, e = s + segs[i].len;
-                    size_t lo = s > cs ? s : cs;
-                    size_t hi = e < ce ? e : ce;
-                    if (lo < hi) ov[segs[i].kind] += hi - lo;
-                }
-                rseg_kind_t dom = RSEG_OK;
-                if (ov[RSEG_FAIL]    > ov[dom]) dom = RSEG_FAIL;
-                if (ov[RSEG_UNTRIED] > ov[dom]) dom = RSEG_UNTRIED;
-                bar[b] = dom == RSEG_OK ? '#' : (dom == RSEG_FAIL ? 'x' : '.');
-            }
-            bar[RSEG_BAR_W] = '\0';
-            logmsg("nfs", "READ on %s:%u  [%s]  (# ok  x fail  . untried)",
-                   ip_to_str(server_ip), nfs_port, bar);
-
-            /* One line per region, with hex byte ranges. */
+        /* At-a-glance bar, severity-priority so even a single failed page is
+         * visible: any fail in a cell → 'x', else any untried → '.', else ok. */
+        char bar[RSEG_BAR_W + 1];
+        size_t span = used ? used : 1;
+        for (int b = 0; b < RSEG_BAR_W; b++) {
+            size_t cs = (size_t)b       * span / RSEG_BAR_W;
+            size_t ce = (size_t)(b + 1) * span / RSEG_BAR_W;
+            size_t ov[3] = { 0, 0, 0 };
             for (int i = 0; i < nsegs; i++) {
-                const char *lbl = segs[i].kind == RSEG_OK ? "READ OK"
-                                : segs[i].kind == RSEG_FAIL ? "FAIL" : "UNTRIED";
-                logmsg("nfs", "READ on %s:%u    0x%08zx - 0x%08zx  %-7s  (%zu bytes)",
-                       ip_to_str(server_ip), nfs_port,
-                       segs[i].off, segs[i].off + segs[i].len, lbl, segs[i].len);
+                size_t s = segs[i].off, e = s + segs[i].len;
+                size_t lo = s > cs ? s : cs;
+                size_t hi = e < ce ? e : ce;
+                if (lo < hi) ov[segs[i].kind] += hi - lo;
             }
-            if (seg_trunc)
-                logmsg("nfs", "READ on %s:%u    …(more regions than %d, truncated)",
-                       ip_to_str(server_ip), nfs_port, RSEG_MAX);
+            bar[b] = ov[RSEG_FAIL] ? 'x' : (ov[RSEG_UNTRIED] ? '.' : '#');
         }
+        bar[RSEG_BAR_W] = '\0';
+        logmsg("nfs", "READ %s on %s:%u  [%s]  (# ok  x fail  . untried)",
+               nm, ip_to_str(server_ip), nfs_port, bar);
+
+        /* One line per region, with hex byte ranges. */
+        for (int i = 0; i < nsegs; i++) {
+            const char *lbl = segs[i].kind == RSEG_OK ? "READ OK"
+                            : segs[i].kind == RSEG_FAIL ? "FAIL" : "UNTRIED";
+            logmsg("nfs", "READ %s on %s:%u    0x%08zx - 0x%08zx  %-7s  (%zu bytes)",
+                   nm, ip_to_str(server_ip), nfs_port,
+                   segs[i].off, segs[i].off + segs[i].len, lbl, segs[i].len);
+        }
+        if (seg_trunc)
+            logmsg("nfs", "READ %s on %s:%u    …(more regions than %d, truncated)",
+                   nm, ip_to_str(server_ip), nfs_port, RSEG_MAX);
+    } else {
+        logmsg("nfs", "READ %s on %s:%u done: %zu bytes (coverage map unavailable)",
+               nm, ip_to_str(server_ip), nfs_port, *bytes_read);
     }
 
     free(status);
@@ -822,7 +823,7 @@ int nfs_fetch_path(uint32_t server_ip, uint16_t nfs_port, uint16_t mount_port,
     }
 
     /* Read the file */
-    int rc = nfs_read_file(server_ip, nfs_port, file_fh, buf, buf_len, bytes_read);
+    int rc = nfs_read_file(server_ip, nfs_port, file_fh, path, buf, buf_len, bytes_read);
     nfs_close_socket();
     if (rc == -ENOENT) {
         logmsg("nfs", "fetch_path: READ NOENT for %s — file vanished mid-fetch (will not retry)", path);

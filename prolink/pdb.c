@@ -476,7 +476,7 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     vlogmsg("pdb", "📖 Reading export.pdb (%u bytes)...", pdb_size);
 
     size_t total_read = 0;
-    int rrc = nfs_read_file(device_ip, nfs_port, pdb_fh, pdb_data, alloc, &total_read);
+    int rrc = nfs_read_file(device_ip, nfs_port, pdb_fh, "export.pdb", pdb_data, alloc, &total_read);
     if (rrc != 0) {
         logmsg("pdb", "❌ Read error fetching export.pdb from %s slot %s (rc=%d)",
                ip_to_str(device_ip), cdj_slot_name(slot), rrc);
