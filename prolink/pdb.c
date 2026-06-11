@@ -494,9 +494,11 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
     
     /* Parse the PDB */
     if (parse_pdb_file(pdb_data, total_read, db) != 0) {
-        logmsg("pdb", "⚠️ PDB parse found no tracks");
+        logmsg("pdb", "📚 PDB loaded: 0 tracks from %s @ %s (parse found no tracks)",
+               cdj_slot_name(slot), ip_to_str(device_ip));
     } else {
-        logmsg("pdb", "✅ Loaded %d tracks from database", db->track_count);
+        logmsg("pdb", "📚 PDB loaded: %d tracks from %s @ %s",
+               db->track_count, cdj_slot_name(slot), ip_to_str(device_ip));
     }
     
     free(pdb_data);

@@ -193,14 +193,20 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
         return -1;
     }
 
-    /* Query track count */
+    /* Count tracks by stepping rows, not COUNT(*). A holey DB (zero-filled
+     * pages from an incomplete NFS fetch) makes a full-table aggregate abort
+     * with SQLITE_CORRUPT and report 0 — even though per-id lookups still work
+     * for every track outside the bad page. Stepping row-by-row keeps the
+     * count of every row reachable before a corrupt page, so a partial DB
+     * reports a real (floor) count instead of zero. */
     int track_count = 0;
+    int partial = 0;
     sqlite3_stmt *stmt = NULL;
-    rc = sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM content", -1, &stmt, NULL);
+    rc = sqlite3_prepare_v2(db, "SELECT content_id FROM content", -1, &stmt, NULL);
     if (rc == SQLITE_OK) {
-        if (sqlite3_step(stmt) == SQLITE_ROW) {
-            track_count = sqlite3_column_int(stmt, 0);
-        }
+        int sr;
+        while ((sr = sqlite3_step(stmt)) == SQLITE_ROW) track_count++;
+        if (sr != SQLITE_DONE) partial = 1;   /* hit a corrupt/zero-filled page */
         sqlite3_finalize(stmt);
     }
 
@@ -211,10 +217,9 @@ int onelibrary_open(onelibrary_t *olib, uint8_t *decrypted_data, size_t data_len
     olib->track_count = track_count;
     olib->fetched_at = time(NULL);
 
-    logmsg("olib", "📚 OneLibrary loaded: %d tracks from %s @ %s",
-           track_count,
-           slot == 3 ? "USB" : (slot == 2 ? "SD" : "?"),
-           ip_to_str(device_ip));
+    logmsg("olib", "📚 OneLibrary loaded: %d tracks from %s @ %s%s",
+           track_count, cdj_slot_name(slot), ip_to_str(device_ip),
+           partial ? " (partial — DB has unreadable pages)" : "");
 
     /* Log content_id range for small libraries (debugging ID mismatches) */
     if (track_count > 0 && track_count <= 5) {
