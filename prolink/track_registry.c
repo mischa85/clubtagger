@@ -180,15 +180,18 @@ int track_registry_winner(track_key_t key, track_identity_t *out) {
         return 0;
     }
 
-    /* Pick primary for title/artist. */
+    /* Pick primary for title/artist. Prefer the local databases (OneLibrary,
+     * then PDB); fall back to DBServer only when neither local DB has the
+     * track. DBServer still resolves and emits, so it stays a live backup and
+     * a cross-check (disagreements surface via the verified/disputed flags). */
     const candidate_t *primary = NULL;
     resolver_id_t primary_id = RES__COUNT;
-    if (db->filled && db->title[0]) {
-        primary = db;  primary_id = RES_DBSERVER;
-    } else if (ol->filled && ol->title[0]) {
+    if (ol->filled && ol->title[0]) {
         primary = ol;  primary_id = RES_ONELIBRARY;
     } else if (pd->filled && pd->title[0]) {
         primary = pd;  primary_id = RES_PDB;
+    } else if (db->filled && db->title[0]) {
+        primary = db;  primary_id = RES_DBSERVER;
     }
 
     if (primary) {

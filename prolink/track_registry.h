@@ -11,11 +11,12 @@
  * integer space but mean different things).
  *
  * Composition policy:
- *   - title/artist: DBServer wins (CDJ-live, no parsing); OneLibrary/PDB
- *     fall back when DBServer hasn't answered.
+ *   - title/artist: local DBs win — OneLibrary, then PDB; DBServer is the
+ *     fallback when neither local DB has the track (kept as a live backup
+ *     and cross-check).
  *   - isrc, anlz_path: OneLibrary or PDB. Adopted only if title/artist
- *     agrees with DBServer (or DBServer hasn't answered). Dropped on
- *     disagreement; disputed=1 is set so callers can log a parser-bug warning.
+ *     agrees with the primary. Dropped on disagreement; disputed=1 is set
+ *     so callers can log a parser-bug warning.
  *
  * Step 1: passive data structure only. Resolvers don't yet emit; readers
  * don't yet consume. Hook-up happens in subsequent commits.
