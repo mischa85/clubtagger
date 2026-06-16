@@ -56,6 +56,121 @@ static inline uint16_t get_msg_type(const uint8_t *buf, size_t msg_start) {
             buf[msg_start + DBMSG_OFF_MSG_TYPE_VALUE + 1];
 }
 
+/* Is `v` one of the known rekordbox menu-item attribute types? */
+static inline int is_menu_item_type(uint32_t v) {
+    switch (v) {
+        case MENU_FOLDER: case MENU_ALBUM: case MENU_DISC: case MENU_TRACK_TITLE:
+        case MENU_GENRE: case MENU_ARTIST: case MENU_PLAYLIST: case MENU_RATING:
+        case MENU_DURATION: case MENU_TEMPO: case MENU_LABEL: case MENU_KEY:
+        case MENU_BITRATE: case MENU_YEAR: case MENU_COMMENT: case MENU_DATE_ADDED:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
+/*
+ * Read one menu-item row at msg_start (a DBMSG_MENU_ITEM): its value string
+ * (label1) into `label`, and its attribute type into *out_type. The row args
+ * are laid out as id1, id2, label1(string), label2(string), itemType(int32),…
+ * so the type is the first recognized menu-type int32 *after* the label (the
+ * leading id1/id2 ints precede it and can't be mistaken for it). Returns 1 if
+ * a label was read.
+ */
+static int read_menu_item(const uint8_t *resp, size_t len, size_t msg_start,
+                          char *label, size_t label_sz, uint32_t *out_type) {
+    label[0] = '\0';
+    *out_type = 0xffffffff;
+
+    int args_off = dbmsg_args_offset(resp, len, msg_start);
+    if (args_off < 0) return 0;
+
+    int have_label = 0;
+    size_t p = (size_t)args_off;
+    while (p + 5 <= len && !is_dbserver_magic(&resp[p])) {
+        uint8_t f = resp[p];
+        if (f == DBFIELD_INT32) {
+            uint32_t v = ((uint32_t)resp[p+1] << 24) | ((uint32_t)resp[p+2] << 16) |
+                         ((uint32_t)resp[p+3] << 8)  |  (uint32_t)resp[p+4];
+            if (have_label && *out_type == 0xffffffff && is_menu_item_type(v))
+                *out_type = v;
+            p += 5;
+        } else if (f == DBFIELD_STRING) {
+            uint32_t sl = ((uint32_t)resp[p+1] << 24) | ((uint32_t)resp[p+2] << 16) |
+                          ((uint32_t)resp[p+3] << 8)  |  (uint32_t)resp[p+4];
+            if (sl >= 256 || p + 5 + (size_t)sl * 2 > len) break;
+            if (!have_label) {
+                char text[256] = {0};
+                if (utf16be_to_utf8(resp + p + 5, sl * 2, text, sizeof(text)) >= 1) {
+                    utf8_safe_copy(label, text, label_sz);
+                    have_label = 1;
+                }
+            }
+            p += 5 + (size_t)sl * 2;
+        } else if (f == DBFIELD_INT8)  { p += 2; }
+        else if (f == DBFIELD_INT16)   { p += 3; }
+        else if (f == DBFIELD_BINARY)  {
+            uint32_t bl = ((uint32_t)resp[p+1] << 24) | ((uint32_t)resp[p+2] << 16) |
+                          ((uint32_t)resp[p+3] << 8)  |  (uint32_t)resp[p+4];
+            p += 5 + (size_t)bl;
+        } else break;  /* unknown field — stop this item */
+    }
+    return have_label;
+}
+
+/*
+ * Parse a rekordbox menu response and assign each row's label to title/artist
+ * BY ITS ITEM TYPE, not by position. The old "first string = title, second
+ * string = artist" heuristic mis-assigned the musical-key row to the artist
+ * whenever a track had no artist tag — the empty artist row was skipped and
+ * the key row's string fell into the artist slot. Routing by MENU_TRACK_TITLE
+ * / MENU_ARTIST makes key/genre/etc. rows incapable of landing in the artist
+ * field. Returns 1 if title or artist was found.
+ */
+static int parse_menu_items_typed(const uint8_t *resp, size_t len,
+                                  char *title, size_t title_len,
+                                  char *artist, size_t artist_len) {
+    int found_title = 0, found_artist = 0;
+
+    for (size_t i = 0; i + DBMSG_MIN_HEADER_BYTES < len; i++) {
+        if (!is_dbserver_magic(&resp[i])) continue;
+        if (get_msg_type(resp, i) != DBMSG_MENU_ITEM) continue;
+
+        char     label[256];
+        uint32_t item_type;
+        if (!read_menu_item(resp, len, i, label, sizeof(label), &item_type)) continue;
+        if (!label[0]) continue;
+
+        if (item_type == MENU_TRACK_TITLE && !found_title) {
+            utf8_safe_copy(title, label, title_len);
+            found_title = 1;
+        } else if (item_type == MENU_ARTIST && !found_artist) {
+            utf8_safe_copy(artist, label, artist_len);
+            found_artist = 1;
+        }
+    }
+
+    /* Safety net: if no row carried a recognized type (e.g. an unexpected
+     * firmware layout where the type int32 isn't where we expect), fall back
+     * to the first menu item's string as the title so tracks still resolve.
+     * We deliberately do NOT guess the artist — mis-guessing it (the key) is
+     * the exact bug this function exists to prevent. */
+    if (!found_title) {
+        for (size_t i = 0; i + DBMSG_MIN_HEADER_BYTES < len; i++) {
+            if (!is_dbserver_magic(&resp[i])) continue;
+            if (get_msg_type(resp, i) != DBMSG_MENU_ITEM) continue;
+            char label[256]; uint32_t t;
+            if (read_menu_item(resp, len, i, label, sizeof(label), &t) && label[0]) {
+                utf8_safe_copy(title, label, title_len);
+                found_title = 1;
+                break;
+            }
+        }
+    }
+
+    return found_title || found_artist;
+}
+
 static int add_int32_field(uint8_t *buf, uint32_t value) {
     buf[0] = DBFIELD_INT32;
     buf[1] = (value >> 24) & 0xFF;
@@ -409,43 +524,10 @@ int dbserver_request_metadata_rekordbox(int sock, uint8_t device, uint8_t slot,
         return -1;
     }
 
-    /* Parse strings from menu items */
-    int found_title = 0, found_artist = 0;
-
-    for (int i = 0; i < received - 20; i++) {
-        if (is_dbserver_magic(&resp[i])) {
-
-            int msg_start = i;
-            if (msg_start + 13 > received) continue;
-
-            uint16_t msg_type = get_msg_type(resp, msg_start);
-
-            if (msg_type == DBMSG_MENU_ITEM) {
-                for (int j = msg_start + 30; j < received - 6 && j < msg_start + 512; j++) {
-                    if (resp[j] == DBFIELD_STRING) {
-                        uint32_t str_len = (resp[j+1] << 24) | (resp[j+2] << 16) |
-                                           (resp[j+3] << 8) | resp[j+4];
-
-                        if (str_len > 0 && str_len < 256 && j + 5 + (int)(str_len * 2) <= received) {
-                            char text[256] = {0};
-                            size_t k = utf16be_to_utf8(resp + j + 5, str_len * 2, text, sizeof(text));
-
-                            if (k >= 2) {
-                                if (!found_title) {
-                                    utf8_safe_copy(title, text, title_len);
-                                    found_title = 1;
-                                } else if (!found_artist) {
-                                    utf8_safe_copy(artist, text, artist_len);
-                                    found_artist = 1;
-                                }
-                            }
-                            j += 5 + str_len * 2 - 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    /* Parse menu items, routing each row to title/artist by its item type. */
+    parse_menu_items_typed(resp, (size_t)received, title, title_len, artist, artist_len);
+    int found_title  = (title[0]  != '\0');
+    int found_artist = (artist[0] != '\0');
 
     if (verbose) {
         vlogmsg("dbsrv", "Parse result: found_title=%d found_artist=%d", found_title, found_artist);
@@ -536,43 +618,10 @@ int dbserver_request_metadata_unanalyzed(int sock, uint8_t device, uint8_t slot,
         return -1;
     }
 
-    /* Parse strings */
-    int found_title = 0, found_artist = 0;
-
-    for (int i = 0; i < received - 20; i++) {
-        if (is_dbserver_magic(&resp[i])) {
-
-            int msg_start = i;
-            if (msg_start + 13 > received) continue;
-
-            uint16_t msg_type = get_msg_type(resp, msg_start);
-
-            if (msg_type == DBMSG_MENU_ITEM) {
-                for (int j = msg_start + 30; j < received - 6 && j < msg_start + 512; j++) {
-                    if (resp[j] == DBFIELD_STRING) {
-                        uint32_t str_len = (resp[j+1] << 24) | (resp[j+2] << 16) |
-                                           (resp[j+3] << 8) | resp[j+4];
-
-                        if (str_len > 0 && str_len < 256 && j + 5 + (int)(str_len * 2) <= received) {
-                            char text[256] = {0};
-                            size_t k = utf16be_to_utf8(resp + j + 5, str_len * 2, text, sizeof(text));
-
-                            if (k >= 2) {
-                                if (!found_title) {
-                                    utf8_safe_copy(title, text, title_len);
-                                    found_title = 1;
-                                } else if (!found_artist) {
-                                    utf8_safe_copy(artist, text, artist_len);
-                                    found_artist = 1;
-                                }
-                            }
-                            j += 5 + str_len * 2 - 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
+    /* Parse menu items, routing each row to title/artist by its item type. */
+    parse_menu_items_typed(resp, (size_t)received, title, title_len, artist, artist_len);
+    int found_title  = (title[0]  != '\0');
+    int found_artist = (artist[0] != '\0');
 
     if (!found_title && !found_artist) {
         logmsg("dbsrv", "Unanalyzed parse found no strings (id=%u %d bytes num_items=%u): %s",
@@ -883,42 +932,26 @@ void parse_dbserver_traffic(const uint8_t *data, size_t len,
         /* Handle menu item responses (contain title/artist) */
         else if (msg_type == DBMSG_MENU_ITEM) {
             /*
-             * MENU_ITEM contains strings. Format after header:
-             * Various int fields, then STRING fields (0x26 prefix)
-             * First string is usually title, second is artist
+             * Each MENU_ITEM is one attribute row. Route its value to title or
+             * artist by item type (not position) so key/genre/etc. rows can't
+             * be learned as the artist. A given menu item carries either the
+             * title or the artist; the cache merges them across messages.
              */
             char title[128] = {0};
             char artist[128] = {0};
             int found_title = 0, found_artist = 0;
-            
-            /* Scan for UTF-16 string fields */
-            for (size_t j = msg_start + 30; j + 6 < len && j < msg_start + 512; j++) {
-                if (data[j] != DBFIELD_STRING) continue;
-                
-                /* String field: 0x26 + length(4 bytes BE) + UTF-16BE data */
-                uint32_t str_len = (data[j + 1] << 24) | (data[j + 2] << 16) |
-                                   (data[j + 3] << 8) | data[j + 4];
-                
-                if (str_len == 0 || str_len > 512 || j + 5 + str_len * 2 > len) {
-                    continue;
+
+            char     label[256];
+            uint32_t item_type;
+            if (read_menu_item(data, len, msg_start, label, sizeof(label), &item_type)
+                && label[0]) {
+                if (item_type == MENU_TRACK_TITLE) {
+                    utf8_safe_copy(title, label, sizeof(title));
+                    found_title = 1;
+                } else if (item_type == MENU_ARTIST) {
+                    utf8_safe_copy(artist, label, sizeof(artist));
+                    found_artist = 1;
                 }
-                
-                char text[256];
-                size_t text_len = utf16be_to_utf8(data + j + 5, str_len * 2,
-                                                          text, sizeof(text));
-                
-                if (text_len >= 2) {
-                    if (!found_title) {
-                        strncpy(title, text, sizeof(title) - 1);
-                        found_title = 1;
-                    } else if (!found_artist) {
-                        strncpy(artist, text, sizeof(artist) - 1);
-                        found_artist = 1;
-                    }
-                }
-                
-                /* Skip past this string field */
-                j += 5 + str_len * 2 - 1;
             }
             
             /* If we found metadata, try to associate with a pending query */
