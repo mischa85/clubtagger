@@ -386,8 +386,12 @@ int fetch_onelibrary_database(onelibrary_t *out, uint32_t device_ip, uint8_t slo
         return mrc == -ENOENT ? -ENOENT : -1;
     }
 
-    /* Step 3: Lookup PIONEER/rekordbox/exportLibrary.db */
+    /* Step 3: Lookup PIONEER/rekordbox/exportLibrary.db. Some sticks (exported
+     * or copied via macOS) carry a hidden ".PIONEER" instead of "PIONEER";
+     * real CDJs read those, so fall back to the dotted name on NOENT. */
     int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh, NULL);
+    if (lrc == -ENOENT)
+        lrc = nfs_lookup(device_ip, nfs_port, root_fh, ".PIONEER", pioneer_fh, NULL);
     if (lrc != 0) {
         logmsg("olib", "PIONEER dir not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),

@@ -423,8 +423,12 @@ int fetch_rekordbox_database(uint32_t device_ip, uint8_t slot,
 
     vlogmsg("pdb", "✅ Mounted %s", export_path);
 
-    /* Step 3: Lookup PIONEER directory */
+    /* Step 3: Lookup PIONEER directory. Some sticks (exported or copied via
+     * macOS) carry a hidden ".PIONEER" instead of "PIONEER"; real CDJs read
+     * those, so fall back to the dotted name on NOENT. */
     int lrc = nfs_lookup(device_ip, nfs_port, root_fh, "PIONEER", pioneer_fh, NULL);
+    if (lrc == -ENOENT)
+        lrc = nfs_lookup(device_ip, nfs_port, root_fh, ".PIONEER", pioneer_fh, NULL);
     if (lrc != 0) {
         logmsg("pdb", "❌ PIONEER not found on %s slot %s%s",
                ip_to_str(device_ip), cdj_slot_name(slot),
