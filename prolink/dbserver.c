@@ -56,66 +56,72 @@ static inline uint16_t get_msg_type(const uint8_t *buf, size_t msg_start) {
             buf[msg_start + DBMSG_OFF_MSG_TYPE_VALUE + 1];
 }
 
-/* Is `v` one of the known rekordbox menu-item attribute types? */
-static inline int is_menu_item_type(uint32_t v) {
-    switch (v) {
-        case MENU_FOLDER: case MENU_ALBUM: case MENU_DISC: case MENU_TRACK_TITLE:
-        case MENU_GENRE: case MENU_ARTIST: case MENU_PLAYLIST: case MENU_RATING:
-        case MENU_DURATION: case MENU_TEMPO: case MENU_LABEL: case MENU_KEY:
-        case MENU_BITRATE: case MENU_YEAR: case MENU_COMMENT: case MENU_DATE_ADDED:
-            return 1;
-        default:
-            return 0;
-    }
-}
-
 /*
  * Read one menu-item row at msg_start (a DBMSG_MENU_ITEM): its value string
- * (label1) into `label`, and its attribute type into *out_type. The row args
- * are laid out as id1, id2, label1(string), label2(string), itemType(int32),…
- * so the type is the first recognized menu-type int32 *after* the label (the
- * leading id1/id2 ints precede it and can't be mistaken for it). Returns 1 if
- * a label was read.
+ * (label1) into `label`, and its attribute type into *out_type. Both are read
+ * by argument index (MENU_ITEM_ARG_LABEL1 / MENU_ITEM_ARG_ITEM_TYPE) — see the
+ * row layout in dbserver_protocol.h for why the type can't be recognized by
+ * value. Walking is bounded by the header's argc, so a row can never bleed
+ * into the next message. Returns 1 if a label was read.
  */
 static int read_menu_item(const uint8_t *resp, size_t len, size_t msg_start,
                           char *label, size_t label_sz, uint32_t *out_type) {
     label[0] = '\0';
-    *out_type = 0xffffffff;
+    *out_type = MENU_ITEM_TYPE_NONE;
+
+    if (msg_start + DBMSG_OFF_ARGC_VALUE >= len) {
+        vlogmsg("dbsrv", "menu item at %zu: truncated before argc (%zu bytes)",
+                msg_start, len);
+        return 0;
+    }
 
     int args_off = dbmsg_args_offset(resp, len, msg_start);
-    if (args_off < 0) return 0;
-
-    int have_label = 0;
-    size_t p = (size_t)args_off;
-    while (p + 5 <= len && !is_dbserver_magic(&resp[p])) {
-        uint8_t f = resp[p];
-        if (f == DBFIELD_INT32) {
-            uint32_t v = ((uint32_t)resp[p+1] << 24) | ((uint32_t)resp[p+2] << 16) |
-                         ((uint32_t)resp[p+3] << 8)  |  (uint32_t)resp[p+4];
-            if (have_label && *out_type == 0xffffffff && is_menu_item_type(v))
-                *out_type = v;
-            p += 5;
-        } else if (f == DBFIELD_STRING) {
-            uint32_t sl = ((uint32_t)resp[p+1] << 24) | ((uint32_t)resp[p+2] << 16) |
-                          ((uint32_t)resp[p+3] << 8)  |  (uint32_t)resp[p+4];
-            if (sl >= 256 || p + 5 + (size_t)sl * 2 > len) break;
-            if (!have_label) {
-                char text[256] = {0};
-                if (utf16be_to_utf8(resp + p + 5, sl * 2, text, sizeof(text)) >= 1) {
-                    utf8_safe_copy(label, text, label_sz);
-                    have_label = 1;
-                }
-            }
-            p += 5 + (size_t)sl * 2;
-        } else if (f == DBFIELD_INT8)  { p += 2; }
-        else if (f == DBFIELD_INT16)   { p += 3; }
-        else if (f == DBFIELD_BINARY)  {
-            uint32_t bl = ((uint32_t)resp[p+1] << 24) | ((uint32_t)resp[p+2] << 16) |
-                          ((uint32_t)resp[p+3] << 8)  |  (uint32_t)resp[p+4];
-            p += 5 + (size_t)bl;
-        } else break;  /* unknown field — stop this item */
+    if (args_off < 0) {
+        vlogmsg("dbsrv", "menu item at %zu: truncated before args (%zu bytes)",
+                msg_start, len);
+        return 0;
     }
-    return have_label;
+
+    uint8_t argc = resp[msg_start + DBMSG_OFF_ARGC_VALUE];
+    if (argc < MENU_ITEM_MIN_ARGS) {
+        vlogmsg("dbsrv", "menu item at %zu: %u args, need %d to reach item type",
+                msg_start, argc, MENU_ITEM_MIN_ARGS);
+    }
+
+    size_t p = (size_t)args_off;
+    for (uint8_t idx = 0; idx < argc && p < len; idx++) {
+        uint8_t f = resp[p];
+        if (f == DBFIELD_INT8) {
+            if (p + DBFIELD_SIZE_INT8 > len) break;
+            p += DBFIELD_SIZE_INT8;
+        } else if (f == DBFIELD_INT16) {
+            if (p + DBFIELD_SIZE_INT16 > len) break;
+            p += DBFIELD_SIZE_INT16;
+        } else if (f == DBFIELD_INT32) {
+            if (p + DBFIELD_SIZE_INT32 > len) break;
+            if (idx == MENU_ITEM_ARG_ITEM_TYPE)
+                *out_type = dbmsg_read_be32(&resp[p + 1]);
+            p += DBFIELD_SIZE_INT32;
+        } else if (f == DBFIELD_STRING || f == DBFIELD_BINARY) {
+            if (p + 5 > len) break;
+            uint32_t n = dbmsg_read_be32(&resp[p + 1]);
+            /* String lengths count UTF-16 code units, binary lengths bytes. */
+            size_t payload = (f == DBFIELD_STRING) ? (size_t)n * 2 : (size_t)n;
+            if (p + 5 + payload > len) break;
+            if (f == DBFIELD_STRING && idx == MENU_ITEM_ARG_LABEL1 && payload) {
+                char text[256] = {0};
+                if (utf16be_to_utf8(resp + p + 5, payload, text, sizeof(text)) >= 1)
+                    utf8_safe_copy(label, text, label_sz);
+            }
+            p += 5 + payload;
+        } else {
+            vlogmsg("dbsrv", "menu item at %zu: unknown field 0x%02x at arg%u",
+                    msg_start, f, idx);
+            break;
+        }
+    }
+
+    return label[0] != '\0';
 }
 
 /*
@@ -140,6 +146,9 @@ static int parse_menu_items_typed(const uint8_t *resp, size_t len,
         uint32_t item_type;
         if (!read_menu_item(resp, len, i, label, sizeof(label), &item_type)) continue;
         if (!label[0]) continue;
+
+        if (verbose > 1)
+            vlogmsg("dbsrv", "menu row type=0x%04x label='%s'", item_type, label);
 
         if (item_type == MENU_TRACK_TITLE && !found_title) {
             utf8_safe_copy(title, label, title_len);

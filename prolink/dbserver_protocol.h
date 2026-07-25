@@ -100,6 +100,37 @@ typedef enum {
 
 /*
  * ============================================================================
+ * Menu Item Row Layout (DBMSG_MENU_ITEM = 0x4101)
+ * ============================================================================
+ * A menu-item row carries 12 arguments. Verified against captured CDJ
+ * traffic (both root-menu and track-metadata renders):
+ *
+ *   arg0  int32   row id / parent id
+ *   arg1  int32   main id (track id, artist id, duration in seconds, …)
+ *   arg2  int32   byte length of label1
+ *   arg3  string  label1 — the row's value (track title, artist name, …)
+ *   arg4  int32   byte length of label2
+ *   arg5  string  label2 — secondary value, usually empty
+ *   arg6  int32   item type (menu_item_type_t: 0x0004 title, 0x0007 artist, …)
+ *   arg7+ int32   flags / artwork id / colour
+ *
+ * A track-metadata render is one row per attribute, e.g.
+ *   type=0x0004 label1="They Just Let You"   (title)
+ *   type=0x0007 label1="Cøre & Einerlei"     (artist)
+ *   type=0x0002 label1="Mystery Bodega Box"  (album)
+ *
+ * The two byte-length args are why the item type must be read by argument
+ * INDEX and never by scanning for "an int32 that looks like a type": arg4 is
+ * 2 for an empty label2, which is indistinguishable from MENU_ALBUM (0x0002).
+ */
+#define MENU_ITEM_ARG_LABEL1     3
+#define MENU_ITEM_ARG_LABEL2     5
+#define MENU_ITEM_ARG_ITEM_TYPE  6
+#define MENU_ITEM_MIN_ARGS       7          /* through the item-type arg */
+#define MENU_ITEM_TYPE_NONE      0xffffffffu /* no type read from the row */
+
+/*
+ * ============================================================================
  * Menu Location Constants
  * ============================================================================
  */
