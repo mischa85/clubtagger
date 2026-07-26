@@ -41,10 +41,14 @@ server {
         try_files $uri $uri/ =404;
     }
 
-    # WebSocket proxy to clubtagger Unix socket
-    # auth_basic off: WebSocket API doesn't send Basic Auth credentials
-    # reliably. The web page itself is auth-protected, so only
-    # authenticated users can discover the WS endpoint.
+    # WebSocket proxy to clubtagger Unix socket.
+    #
+    # auth_basic is off here because browsers don't reliably attach Basic Auth
+    # credentials to a WebSocket handshake. This endpoint is therefore
+    # UNAUTHENTICATED: anyone who can reach this host can connect to /ws and
+    # read the live deck and track stream. Basic auth on the page itself does
+    # not protect it — the URL is not a secret. Only expose this on a network
+    # you trust, or put a real check (token or session cookie) on the upgrade.
     location = /ws {
         auth_basic off;
         proxy_pass http://clubtagger;
