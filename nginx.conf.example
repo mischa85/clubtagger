@@ -1,13 +1,14 @@
 # Clubtagger nginx configuration example
 # Copy to /etc/nginx/sites-available/clubtagger and symlink to sites-enabled
 #
-# Generate self-signed cert:
+# Generate self-signed cert. Substitute <host-ip> with the address you browse
+# to — it must match, or the cert won't validate:
 #   mkdir -p /etc/nginx/ssl
 #   openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
 #     -keyout /etc/nginx/ssl/clubtagger.key \
 #     -out /etc/nginx/ssl/clubtagger.crt \
-#     -subj "/CN=192.168.178.100" \
-#     -addext "subjectAltName=IP:192.168.178.100"
+#     -subj "/CN=<host-ip>" \
+#     -addext "subjectAltName=IP:<host-ip>"
 #
 # Generate password file:
 #   htpasswd -Bc /etc/nginx/clubtagger.htpasswd <user>
