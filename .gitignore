@@ -29,3 +29,6 @@ core.*
 *.flac
 *.wav
 log*.txt
+
+# live field notes (kept local)
+LIVE-ISSUES-*.md
