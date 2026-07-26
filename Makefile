@@ -156,17 +156,6 @@ LDFLAGS  += $(LDFLAGS_EXTRA)
 
 all: $(APP)
 
-# Retro-ID: standalone retroactive track identification tool
-RETRO_OBJ     := retro-id.o shazam/shazam.o common.o
-RETRO_CFLAGS  := $(CSTD) $(OPT) $(WARN) $(FEATURE_MACROS) $(CURL_CFLAGS) $(FLAC_CFLAGS) $(VIBRA_CFLAGS)
-RETRO_LDFLAGS := $(CURL_LIBS) $(FLAC_LIBS) $(MATH_LIBS) $(VIBRA_LIBS)
-
-retro-id: $(RETRO_OBJ)
-	$(CC) $(RETRO_OBJ) -o $@ $(RETRO_LDFLAGS)
-
-retro-id.o: retro-id.c
-	$(CC) $(RETRO_CFLAGS) -I. -c $< -o $@
-
 debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(OPENSSL_CFLAGS) $(CFLAGS_EXTRA)
 debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) $(OPENSSL_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
 debug: clean $(APP)
@@ -225,6 +214,6 @@ ifdef ENABLE_AF_XDP
 endif
 
 clean:
-	$(RM) $(OBJ) $(APP) retro-id retro-id.o *.o audio/*.o shazam/*.o writer/*.o server/*.o db/*.o prolink/*.o
+	$(RM) $(OBJ) $(APP) *.o audio/*.o shazam/*.o writer/*.o server/*.o db/*.o prolink/*.o
 
-.PHONY: all debug clean install bpf retro-id
+.PHONY: all debug clean install bpf
