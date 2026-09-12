@@ -120,11 +120,11 @@ clubtagger has three main modes that can be combined:
 | `--format` | Output format: `wav` or `flac` | `wav` |
 | `--prefix` | Filename prefix | `capture` |
 | `--outdir` | Output directory | `.` |
-| `--max-file-sec` | Max seconds per file | `600` |
+| `--max-file-sec` | Max seconds per file | `120` |
 | `--ring-sec` | Ring buffer size | `max-file-sec + 60` |
 | `--threshold` | RMS threshold for music detection | `50` |
-| `--sustain-sec` | Seconds above threshold to start | `1.0` |
-| `--silence-sec` | Silence duration to stop | `15` |
+| `--sustain-sec` | Seconds above threshold to start | `3.0` |
+| `--silence-sec` | Silence duration to stop | `40` |
 
 The `--threshold` value is used for both recording triggers and Shazam fingerprinting.
 

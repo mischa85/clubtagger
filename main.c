@@ -73,8 +73,8 @@ static void usage(const char *argv0) {
             "\n"
             "Recording options (for --record):\n"
             "  --threshold 25         Avg abs amplitude trigger for recording\n"
-            "  --sustain-sec 1.0      Seconds above threshold to start recording\n"
-            "  --silence-sec 15       Seconds below threshold to stop recording\n"
+            "  --sustain-sec 3.0      Seconds above threshold to start recording\n"
+            "  --silence-sec 40       Seconds below threshold to stop recording\n"
             "  --prefix capture       Filename prefix\n"
             "  --outdir ./            Output directory for audio files\n"
             "  --format wav           Output format: 'wav' or 'flac'\n"
@@ -304,8 +304,8 @@ int main(int argc, char **argv) {
         .shazam_gap_sec = 20,
         .same_track_hold_sec = 120,
         .threshold = 25,
-        .sustain_sec = 1.0f,
-        .silence_sec = 15.0f,
+        .sustain_sec = 3.0f,
+        .silence_sec = 40.0f,
         .prefix = "capture",
         .source = NULL,         /* must be specified unless CDJ-only mode */
         .bytes_per_sample = 2,

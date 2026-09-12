@@ -18,10 +18,20 @@
 #include <time.h>
 #include <unistd.h>
 
+/* The writer loop inspects the last frames_per_read frames once per poll.
+ * Anything counted in polls (sustain window, silence counter) must be sized
+ * by this interval, not by frames_per_read: at 96 kHz a 1024-frame chunk is
+ * 10.7 ms of audio, so sizing in chunks made both timers run ~2.8x long. */
+#define WRITER_POLL_MS 30
+
+static unsigned polls_for_seconds(float sec) {
+    unsigned n = (unsigned)((sec * 1000.0f + (WRITER_POLL_MS - 1)) / WRITER_POLL_MS);
+    return n > 0 ? n : 1;
+}
+
 int writer_init_channel(ChannelState *cs, const Config *cfg) {
     size_t buf_size = (size_t)cfg->frames_per_read * cfg->channels * cfg->bytes_per_sample;
-    unsigned window_size = (unsigned)((cfg->sustain_sec * cfg->rate +
-                                       (cfg->frames_per_read - 1)) / cfg->frames_per_read);
+    unsigned window_size = polls_for_seconds(cfg->sustain_sec);
 
     cs->wrt_buf = (uint8_t *)malloc(buf_size);
     if (!cs->wrt_buf) {
@@ -83,13 +93,14 @@ void *writer_main(void *arg) {
 
     const size_t FR = cfg->frames_per_read;
     const int nch = cfg->slink_channel_count;
-    const unsigned silence_chunks_needed = (unsigned)((cfg->silence_sec * cfg->rate + (FR - 1)) / FR);
+    const unsigned silence_chunks_needed = polls_for_seconds(cfg->silence_sec);
     const unsigned trigger_pct = 60;
     const size_t max_file_frames = cfg->max_file_sec > 0 ? (size_t)cfg->max_file_sec * cfg->rate : 0;
 
     const char *fmt_str = cfg->format ? cfg->format : "wav";
-    logmsg("wrt", "started: thr=%u sustain=%.2fs silence=%.2fs format=%s outdir=%s channels=%d",
-           cfg->threshold, cfg->sustain_sec, cfg->silence_sec,
+    logmsg("wrt", "started: thr=%u sustain=%.2fs (%u polls) silence=%.2fs (%u polls) poll=%dms format=%s outdir=%s channels=%d",
+           cfg->threshold, cfg->sustain_sec, polls_for_seconds(cfg->sustain_sec),
+           cfg->silence_sec, silence_chunks_needed, WRITER_POLL_MS,
            fmt_str, cfg->outdir ? cfg->outdir : ".", nch);
 
     /* Initialize per-channel state */
@@ -244,7 +255,7 @@ void *writer_main(void *arg) {
             }
         }
 
-        struct timespec ts = {.tv_sec = 0, .tv_nsec = 30 * 1000 * 1000};
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = WRITER_POLL_MS * 1000L * 1000L};
         nanosleep(&ts, NULL);
     }
 
