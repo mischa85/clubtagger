@@ -5,6 +5,7 @@
 #include "common.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,73 @@ void ensure_dir(const char *path) {
     if (mkdir(path, 0755) != 0 && errno != EEXIST) {
         logmsg("wrt", "mkdir %s: %s", path, strerror(errno));
     }
+}
+
+/* Path for a file that is still being produced: <outdir>/.incoming/<basename>.
+ * A dot-directory is skipped by nginx autoindex, so half-written files are
+ * never visible to readers; same filesystem as the final path, so rename()
+ * is atomic. Returns 0 or -errno. */
+static int staging_path(char *out, size_t out_sz, const char *outdir, const char *final_name) {
+    const char *base = strrchr(final_name, '/');
+    base = base ? base + 1 : final_name;
+    char dir[520];
+    if (outdir && outdir[0]) snprintf(dir, sizeof(dir), "%s/.incoming", outdir);
+    else snprintf(dir, sizeof(dir), ".incoming");
+    ensure_dir(dir);
+    int n = snprintf(out, out_sz, "%s/%s", dir, base);
+    if (n < 0 || (size_t)n >= out_sz) return -ENAMETOOLONG;
+    return 0;
+}
+
+/* Publish an in-memory file: staging file, write, fsync, rename to final_name.
+ * Returns 0 or -errno; every failure is logged under `tag`. */
+static int publish_file(const char *tag, const char *outdir, const char *final_name,
+                        const uint8_t *buf, size_t len) {
+    char tmp[600];
+    int rc = staging_path(tmp, sizeof(tmp), outdir, final_name);
+    if (rc < 0) {
+        logmsg(tag, "staging path too long for %s", final_name);
+        return rc;
+    }
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        rc = -errno;
+        logmsg(tag, "open %s: %s", tmp, strerror(errno));
+        return rc;
+    }
+    size_t off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, buf + off, len - off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            rc = -errno;
+            logmsg(tag, "write %s: %s", tmp, strerror(errno));
+            close(fd);
+            unlink(tmp);
+            return rc;
+        }
+        off += (size_t)w;
+    }
+    if (fsync(fd) != 0) {
+        rc = -errno;
+        logmsg(tag, "fsync %s: %s", tmp, strerror(errno));
+        close(fd);
+        unlink(tmp);
+        return rc;
+    }
+    if (close(fd) != 0) {
+        rc = -errno;
+        logmsg(tag, "close %s: %s", tmp, strerror(errno));
+        unlink(tmp);
+        return rc;
+    }
+    if (rename(tmp, final_name) != 0) {
+        rc = -errno;
+        logmsg(tag, "rename %s -> %s: %s", tmp, final_name, strerror(errno));
+        unlink(tmp);
+        return rc;
+    }
+    return 0;
 }
 
 void build_audio_filename(char *out, size_t out_sz, const char *outdir,
@@ -289,14 +357,18 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
     size_t frame_bytes = channels * bytes_per_sample;
     unsigned bits = bytes_per_sample * 8;
 
-    char final_name[512], tmp_name[520];
+    char final_name[512], tmp_name[600];
     build_audio_filename(final_name, sizeof(final_name), outdir, prefix, NULL, "wav", start_time);
-    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp", final_name);
+    if (staging_path(tmp_name, sizeof(tmp_name), outdir, final_name) < 0) {
+        logmsg("wav", "staging path too long for %s", final_name);
+        return -ENAMETOOLONG;
+    }
 
     FILE *fp = fopen(tmp_name, "wb");
     if (!fp) {
-        logmsg("wav", "open %s: %s", tmp_name, strerror(errno));
-        return -1;
+        int err = errno;
+        logmsg("wav", "open %s: %s", tmp_name, strerror(err));
+        return -err;
     }
 
     uint32_t data_bytes = (uint32_t)(nframes * frame_bytes);
@@ -327,9 +399,10 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
     fclose(fp);
 
     if (rename(tmp_name, final_name) != 0) {
-        logmsg("wav", "rename %s -> %s: %s", tmp_name, final_name, strerror(errno));
+        int err = errno;
+        logmsg("wav", "rename %s -> %s: %s", tmp_name, final_name, strerror(err));
         unlink(tmp_name);
-        return -1;
+        return -err;
     }
 
     struct stat st;
@@ -341,36 +414,81 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
 }
 
 #ifdef HAVE_FLAC
+/* libFLAC stream callbacks over a FlacOutBuf. The encoder seeks back to
+ * patch STREAMINFO after finish(), hence pos separate from len. */
+static FLAC__StreamEncoderWriteStatus flac_mem_write(const FLAC__StreamEncoder *enc,
+                                                     const FLAC__byte buffer[], size_t bytes,
+                                                     uint32_t samples, uint32_t current_frame,
+                                                     void *client_data) {
+    (void)enc; (void)samples; (void)current_frame;
+    FlacOutBuf *o = (FlacOutBuf *)client_data;
+    if (o->pos + bytes > o->cap) {
+        size_t ncap = o->cap ? o->cap : (size_t)1 << 20;
+        while (ncap < o->pos + bytes) ncap *= 2;
+        uint8_t *nb = (uint8_t *)realloc(o->buf, ncap);
+        if (!nb) {
+            logmsg("flac", "OOM growing output buffer %zu -> %zu MB", o->cap >> 20, ncap >> 20);
+            return FLAC__STREAM_ENCODER_WRITE_STATUS_FATAL_ERROR;
+        }
+        logmsg("flac", "output buffer grown %zu -> %zu MB", o->cap >> 20, ncap >> 20);
+        o->buf = nb;
+        o->cap = ncap;
+    }
+    memcpy(o->buf + o->pos, buffer, bytes);
+    o->pos += bytes;
+    if (o->pos > o->len) o->len = o->pos;
+    return FLAC__STREAM_ENCODER_WRITE_STATUS_OK;
+}
+
+static FLAC__StreamEncoderSeekStatus flac_mem_seek(const FLAC__StreamEncoder *enc,
+                                                   FLAC__uint64 absolute_byte_offset,
+                                                   void *client_data) {
+    (void)enc;
+    FlacOutBuf *o = (FlacOutBuf *)client_data;
+    if (absolute_byte_offset > o->len) return FLAC__STREAM_ENCODER_SEEK_STATUS_ERROR;
+    o->pos = (size_t)absolute_byte_offset;
+    return FLAC__STREAM_ENCODER_SEEK_STATUS_OK;
+}
+
+static FLAC__StreamEncoderTellStatus flac_mem_tell(const FLAC__StreamEncoder *enc,
+                                                   FLAC__uint64 *absolute_byte_offset,
+                                                   void *client_data) {
+    (void)enc;
+    FlacOutBuf *o = (FlacOutBuf *)client_data;
+    *absolute_byte_offset = o->pos;
+    return FLAC__STREAM_ENCODER_TELL_STATUS_OK;
+}
+
 int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
                                  size_t ring_start, size_t nframes,
                                  unsigned channels, unsigned rate, int bytes_per_sample,
                                  int32_t *flac_buf, size_t flac_buf_samples,
+                                 FlacOutBuf *out,
                                  const char *outdir, const char *prefix, time_t start_time,
                                  Peaks *peaks, const SegmentMeta *meta) {
-    if (!ring || nframes == 0) {
-        logmsg("flac", "audiobuf_write_flac_ring: invalid input ring=%p nframes=%zu prefix=%s",
-               (const void *)ring, nframes, prefix ? prefix : "(null)");
-        return -1;
+    if (!ring || nframes == 0 || !out) {
+        logmsg("flac", "audiobuf_write_flac_ring: invalid input ring=%p nframes=%zu out=%p prefix=%s",
+               (const void *)ring, nframes, (const void *)out, prefix ? prefix : "(null)");
+        return -EINVAL;
     }
 
     size_t total_samples = nframes * channels;
     if (!flac_buf || flac_buf_samples < total_samples) {
         logmsg("flac", "flac_buf too small: need %zu, have %zu", total_samples, flac_buf_samples);
-        return -1;
+        return -EINVAL;
     }
 
     ensure_dir(outdir);
 
     size_t frame_bytes = channels * bytes_per_sample;
 
-    char final_name[512], tmp_name[520];
+    char final_name[512];
     build_audio_filename(final_name, sizeof(final_name), outdir, prefix, NULL, "flac", start_time);
-    snprintf(tmp_name, sizeof(tmp_name), "%s.tmp", final_name);
 
     FLAC__StreamEncoder *encoder = FLAC__stream_encoder_new();
     if (!encoder) {
         logmsg("flac", "encoder_new failed");
-        return -1;
+        return -ENOMEM;
     }
 
     unsigned bits = bytes_per_sample * 8;
@@ -380,12 +498,15 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
     FLAC__stream_encoder_set_compression_level(encoder, 5);
     FLAC__stream_encoder_set_total_samples_estimate(encoder, nframes);
 
+    out->len = 0;
+    out->pos = 0;
     FLAC__StreamEncoderInitStatus init_status =
-        FLAC__stream_encoder_init_file(encoder, tmp_name, NULL, NULL);
+        FLAC__stream_encoder_init_stream(encoder, flac_mem_write, flac_mem_seek, flac_mem_tell,
+                                         NULL, out);
     if (init_status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
         logmsg("flac", "init failed: %s", FLAC__StreamEncoderInitStatusString[init_status]);
         FLAC__stream_encoder_delete(encoder);
-        return -1;
+        return -EIO;
     }
 
     /* Convert ring samples to int32 — one pass, handling wrap */
@@ -423,28 +544,19 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
         size_t n = (nframes - pos < chunk_frames) ? (nframes - pos) : chunk_frames;
         ok = FLAC__stream_encoder_process_interleaved(encoder, flac_buf + pos * channels, (unsigned)n);
     }
+    if (ok) ok = FLAC__stream_encoder_finish(encoder);
 
     if (!ok) {
         logmsg("flac", "encode failed: %s", FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(encoder)]);
-        FLAC__stream_encoder_finish(encoder);
         FLAC__stream_encoder_delete(encoder);
-        unlink(tmp_name);
-        return -1;
+        return -EIO;
     }
-
-    FLAC__stream_encoder_finish(encoder);
     FLAC__stream_encoder_delete(encoder);
 
-    if (rename(tmp_name, final_name) != 0) {
-        logmsg("flac", "rename %s -> %s: %s", tmp_name, final_name, strerror(errno));
-        unlink(tmp_name);
-        return -1;
-    }
+    int rc = publish_file("flac", outdir, final_name, out->buf, out->len);
+    if (rc < 0) return rc;
 
-    struct stat st;
-    int64_t file_size = 0;
-    if (stat(final_name, &st) == 0) file_size = (int64_t)st.st_size;
-
+    int64_t file_size = (int64_t)out->len;
     logmsg("flac", "wrote %s (%.1f sec, %.1f MB)", final_name,
            (double)nframes / rate, (double)file_size / (1024 * 1024));
 
@@ -462,17 +574,18 @@ int64_t audiobuf_write_ring(const uint8_t *ring, size_t ring_capacity,
                             size_t ring_start, size_t nframes,
                             unsigned channels, unsigned rate, int bytes_per_sample,
                             int32_t *flac_buf, size_t flac_buf_samples,
+                            FlacOutBuf *out,
                             const char *outdir, const char *prefix, const char *format,
                             time_t start_time, Peaks *peaks, const SegmentMeta *meta) {
 #ifdef HAVE_FLAC
     if (format && strcmp(format, "flac") == 0) {
         return audiobuf_write_flac_ring(ring, ring_capacity, ring_start, nframes,
                                         channels, rate, bytes_per_sample,
-                                        flac_buf, flac_buf_samples,
+                                        flac_buf, flac_buf_samples, out,
                                         outdir, prefix, start_time, peaks, meta);
     }
 #else
-    (void)flac_buf; (void)flac_buf_samples; (void)peaks; (void)meta;
+    (void)flac_buf; (void)flac_buf_samples; (void)out; (void)peaks; (void)meta;
     if (format && strcmp(format, "flac") == 0) {
         logmsg("wrt", "FLAC not available, falling back to WAV");
     }

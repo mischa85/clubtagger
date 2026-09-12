@@ -150,6 +150,16 @@ typedef struct {
     size_t   flac_buf_samples;
 } AudioBuffer;
 
+/* Reusable in-memory output buffer for one encoded FLAC segment. libFLAC
+ * writes (and seeks back to patch STREAMINFO) into it; the finished file is
+ * then published with a single write + fsync + rename. */
+typedef struct {
+    uint8_t *buf;
+    size_t   cap;
+    size_t   len;   /* bytes of valid data */
+    size_t   pos;   /* encoder write position */
+} FlacOutBuf;
+
 /* ─────────────────────────────────────────────────────────────────────────────
  * AsyncWriter - fixed-size ring buffer with async disk writes
  * 
@@ -177,6 +187,9 @@ typedef struct {
     int32_t        *flac_buf;
     size_t          flac_buf_samples;
     size_t          max_write_frames; /* max frames per write (= max_file_sec * rate) */
+
+    /* Encoded segment, built in memory before it is published */
+    FlacOutBuf      flac_out;
 
     /* Waveform peaks for the sidecar written next to each segment */
     Peaks           peaks;

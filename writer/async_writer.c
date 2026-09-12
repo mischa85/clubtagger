@@ -39,7 +39,7 @@ static int64_t asyncwr_do_write(AsyncWriter *aw, size_t from, size_t to,
     int64_t file_size = audiobuf_write_ring(
         aw->data, aw->capacity, ring_start, nframes,
         aw->channels, aw->rate, aw->bytes_per_sample,
-        aw->flac_buf, aw->flac_buf_samples,
+        aw->flac_buf, aw->flac_buf_samples, &aw->flac_out,
         aw->outdir, eff_prefix, aw->format, start_time,
         aw->peaks.minmax ? &aw->peaks : NULL, &meta);
 
@@ -126,6 +126,20 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
         return -1;
     }
 
+    /* In-memory FLAC output. A 24-bit stereo segment compresses to roughly
+     * half its PCM size; start at 3/4 and let the encoder grow it if needed. */
+    if (format && strcmp(format, "flac") == 0) {
+        aw->flac_out.cap = max_write_frames * aw->frame_bytes * 3 / 4;
+        if (aw->flac_out.cap < ((size_t)1 << 20)) aw->flac_out.cap = (size_t)1 << 20;
+        aw->flac_out.buf = (uint8_t *)malloc(aw->flac_out.cap);
+        if (!aw->flac_out.buf) {
+            logmsg("ring", "asyncwr_init: OOM for FLAC output buffer (%zu MB)", aw->flac_out.cap >> 20);
+            free(aw->data);
+            free(aw->flac_buf);
+            return -1;
+        }
+    }
+
     if (peaks_init(&aw->peaks, rate, channels, (unsigned)bytes_per_sample * 8,
                    PEAKS_DEFAULT_PPS, max_write_frames) != 0) {
         /* Not fatal: recording works without sidecars, peaks_init logged why. */
@@ -148,15 +162,16 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
         peaks_free(&aw->peaks);
         free(aw->data);
         free(aw->flac_buf);
+        free(aw->flac_out.buf);
         pthread_mutex_destroy(&aw->mu);
         pthread_cond_destroy(&aw->cv);
         return -1;
     }
     aw->initialized = 1;
 
-    logmsg("ring", "initialized: %.1f sec capacity (%zu frames), max write %.1f sec (%zu frames)",
+    logmsg("ring", "initialized: %.1f sec capacity (%zu frames), max write %.1f sec (%zu frames), flac out %zu MB",
            (double)capacity_frames / rate, capacity_frames,
-           (double)max_write_frames / rate, max_write_frames);
+           (double)max_write_frames / rate, max_write_frames, aw->flac_out.cap >> 20);
     return 0;
 }
 
@@ -173,6 +188,7 @@ void asyncwr_free(AsyncWriter *aw) {
     peaks_free(&aw->peaks);
     free(aw->data);
     free(aw->flac_buf);
+    free(aw->flac_out.buf);
     pthread_mutex_destroy(&aw->mu);
     pthread_cond_destroy(&aw->cv);
     aw->initialized = 0;

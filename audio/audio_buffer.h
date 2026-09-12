@@ -38,24 +38,28 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
                                 const char *outdir, const char *prefix, time_t start_time);
 
 #ifdef HAVE_FLAC
-/* Write directly from a ring buffer to FLAC file.
+/* Encode a segment from a ring buffer into memory and publish it as a FLAC
+ * file (write to <outdir>/.incoming/, fsync, rename into place).
  * flac_buf/flac_buf_samples: pre-allocated int32 conversion buffer.
+ * out: reusable output buffer, grown as needed.
  * peaks/meta (optional): when both are given, a ".peaks" sidecar is written
  * next to the FLAC after it has been published.
- * Returns file size or -1. */
+ * Returns file size, or -errno. */
 int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
                                  size_t ring_start, size_t nframes,
                                  unsigned channels, unsigned rate, int bytes_per_sample,
                                  int32_t *flac_buf, size_t flac_buf_samples,
+                                 FlacOutBuf *out,
                                  const char *outdir, const char *prefix, time_t start_time,
                                  Peaks *peaks, const SegmentMeta *meta);
 #endif
 
-/* Write from ring buffer (WAV or FLAC based on format). Returns file size or -1. */
+/* Write from ring buffer (WAV or FLAC based on format). Returns file size or -errno. */
 int64_t audiobuf_write_ring(const uint8_t *ring, size_t ring_capacity,
                             size_t ring_start, size_t nframes,
                             unsigned channels, unsigned rate, int bytes_per_sample,
                             int32_t *flac_buf, size_t flac_buf_samples,
+                            FlacOutBuf *out,
                             const char *outdir, const char *prefix, const char *format,
                             time_t start_time, Peaks *peaks, const SegmentMeta *meta);
 
