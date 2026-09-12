@@ -51,6 +51,9 @@ server {
     #   /recordings-json/  the same directory as JSON, read by recordings.html
     location /recordings/ {
         root /data;
+        # Exports pull gigabytes through TLS. Cap each download so nginx cannot
+        # saturate the core the recorder encodes on (2 GB still takes < 2 min on LAN).
+        limit_rate 20m;
         autoindex on;
         location ~ \.peaks$ {
             add_header Cache-Control "public, max-age=2592000, immutable";

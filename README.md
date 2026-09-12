@@ -399,6 +399,16 @@ file carries `CLUBTAGGER_CHANNEL`, `CLUBTAGGER_START_MS`, `CLUBTAGGER_CURSOR`
 and `CLUBTAGGER_RUN_ID` Vorbis comments; cursor + run id let readers prove that
 two segments are contiguous.
 
+### Real-time behaviour
+
+The capture thread runs `SCHED_FIFO` at priority 80 and pins itself to CPU 1;
+`main()` pins every other thread (FLAC encoding, Shazam, WebSocket, writer) to
+CPU 0 and locks all memory with `mlockall`. On the device, `rt-tuning.sh`
+steers the SLink NIC interrupts to CPU 1 and nginx runs as a single worker on
+CPU 0 with a per-download rate cap, so serving an export never competes with
+capture. Lost packets show up as `sequence discontinuity` log lines and in the
+"Lost" counter of the web UI; that number should stay at 0.
+
 ### Ring Buffer
 
 Audio is captured into a fixed-size ring buffer. Oldest samples are automatically overwritten. When recording triggers, all buffered audio becomes the "prebuffer". This provides:
