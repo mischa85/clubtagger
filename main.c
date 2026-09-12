@@ -21,6 +21,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <signal.h>
+#include <sys/mman.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -525,6 +526,17 @@ int main(int argc, char **argv) {
     }
 
 #ifdef __linux__
+    /* Keep the rings, the FLAC output buffers and the code resident: a page
+     * fault in the capture path would be a sample drop. The unit sets
+     * LimitMEMLOCK=infinity; without it this fails harmlessly and says so. */
+    if (need_audio) {
+        if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
+            logmsg("main", "memory locked (mlockall)");
+        } else {
+            logmsg("main", "mlockall failed: %s (raise LimitMEMLOCK)", strerror(errno));
+        }
+    }
+
     /* Core split on a 2-core box: everything except capture runs on CPU 0.
      * Threads inherit this mask; the capture thread moves itself to CPU 1,
      * where rt-tuning.sh also steers the SLink NIC interrupt. FLAC encoding,
