@@ -36,8 +36,12 @@ void *capture_main(void *arg) {
     Config *cfg = &app->cfg;
 
 #ifdef __linux__
-    /* Set real-time priority to prevent starvation during FLAC encoding */
-    struct sched_param param = {.sched_priority = sched_get_priority_max(SCHED_FIFO)};
+    /* Real-time priority so FLAC encoding, nginx and the like can never
+     * starve capture. 80, not the maximum: high enough to beat every normal
+     * process, low enough to stay below the kernel's own real-time threads
+     * (migration, watchdog) that must keep running. */
+    struct sched_param param = {.sched_priority = 80};
+    if (param.sched_priority > sched_get_priority_max(SCHED_FIFO)) param.sched_priority = sched_get_priority_max(SCHED_FIFO);
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0) {
         vlogmsg("cap", "using SCHED_FIFO priority %d", param.sched_priority);
     } else {
