@@ -458,6 +458,10 @@ int main(int argc, char **argv) {
     app.cfg = cfg;
     app.start_time = time(NULL);
 
+    /* Track which threads are running. Declared before the first
+     * `goto cleanup` so the joins below never read garbage. */
+    int cap_running = 0, id_running = 0, wrt_running = 0, ws_running = 0;
+
     /* Initialize per-channel ring buffers and working buffers */
     int nch = need_audio ? cfg.slink_channel_count : 0;
     if (nch == 0 && need_audio) nch = 1; /* ALSA: single channel */
@@ -517,9 +521,6 @@ int main(int argc, char **argv) {
                app.cfg.threshold, app.cfg.sustain_sec, app.cfg.silence_sec, app.cfg.max_file_sec,
                app.cfg.ring_sec);
     }
-
-    /* Track which threads are running */
-    int cap_running = 0, id_running = 0, wrt_running = 0, ws_running = 0;
 
     /* Start capture thread (only if audio needed) */
     if (need_audio) {
