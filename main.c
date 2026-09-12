@@ -465,6 +465,37 @@ int main(int argc, char **argv) {
      * `goto cleanup` so the joins below never read garbage. */
     int cap_running = 0, id_running = 0, wrt_running = 0, ws_running = 0;
 
+#ifdef __linux__
+    /* Keep the rings, the FLAC output buffers and the code resident: a page
+     * fault in the capture path would be a sample drop. The unit sets
+     * LimitMEMLOCK=infinity; without it this fails harmlessly and says so. */
+    if (need_audio) {
+        if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
+            logmsg("main", "memory locked (mlockall)");
+        } else {
+            logmsg("main", "mlockall failed: %s (raise LimitMEMLOCK)", strerror(errno));
+        }
+    }
+
+    /* Core split on a 2-core box: everything except capture runs on CPU 0.
+     * Must happen before the first pthread_create (the per-channel encoder
+     * threads start in asyncwr_init below) because threads inherit this mask;
+     * the capture thread moves itself to CPU 1,
+     * where rt-tuning.sh also steers the SLink NIC interrupt. FLAC encoding,
+     * Shazam, the web socket, nginx and peaksgen then never share a core with
+     * packet capture. */
+    if (need_audio && sysconf(_SC_NPROCESSORS_ONLN) >= 2) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(0, &set);
+        if (sched_setaffinity(0, sizeof(set), &set) == 0) {
+            logmsg("main", "non-capture threads pinned to CPU 0, capture takes CPU 1");
+        } else {
+            logmsg("main", "sched_setaffinity(CPU 0) failed: %s", strerror(errno));
+        }
+    }
+#endif
+
     /* Initialize per-channel ring buffers and working buffers */
     int nch = need_audio ? cfg.slink_channel_count : 0;
     if (nch == 0 && need_audio) nch = 1; /* ALSA: single channel */
@@ -524,35 +555,6 @@ int main(int argc, char **argv) {
                app.cfg.threshold, app.cfg.sustain_sec, app.cfg.silence_sec, app.cfg.max_file_sec,
                app.cfg.ring_sec);
     }
-
-#ifdef __linux__
-    /* Keep the rings, the FLAC output buffers and the code resident: a page
-     * fault in the capture path would be a sample drop. The unit sets
-     * LimitMEMLOCK=infinity; without it this fails harmlessly and says so. */
-    if (need_audio) {
-        if (mlockall(MCL_CURRENT | MCL_FUTURE) == 0) {
-            logmsg("main", "memory locked (mlockall)");
-        } else {
-            logmsg("main", "mlockall failed: %s (raise LimitMEMLOCK)", strerror(errno));
-        }
-    }
-
-    /* Core split on a 2-core box: everything except capture runs on CPU 0.
-     * Threads inherit this mask; the capture thread moves itself to CPU 1,
-     * where rt-tuning.sh also steers the SLink NIC interrupt. FLAC encoding,
-     * Shazam, the web socket, nginx and peaksgen then never share a core with
-     * packet capture. */
-    if (need_audio && sysconf(_SC_NPROCESSORS_ONLN) >= 2) {
-        cpu_set_t set;
-        CPU_ZERO(&set);
-        CPU_SET(0, &set);
-        if (sched_setaffinity(0, sizeof(set), &set) == 0) {
-            logmsg("main", "non-capture threads pinned to CPU 0, capture takes CPU 1");
-        } else {
-            logmsg("main", "sched_setaffinity(CPU 0) failed: %s", strerror(errno));
-        }
-    }
-#endif
 
     /* Start capture thread (only if audio needed) */
     if (need_audio) {
