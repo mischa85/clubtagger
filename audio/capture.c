@@ -43,9 +43,9 @@ void *capture_main(void *arg) {
     struct sched_param param = {.sched_priority = 80};
     if (param.sched_priority > sched_get_priority_max(SCHED_FIFO)) param.sched_priority = sched_get_priority_max(SCHED_FIFO);
     if (pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) == 0) {
-        vlogmsg("cap", "using SCHED_FIFO priority %d", param.sched_priority);
+        logmsg("cap", "using SCHED_FIFO priority %d", param.sched_priority);
     } else {
-        vlogmsg("cap", "SCHED_FIFO failed (run as root or grant CAP_SYS_NICE)");
+        logmsg("cap", "SCHED_FIFO failed (run as root or grant CAP_SYS_NICE)");
     }
 
     /* Own core: main() pinned every other thread to CPU 0 and rt-tuning.sh
@@ -56,7 +56,7 @@ void *capture_main(void *arg) {
         CPU_ZERO(&set);
         CPU_SET(1, &set);
         if (pthread_setaffinity_np(pthread_self(), sizeof(set), &set) == 0) {
-            vlogmsg("cap", "pinned to CPU 1");
+            logmsg("cap", "pinned to CPU 1");
         } else {
             logmsg("cap", "pthread_setaffinity_np(CPU 1) failed: %s", strerror(errno));
         }
