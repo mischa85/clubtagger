@@ -1,0 +1,9 @@
+{
+  "name": "clubtagger-www",
+  "private": true,
+  "type": "module",
+  "description": "Node test harness for the browser-side FLAC splicer in www/",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  }
+}
