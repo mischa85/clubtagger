@@ -125,6 +125,7 @@ clubtagger has three main modes that can be combined:
 | `--threshold` | RMS threshold for music detection | `50` |
 | `--sustain-sec` | Seconds above threshold to start | `3.0` |
 | `--silence-sec` | Silence duration to stop | `40` |
+| `--prebuffer-sec` | Max pre-roll kept in front of a trigger | `10` |
 
 The `--threshold` value is used for both recording triggers and Shazam fingerprinting.
 

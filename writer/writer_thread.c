@@ -94,13 +94,14 @@ void *writer_main(void *arg) {
     const size_t FR = cfg->frames_per_read;
     const int nch = cfg->slink_channel_count;
     const unsigned silence_chunks_needed = polls_for_seconds(cfg->silence_sec);
+    const size_t max_prebuffer_frames = (size_t)(cfg->prebuffer_sec * cfg->rate);
     const unsigned trigger_pct = 60;
     const size_t max_file_frames = cfg->max_file_sec > 0 ? (size_t)cfg->max_file_sec * cfg->rate : 0;
 
     const char *fmt_str = cfg->format ? cfg->format : "wav";
-    logmsg("wrt", "started: thr=%u sustain=%.2fs (%u polls) silence=%.2fs (%u polls) poll=%dms format=%s outdir=%s channels=%d",
+    logmsg("wrt", "started: thr=%u sustain=%.2fs (%u polls) silence=%.2fs (%u polls) poll=%dms prebuffer=%.1fs format=%s outdir=%s channels=%d",
            cfg->threshold, cfg->sustain_sec, polls_for_seconds(cfg->sustain_sec),
-           cfg->silence_sec, silence_chunks_needed, WRITER_POLL_MS,
+           cfg->silence_sec, silence_chunks_needed, WRITER_POLL_MS, cfg->prebuffer_sec,
            fmt_str, cfg->outdir ? cfg->outdir : ".", nch);
 
     /* Initialize per-channel state */
@@ -171,6 +172,18 @@ void *writer_main(void *arg) {
                                    (double)(oldest - ws->write_cursor) / cfg->rate);
                         }
                         ws->write_cursor = oldest;
+                    }
+
+                    /* The cursor is left where the previous burst stopped, so a
+                     * re-trigger soon after resumes sample-continuously. After a
+                     * long gap that would prepend the whole ring (minutes of
+                     * silence) and force an immediate split; cap the pre-roll. */
+                    if (current_pos - ws->write_cursor > max_prebuffer_frames) {
+                        logmsg("wrt", "[%s] skipping %.1f sec of gap before trigger (prebuffer cap %.1f sec)",
+                               ch_name,
+                               (double)(current_pos - ws->write_cursor - max_prebuffer_frames) / cfg->rate,
+                               cfg->prebuffer_sec);
+                        ws->write_cursor = current_pos - max_prebuffer_frames;
                     }
 
                     size_t prebuffer_frames = current_pos - ws->write_cursor;

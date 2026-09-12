@@ -107,6 +107,7 @@ typedef struct {
     unsigned    threshold;
     float       sustain_sec;
     float       silence_sec;
+    float       prebuffer_sec;     /* max seconds of pre-roll in front of a burst */
     const char *prefix;
     const char *source;            /* "alsa" or "slink" */
     int         bytes_per_sample;  /* 2 for 16-bit, 3 for 24-bit */

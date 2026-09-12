@@ -75,6 +75,7 @@ static void usage(const char *argv0) {
             "  --threshold 25         Avg abs amplitude trigger for recording\n"
             "  --sustain-sec 3.0      Seconds above threshold to start recording\n"
             "  --silence-sec 40       Seconds below threshold to stop recording\n"
+            "  --prebuffer-sec 10     Max seconds of audio kept in front of a trigger\n"
             "  --prefix capture       Filename prefix\n"
             "  --outdir ./            Output directory for audio files\n"
             "  --format wav           Output format: 'wav' or 'flac'\n"
@@ -154,6 +155,8 @@ static int parse_cli(int argc, char **argv, Config *cfg) {
             cfg->sustain_sec = (float)atof(argv[++i]);
         else if (!strcmp(a, "--silence-sec") && i + 1 < argc)
             cfg->silence_sec = (float)atof(argv[++i]);
+        else if (!strcmp(a, "--prebuffer-sec") && i + 1 < argc)
+            cfg->prebuffer_sec = (float)atof(argv[++i]);
         else if (!strcmp(a, "--prefix") && i + 1 < argc)
             cfg->prefix = argv[++i];
         else if (!strcmp(a, "--source") && i + 1 < argc)
@@ -306,6 +309,7 @@ int main(int argc, char **argv) {
         .threshold = 25,
         .sustain_sec = 3.0f,
         .silence_sec = 40.0f,
+        .prebuffer_sec = 10.0f,
         .prefix = "capture",
         .source = NULL,         /* must be specified unless CDJ-only mode */
         .bytes_per_sample = 2,
