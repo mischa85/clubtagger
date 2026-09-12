@@ -32,3 +32,6 @@ log*.txt
 
 # live field notes (kept local)
 LIVE-ISSUES-*.md
+
+# waveform sidecars
+*.peaks

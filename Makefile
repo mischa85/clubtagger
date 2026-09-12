@@ -157,6 +157,17 @@ LDFLAGS  += $(LDFLAGS_EXTRA)
 
 all: $(APP)
 
+# Backfill tool for waveform sidecars (needs libFLAC)
+ifneq ($(FLAC_LIBS),)
+all: peaksgen
+endif
+
+peaksgen: tools/peaksgen.o audio/peaks.o common.o
+	$(CC) $^ -o $@ $(THREAD) $(FLAC_LIBS) $(MATH_LIBS)
+
+tools/%.o: tools/%.c
+	$(CC) $(CFLAGS) -I. -c $< -o $@
+
 debug: CFLAGS := -std=c11 -g -O0 -fno-omit-frame-pointer -fsanitize=address,undefined $(WARN) $(THREAD) $(FEATURE_MACROS) $(VERSION_FLAGS) $(ALSA_CFLAGS) $(CURL_CFLAGS) $(PCAP_CFLAGS) $(SQLITE_CFLAGS) $(FLAC_CFLAGS) $(AF_XDP_CFLAGS) $(VIBRA_CFLAGS) $(OPENSSL_CFLAGS) $(CFLAGS_EXTRA)
 debug: LDFLAGS := $(THREAD) $(ALSA_LIBS) $(CURL_LIBS) $(PCAP_LIBS) $(SQLITE_LIBS) $(FLAC_LIBS) $(AF_XDP_LIBS) $(MATH_LIBS) $(VIBRA_LIBS) $(OPENSSL_LIBS) -Wl,-rpath,/usr/local/lib -fsanitize=address,undefined $(LDFLAGS_EXTRA)
 debug: clean $(APP)
@@ -208,6 +219,9 @@ endif
 install: $(APP)
 	install -d "$(DESTDIR)$(BINDIR)"
 	install -m 0755 $(APP) "$(DESTDIR)$(BINDIR)/$(APP)"
+ifneq ($(FLAC_LIBS),)
+	install -m 0755 peaksgen "$(DESTDIR)$(BINDIR)/peaksgen"
+endif
 ifdef ENABLE_AF_XDP
 	install -d "$(DESTDIR)$(PREFIX)/share/clubtagger"
 	install -m 0644 audio/slink_xdp.bpf.o "$(DESTDIR)$(PREFIX)/share/clubtagger/"
@@ -215,6 +229,6 @@ ifdef ENABLE_AF_XDP
 endif
 
 clean:
-	$(RM) $(OBJ) $(APP) *.o audio/*.o shazam/*.o writer/*.o server/*.o db/*.o prolink/*.o
+	$(RM) $(OBJ) $(APP) peaksgen *.o audio/*.o shazam/*.o writer/*.o server/*.o db/*.o prolink/*.o tools/*.o
 
 .PHONY: all debug clean install bpf
