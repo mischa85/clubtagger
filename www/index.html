@@ -72,6 +72,8 @@
         }
         .container { max-width: 1600px; margin: 0 auto; }
         h1 { text-align: center; margin-bottom: 15px; color: #00d4ff; font-size: 1.5em; }
+        h1 .nav-link { font-size: 0.55em; font-weight: 400; color: var(--text-faint); text-decoration: none; margin-left: 12px; vertical-align: middle; border: 1px solid var(--border-soft); border-radius: 4px; padding: 2px 8px; }
+        h1 .nav-link:hover { color: var(--text); border-color: #00d4ff; }
 
         /* Responsive layout: widescreen = decks left + sidebar right */
         @media (min-width: 1100px) {
@@ -526,7 +528,7 @@
 </head>
 <body>
     <div class="container">
-        <h1>Clubtagger</h1>
+        <h1>Clubtagger <a class="nav-link" href="recordings.html" title="Browse recordings by date and export a set as FLAC">Recordings</a></h1>
         
         <div class="decks-container" id="decks">
             <div class="no-decks">No CDJs detected</div>

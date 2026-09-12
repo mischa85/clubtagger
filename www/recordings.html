@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clubtagger · Recordings</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        /* Theme tokens: same as index.html */
+        :root {
+            --bg:           #1a1a2e;
+            --bg-card:      #0f0f1a;
+            --bg-card-deep: #0a0a12;
+            --bg-card-deep2:#0c0c18;
+            --bg-secondary: #0a0a14;
+            --bg-inset:     #1a1a2e;
+            --bg-mute:      #222;
+            --bg-overlay:   rgba(10,10,30,0.7);
+            --border-faint: #1a1a2e;
+            --border-soft:  #2a2a3e;
+            --text:         #eee;
+            --text-dim:     #aaa;
+            --text-dimmer:  #888;
+            --text-faint:   #666;
+            --text-fainter: #556;
+            --text-faintest:#445;
+            --accent:       #00d4ff;
+            --tl-wave:      #00d4ff;
+            --tl-wave-dim:  #12a8c9;
+            --tl-sel:       rgba(0, 212, 255, 0.22);
+            --tl-sel-edge:  #00d4ff;
+            --tl-play:      #ffcc00;
+            --tl-now:       #f44336;
+        }
+        body[data-theme="mono"] {
+            --bg:           #0c0c0c;
+            --bg-card:      #141414;
+            --bg-card-deep: #0a0a0a;
+            --bg-card-deep2:#0a0a0a;
+            --bg-secondary: #060606;
+            --bg-inset:     #1c1c1c;
+            --bg-mute:      #1d1d1d;
+            --bg-overlay:   rgba(0,0,0,0.75);
+            --border-faint: #1a1a1a;
+            --border-soft:  #2a2a2a;
+            --text:         #e0e0e0;
+            --text-dim:     #aaa;
+            --text-dimmer:  #888;
+            --text-faint:   #666;
+            --text-fainter: #555;
+            --text-faintest:#444;
+            --accent:       #ddd;
+            --tl-wave:      #d0d0d0;
+            --tl-wave-dim:  #9a9a9a;
+            --tl-sel:       rgba(255, 255, 255, 0.18);
+            --tl-sel-edge:  #fff;
+        }
+        body[data-theme="stage"] {
+            --bg:           #000;
+            --bg-card:      #0a0a0a;
+            --bg-card-deep: #000;
+            --bg-card-deep2:#050505;
+            --bg-secondary: #050505;
+            --bg-inset:     #161616;
+            --bg-mute:      #1a1a1a;
+            --bg-overlay:   rgba(0,0,0,0.85);
+            --border-faint: #1a1a1a;
+            --border-soft:  #333;
+            --text:         #fff;
+            --text-dim:     #c0c0c0;
+            --text-dimmer:  #999;
+            --text-faint:   #777;
+            --text-fainter: #666;
+            --text-faintest:#555;
+            --accent:       #fff;
+            --tl-wave:      #f0f0f0;
+            --tl-wave-dim:  #a8a8a8;
+            --tl-sel:       rgba(255, 255, 255, 0.2);
+            --tl-sel-edge:  #fff;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            min-height: 100vh;
+            padding: 12px;
+            font-size: 14px;
+        }
+        a { color: var(--accent); text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        h1 { font-size: 1.3em; color: var(--accent); font-weight: 600; }
+        h1 a { color: var(--text-dim); font-weight: 400; }
+
+        .bar {
+            display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px;
+            background: var(--bg-card); border: 1px solid var(--border-faint); border-radius: 8px;
+            padding: 10px 14px; margin-bottom: 12px;
+        }
+        .bar .spacer { flex: 1; }
+        .group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .group label { color: var(--text-dim); display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+        button, input[type="date"] {
+            background: var(--bg-inset); color: var(--text); border: 1px solid var(--border-soft);
+            border-radius: 5px; padding: 5px 10px; font: inherit; cursor: pointer;
+        }
+        button:hover:not(:disabled) { border-color: var(--accent); }
+        button:disabled { opacity: 0.45; cursor: default; }
+        button.primary { background: var(--accent); color: #000; border-color: var(--accent); font-weight: 600; }
+        body[data-theme="default"] button.primary:hover:not(:disabled) { filter: brightness(1.1); }
+        input[type="date"] { color-scheme: dark; }
+
+        .notice { padding: 8px 12px; border-radius: 6px; margin-bottom: 10px; background: var(--bg-card); color: var(--text-dim); border: 1px solid var(--border-faint); }
+        .notice.warn { border-color: #6b5a12; color: #ffcc66; }
+        .notice.error { border-color: #7a2323; color: #ff7b7b; }
+        .notice.ok { border-color: #1f5c2a; color: #7fdc8f; }
+        .warn { color: #ffcc66; }
+
+        /* timeline */
+        .tl { background: var(--bg-card); border: 1px solid var(--border-faint); border-radius: 8px; padding: 8px 8px 4px; margin-bottom: 12px; user-select: none; }
+        .tl-ruler { display: block; width: 100%; height: 22px; cursor: grab; }
+        .tl-rows { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+        .tl-row { position: relative; }
+        .tl-label { position: absolute; left: 8px; top: 6px; font-size: 12px; font-weight: 600; color: var(--text-dim); pointer-events: none; text-shadow: 0 0 4px var(--bg-card); }
+        .tl-canvas { display: block; width: 100%; border-radius: 4px; cursor: crosshair; touch-action: none; }
+
+        .panel { background: var(--bg-card); border: 1px solid var(--border-faint); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; }
+        .panel #summary { flex: 1 1 420px; color: var(--text-dim); line-height: 1.5; }
+        .panel #summary b { color: var(--text); }
+        .progress { flex: 1 1 100%; }
+        .progress .track { height: 8px; background: var(--bg-inset); border-radius: 4px; overflow: hidden; border: 1px solid var(--border-soft); }
+        .progress .fill { height: 100%; width: 0; background: var(--accent); transition: width 0.25s; }
+        .progress .text { margin-top: 6px; color: var(--text-dim); font-size: 13px; }
+        .audition { gap: 14px; }
+        .audition audio { flex: 1 1 320px; height: 36px; }
+        #audition-label { color: var(--text-dim); font-size: 13px; }
+
+        .theme-switch { display: flex; gap: 2px; }
+        .theme-switch button { padding: 3px 8px; font-size: 12px; color: var(--text-faint); border-color: var(--border-faint); }
+        .theme-switch button.active { color: var(--text); border-color: var(--border-soft); background: var(--bg-mute); }
+
+        .hint { color: var(--text-faint); font-size: 12px; }
+        @media (max-width: 700px) { body { padding: 8px; } .bar { gap: 8px 12px; } }
+    </style>
+</head>
+<body>
+    <header class="bar">
+        <h1><a href="index.html">Clubtagger</a> · Recordings</h1>
+        <div class="group">
+            <button id="prev" title="Previous date">‹</button>
+            <input type="date" id="date">
+            <button id="next" title="Next date">›</button>
+            <button id="today">Today</button>
+        </div>
+        <div class="group" id="channels"></div>
+        <div class="group">
+            <button id="fit" title="Fit all recordings of this date">Fit</button>
+            <button id="whole" title="Show the whole window: 00:00 until noon the next day">Whole window</button>
+        </div>
+        <div class="spacer"></div>
+        <div class="theme-switch" id="theme-switch">
+            <button data-theme="default" title="Default (blue)">Blue</button>
+            <button data-theme="mono" title="Mono (black/grey)">Mono</button>
+            <button data-theme="stage" title="Stage (pure black)">Stage</button>
+        </div>
+    </header>
+
+    <div id="status" class="notice" hidden></div>
+    <div id="timeline"></div>
+
+    <section class="panel">
+        <div id="summary"></div>
+        <label class="hint"><input type="checkbox" id="joingaps"> join across gaps (the silence between sessions is removed)</label>
+        <button id="export" class="primary" disabled>Export FLAC…</button>
+        <button id="cancel" hidden>Cancel</button>
+        <div id="progress" class="progress" hidden>
+            <div class="track"><div class="fill" id="progress-fill"></div></div>
+            <div class="text" id="progress-text"></div>
+        </div>
+        <div id="result" class="notice" hidden></div>
+    </section>
+
+    <section class="panel audition">
+        <span id="audition-label">Click a segment to listen to it</span>
+        <audio id="audio" controls preload="none"></audio>
+    </section>
+
+    <script type="module" src="recordings.js"></script>
+</body>
+</html>
