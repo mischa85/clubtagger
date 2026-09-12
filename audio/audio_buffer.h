@@ -40,12 +40,15 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
 #ifdef HAVE_FLAC
 /* Write directly from a ring buffer to FLAC file.
  * flac_buf/flac_buf_samples: pre-allocated int32 conversion buffer.
+ * peaks/meta (optional): when both are given, a ".peaks" sidecar is written
+ * next to the FLAC after it has been published.
  * Returns file size or -1. */
 int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
                                  size_t ring_start, size_t nframes,
                                  unsigned channels, unsigned rate, int bytes_per_sample,
                                  int32_t *flac_buf, size_t flac_buf_samples,
-                                 const char *outdir, const char *prefix, time_t start_time);
+                                 const char *outdir, const char *prefix, time_t start_time,
+                                 Peaks *peaks, const SegmentMeta *meta);
 #endif
 
 /* Write from ring buffer (WAV or FLAC based on format). Returns file size or -1. */
@@ -54,6 +57,6 @@ int64_t audiobuf_write_ring(const uint8_t *ring, size_t ring_capacity,
                             unsigned channels, unsigned rate, int bytes_per_sample,
                             int32_t *flac_buf, size_t flac_buf_samples,
                             const char *outdir, const char *prefix, const char *format,
-                            time_t start_time);
+                            time_t start_time, Peaks *peaks, const SegmentMeta *meta);
 
 #endif /* CLUBTAGGER_AUDIO_BUFFER_H */

@@ -345,7 +345,8 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
                                  size_t ring_start, size_t nframes,
                                  unsigned channels, unsigned rate, int bytes_per_sample,
                                  int32_t *flac_buf, size_t flac_buf_samples,
-                                 const char *outdir, const char *prefix, time_t start_time) {
+                                 const char *outdir, const char *prefix, time_t start_time,
+                                 Peaks *peaks, const SegmentMeta *meta) {
     if (!ring || nframes == 0) {
         logmsg("flac", "audiobuf_write_flac_ring: invalid input ring=%p nframes=%zu prefix=%s",
                (const void *)ring, nframes, prefix ? prefix : "(null)");
@@ -409,6 +410,12 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
         }
     }
 
+    /* Waveform peaks for the sidecar, from the same samples */
+    if (peaks) {
+        peaks_reset(peaks);
+        peaks_feed(peaks, flac_buf, nframes);
+    }
+
     /* Encode in chunks */
     const size_t chunk_frames = 4096;
     FLAC__bool ok = true;
@@ -440,6 +447,13 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
 
     logmsg("flac", "wrote %s (%.1f sec, %.1f MB)", final_name,
            (double)nframes / rate, (double)file_size / (1024 * 1024));
+
+    /* Sidecar goes last: its existence tells readers the FLAC is complete. */
+    if (peaks && meta) {
+        if (peaks_write(peaks, final_name, nframes, meta) == 0) {
+            logmsg("peaks", "wrote %zu points for %s", peaks_count(peaks), final_name);
+        }
+    }
     return file_size;
 }
 #endif /* HAVE_FLAC */
@@ -449,16 +463,16 @@ int64_t audiobuf_write_ring(const uint8_t *ring, size_t ring_capacity,
                             unsigned channels, unsigned rate, int bytes_per_sample,
                             int32_t *flac_buf, size_t flac_buf_samples,
                             const char *outdir, const char *prefix, const char *format,
-                            time_t start_time) {
+                            time_t start_time, Peaks *peaks, const SegmentMeta *meta) {
 #ifdef HAVE_FLAC
     if (format && strcmp(format, "flac") == 0) {
         return audiobuf_write_flac_ring(ring, ring_capacity, ring_start, nframes,
                                         channels, rate, bytes_per_sample,
                                         flac_buf, flac_buf_samples,
-                                        outdir, prefix, start_time);
+                                        outdir, prefix, start_time, peaks, meta);
     }
 #else
-    (void)flac_buf; (void)flac_buf_samples;
+    (void)flac_buf; (void)flac_buf_samples; (void)peaks; (void)meta;
     if (format && strcmp(format, "flac") == 0) {
         logmsg("wrt", "FLAC not available, falling back to WAV");
     }

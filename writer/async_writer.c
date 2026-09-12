@@ -29,11 +29,18 @@ static int64_t asyncwr_do_write(AsyncWriter *aw, size_t from, size_t to,
         snprintf(eff_prefix, sizeof(eff_prefix), "%s", aw->prefix);
     }
 
+    SegmentMeta meta = {
+        .cursor = (uint64_t)from,
+        .start_unix_ms = (int64_t)start_time * 1000,
+        .run_id = aw->run_id,
+    };
+
     int64_t file_size = audiobuf_write_ring(
         aw->data, aw->capacity, ring_start, nframes,
         aw->channels, aw->rate, aw->bytes_per_sample,
         aw->flac_buf, aw->flac_buf_samples,
-        aw->outdir, eff_prefix, aw->format, start_time);
+        aw->outdir, eff_prefix, aw->format, start_time,
+        aw->peaks.minmax ? &aw->peaks : NULL, &meta);
 
     logmsg("wrt", "wrote frames %zu-%zu (%zu frames, %.1f sec)",
            from, to, nframes, (double)nframes / aw->rate);
@@ -118,6 +125,12 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
         return -1;
     }
 
+    if (peaks_init(&aw->peaks, rate, channels, (unsigned)bytes_per_sample * 8,
+                   PEAKS_DEFAULT_PPS, max_write_frames) != 0) {
+        /* Not fatal: recording works without sidecars, peaks_init logged why. */
+        memset(&aw->peaks, 0, sizeof(aw->peaks));
+    }
+
     aw->write_pending = 0;
     aw->outdir = outdir;
     aw->prefix = prefix;
@@ -131,6 +144,7 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     if (prc != 0) {
         logmsg("ring", "asyncwr_init: pthread_create failed: %s (errno=%d)",
                strerror(prc), prc);
+        peaks_free(&aw->peaks);
         free(aw->data);
         free(aw->flac_buf);
         pthread_mutex_destroy(&aw->mu);
@@ -155,6 +169,7 @@ void asyncwr_free(AsyncWriter *aw) {
 
     pthread_join(aw->thread, NULL);
 
+    peaks_free(&aw->peaks);
     free(aw->data);
     free(aw->flac_buf);
     pthread_mutex_destroy(&aw->mu);

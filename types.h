@@ -11,6 +11,8 @@
 #include <sys/types.h>
 #include <time.h>
 
+#include "audio/peaks.h"
+
 /* AF_XDP and pcap have conflicting struct bpf_insn definitions.
  * When AF_XDP is enabled, we use raw sockets for NFS observation 
  * instead of pcap, avoiding the conflict entirely. */
@@ -174,6 +176,10 @@ typedef struct {
     int32_t        *flac_buf;
     size_t          flac_buf_samples;
     size_t          max_write_frames; /* max frames per write (= max_file_sec * rate) */
+
+    /* Waveform peaks for the sidecar written next to each segment */
+    Peaks           peaks;
+    uint32_t        run_id;           /* recorder process start (unix s), stored in sidecars */
     
     /* Config */
     const char     *outdir;

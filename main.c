@@ -470,6 +470,7 @@ int main(int argc, char **argv) {
                 logmsg("main", "asyncwr_init failed (ch %d)", c);
                 goto cleanup;
             }
+            cs->aw.run_id = (uint32_t)app.start_time; /* ties sidecar cursors to this run */
             if (capture_init_channel(cs, &cfg) != 0) goto cleanup;
             if (cfg.enable_record && writer_init_channel(cs, &cfg) != 0) goto cleanup;
             if (cfg.enable_audio_tag && cfg.slink_channels[c].shazam &&

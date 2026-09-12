@@ -16,6 +16,7 @@ SRC      := main.c \
             confidence.c \
             audio/audio_buffer.c \
             audio/audio_analysis.c \
+            audio/peaks.c \
             audio/capture.c \
             audio/capture_pcap.c \
             audio/capture_alsa.c \
