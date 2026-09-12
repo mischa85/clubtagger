@@ -14,6 +14,7 @@ const FILE_BASE = '/recordings/';
 const HIDDEN_BY_DEFAULT = new Set(['master']);
 const SEGMENT_SEC = 120;                  // recorder default --max-file-sec, used when no sidecar
 const MOCK = new URLSearchParams(location.search).has('mock');
+const DEBUG = new URLSearchParams(location.search).has('debug');   // logs every chaining decision
 
 /* ─────────────────── time zone helpers ─────────────────── */
 
@@ -192,19 +193,29 @@ function chain(ch) {
     segs.forEach((s, i) => {
         s.durMs = s.peaks ? s.peaks.total / s.peaks.rate * 1000 : fullMs;
         s.estimated = !s.peaks;
-        let continuous = false;
+        let continuous = false, rule = 'new session';
         if (prev) {
             const expected = prev.startMs + prev.durMs;
+            const drift = s.nameMs - expected;
             if (s.peaks && prev.peaks && s.peaks.runId && s.peaks.runId === prev.peaks.runId &&
                 s.peaks.cursor === prev.peaks.cursor + prev.peaks.total) {
-                continuous = true;                                   // proven by the recorder's cursor
-            } else if (!prev.estimated && fullSamples && prev.peaks && prev.peaks.total === fullSamples &&
-                       s.nameMs - expected >= -5000 && s.nameMs - expected <= 90000) {
-                continuous = true;                                   // full segment never ends a session
-            } else if (prev.estimated && s.nameMs - expected >= -5000 && s.nameMs - expected <= 90000) {
-                continuous = true;                                   // no sidecars: filename cadence
+                continuous = true; rule = 'cursor';                  // proven by the recorder's cursor
+            } else if (s.peaks && prev.peaks && s.peaks.runId && s.peaks.runId === prev.peaks.runId) {
+                rule = 'cursor break';                               // same run, samples missing in between
+            } else if (drift >= -5000 && drift <= 90000) {
+                // No cursor data (recordings older than the sidecars, or a recorder restart):
+                // the filename cadence decides. The window absorbs the old writer's 60 s late
+                // name on the 2nd file of a recording and a first segment shortened by a few
+                // thousand lost frames at the trigger. Old recordings resumed sample-continuous
+                // after short silences, so a short name gap is a continuation, not a new session.
+                continuous = true; rule = 'cadence';
             }
             if (continuous) s.startMs = expected;
+            if (DEBUG) console.log(`[chain ${ch.id}] ${s.name} ${rule} drift=${(drift / 1000).toFixed(1)}s` +
+                                   ` prev.total=${prev.peaks ? prev.peaks.total : '?'} total=${s.peaks ? s.peaks.total : '?'}` +
+                                   ` run=${s.peaks ? s.peaks.runId : '?'} cursor=${s.peaks ? s.peaks.cursor : '?'}`);
+        } else if (DEBUG) {
+            console.log(`[chain ${ch.id}] ${s.name} first segment`);
         }
         if (!continuous) {
             // The sidecar's wall clock is exact; the filename is second-resolution.

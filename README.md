@@ -294,7 +294,7 @@ Everything runs in the browser; the recorder only serves static files.
   segment). Recordings made before sidecars existed can be backfilled once:
   `nice -n 19 peaksgen /data/recordings` (about 1 s per segment; skips files
   that already have a sidecar).
-- **Selection**: drag on a waveform; the edges snap to segment boundaries.
+- **Selection**: drag on a waveform; the edges snap to segment boundaries and can be dragged individually afterwards.
   Scroll to zoom, shift-scroll or drag the ruler to pan, double-click a session
   to fit it, click a segment to listen to it.
 - **Export** splices the selected segments without decoding: frame headers are

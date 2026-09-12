@@ -130,6 +130,35 @@ export class Timeline {
         this.bindRow(row);
     }
 
+    /* Which selection edge (if any) is under x on this channel: 'start', 'end' or null. */
+    edgeAt(channelId, x) {
+        const sel = this.selection;
+        if (!sel || sel.channel !== channelId) return null;
+        const ch = this.channel(channelId);
+        const a = ch && ch.segments[sel.i0], b = ch && ch.segments[sel.i1];
+        if (!a || !b) return null;
+        const x0 = this.x(a.startMs), x1 = this.x(b.startMs + b.durMs);
+        const grab = 7;
+        if (Math.abs(x - x1) <= grab) return 'end';
+        if (Math.abs(x - x0) <= grab) return 'start';
+        return null;
+    }
+
+    /* Move one edge of the selection to the segment nearest to `ms`. */
+    moveEdge(ch, which, ms) {
+        const sel = this.selection;
+        let idx = this.nearestSegment(ch, ms);
+        if (idx < 0) return;
+        if (!this.joinGaps) {
+            const fixed = ch.segments[which === 'start' ? sel.i1 : sel.i0];
+            const sess = ch.sessions[fixed.session];
+            idx = Math.min(Math.max(idx, sess.i0), sess.i1);
+        }
+        if (which === 'start') this.selection = { channel: ch.id, i0: Math.min(idx, sel.i1), i1: sel.i1 };
+        else this.selection = { channel: ch.id, i0: sel.i0, i1: Math.max(idx, sel.i0) };
+        this.render();
+    }
+
     bindRow(row) {
         const c = row.canvas;
         c.addEventListener('pointerdown', (e) => {
@@ -137,26 +166,44 @@ export class Timeline {
             if (e.button !== 0) return;
             const rect = c.getBoundingClientRect();
             const x = e.clientX - rect.left;
-            this.drag = { kind: 'select', channel: row.id, x0: x, t0: this.t(x), moved: false, shift: e.shiftKey };
+            const edge = this.edgeAt(row.id, x);
+            if (edge) {
+                this.drag = { kind: 'edge', channel: row.id, which: edge, moved: false };
+            } else {
+                this.drag = { kind: 'select', channel: row.id, x0: x, t0: this.t(x), moved: false, shift: e.shiftKey };
+            }
             c.setPointerCapture(e.pointerId);
         });
         c.addEventListener('pointermove', (e) => {
-            if (!this.drag || this.drag.kind !== 'select' || this.drag.channel !== row.id) return;
             const rect = c.getBoundingClientRect();
             const x = e.clientX - rect.left;
+            if (!this.drag) {
+                c.style.cursor = this.edgeAt(row.id, x) ? 'col-resize' : 'crosshair';
+                return;
+            }
+            if (this.drag.channel !== row.id) return;
+            const ch = this.channel(row.id);
+            if (!ch) return;
+            if (this.drag.kind === 'edge') {
+                this.drag.moved = true;
+                this.moveEdge(ch, this.drag.which, this.t(x));
+                return;
+            }
+            if (this.drag.kind !== 'select') return;
             if (!this.drag.moved && Math.abs(x - this.drag.x0) < 4) return;
             this.drag.moved = true;
-            const ch = this.channel(row.id);
-            const sel = ch && this.snap(ch, this.drag.t0, this.t(x));
+            const sel = this.snap(ch, this.drag.t0, this.t(x));
             if (sel) { this.selection = sel; this.render(); }
         });
         const finish = (e) => {
-            if (!this.drag || this.drag.kind !== 'select') return;
+            if (!this.drag || (this.drag.kind !== 'select' && this.drag.kind !== 'edge')) return;
             const d = this.drag;
             this.drag = null;
             const ch = this.channel(row.id);
             if (!ch) return;
-            if (d.moved) {
+            if (d.kind === 'edge') {
+                if (this.opts.onSelect) this.opts.onSelect(this.selection);
+            } else if (d.moved) {
                 if (this.opts.onSelect) this.opts.onSelect(this.selection);
             } else {
                 const i = this.segmentAt(ch, d.t0);
