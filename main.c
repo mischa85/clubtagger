@@ -17,7 +17,9 @@
 #include "prolink/pdb_thread.h"
 #include "prolink/waveform_thread.h"
 
+#include <errno.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -521,6 +523,24 @@ int main(int argc, char **argv) {
                app.cfg.threshold, app.cfg.sustain_sec, app.cfg.silence_sec, app.cfg.max_file_sec,
                app.cfg.ring_sec);
     }
+
+#ifdef __linux__
+    /* Core split on a 2-core box: everything except capture runs on CPU 0.
+     * Threads inherit this mask; the capture thread moves itself to CPU 1,
+     * where rt-tuning.sh also steers the SLink NIC interrupt. FLAC encoding,
+     * Shazam, the web socket, nginx and peaksgen then never share a core with
+     * packet capture. */
+    if (need_audio && sysconf(_SC_NPROCESSORS_ONLN) >= 2) {
+        cpu_set_t set;
+        CPU_ZERO(&set);
+        CPU_SET(0, &set);
+        if (sched_setaffinity(0, sizeof(set), &set) == 0) {
+            logmsg("main", "non-capture threads pinned to CPU 0, capture takes CPU 1");
+        } else {
+            logmsg("main", "sched_setaffinity(CPU 0) failed: %s", strerror(errno));
+        }
+    }
+#endif
 
     /* Start capture thread (only if audio needed) */
     if (need_audio) {
