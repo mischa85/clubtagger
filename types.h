@@ -183,10 +183,11 @@ typedef struct {
     char            write_channel[32]; /* SLink channel name for filename */
     int             write_pending;
 
-    /* Pre-allocated FLAC conversion buffer (sized to max_write_frames) */
+    /* Pre-allocated int32 conversion buffer for one encoder chunk */
     int32_t        *flac_buf;
     size_t          flac_buf_samples;
     size_t          max_write_frames; /* max frames per write (= max_file_sec * rate) */
+    unsigned        flac_blocksize;   /* encoder blocksize, 0 = libFLAC default */
 
     /* Encoded segment, built in memory before it is published */
     FlacOutBuf      flac_out;

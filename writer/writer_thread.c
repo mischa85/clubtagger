@@ -217,7 +217,8 @@ void *writer_main(void *arg) {
                 size_t frames_since_cursor = current_pos - ws->write_cursor;
 
                 /* Check if we need to split (max file size).
-                 * Write exactly max_file_frames to stay within flac_buf bounds. */
+                 * Write exactly max_file_frames so every full segment is the
+                 * same length (a multiple of the FLAC blocksize). */
                 if (max_file_frames > 0 && frames_since_cursor >= max_file_frames) {
                     size_t split_end = ws->write_cursor + max_file_frames;
                     logmsg("wrt", "[%s] SPLIT: writing frames %zu-%zu (%.1f min)",

@@ -34,11 +34,12 @@ static int64_t asyncwr_do_write(AsyncWriter *aw, size_t from, size_t to,
         .start_unix_ms = start_ms,
         .run_id = aw->run_id,
     };
+    if (channel) snprintf(meta.channel, sizeof(meta.channel), "%s", channel);
     time_t start_time = (time_t)(start_ms / 1000);
 
     int64_t file_size = audiobuf_write_ring(
         aw->data, aw->capacity, ring_start, nframes,
-        aw->channels, aw->rate, aw->bytes_per_sample,
+        aw->channels, aw->rate, aw->bytes_per_sample, aw->flac_blocksize,
         aw->flac_buf, aw->flac_buf_samples, &aw->flac_out,
         aw->outdir, eff_prefix, aw->format, start_time,
         aw->peaks.minmax ? &aw->peaks : NULL, &meta);
@@ -115,9 +116,10 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
         return -1;
     }
 
-    /* FLAC conversion buffer sized to max_write_frames (not ring capacity).
-     * With 6 channels this saves gigabytes vs the old ring-sized allocation. */
-    aw->flac_buf_samples = max_write_frames * channels;
+    /* Blocksize dividing a full segment (no short tail frame), and an int32
+     * conversion buffer for one encoder chunk. */
+    aw->flac_blocksize = audiobuf_flac_blocksize(max_write_frames);
+    aw->flac_buf_samples = audiobuf_flac_chunk_frames(aw->flac_blocksize) * channels;
     aw->flac_buf = (int32_t *)malloc(aw->flac_buf_samples * sizeof(int32_t));
     if (!aw->flac_buf) {
         logmsg("ring", "asyncwr_init: OOM for FLAC buffer (%zu samples * 4 bytes = %zu bytes)",
@@ -169,9 +171,10 @@ int asyncwr_init(AsyncWriter *aw, unsigned channels, unsigned rate,
     }
     aw->initialized = 1;
 
-    logmsg("ring", "initialized: %.1f sec capacity (%zu frames), max write %.1f sec (%zu frames), flac out %zu MB",
+    logmsg("ring", "initialized: %.1f sec capacity (%zu frames), max write %.1f sec (%zu frames), flac blocksize %u, flac out %zu MB",
            (double)capacity_frames / rate, capacity_frames,
-           (double)max_write_frames / rate, max_write_frames, aw->flac_out.cap >> 20);
+           (double)max_write_frames / rate, max_write_frames,
+           aw->flac_blocksize, aw->flac_out.cap >> 20);
     return 0;
 }
 

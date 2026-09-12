@@ -37,6 +37,7 @@ typedef struct {
     uint64_t cursor;        /* first frame index (monotonic ring counter) */
     int64_t  start_unix_ms; /* wall clock of the first frame */
     uint32_t run_id;        /* recorder process start time (unix seconds) */
+    char     channel[32];   /* SLink channel name ("" for ALSA) */
 } SegmentMeta;
 
 typedef struct {

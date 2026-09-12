@@ -38,9 +38,20 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
                                 const char *outdir, const char *prefix, time_t start_time);
 
 #ifdef HAVE_FLAC
+/* Encoder blocksize for segments of segment_frames frames: the largest
+ * standard blocksize that divides it, so a full segment has no short tail
+ * frame and segments can be concatenated without re-encoding. 0 = libFLAC
+ * default (segment length not divisible by any candidate). */
+unsigned audiobuf_flac_blocksize(size_t segment_frames);
+
+/* Frames the conversion buffer must hold for audiobuf_write_flac_ring(). */
+size_t audiobuf_flac_chunk_frames(unsigned blocksize);
+
 /* Encode a segment from a ring buffer into memory and publish it as a FLAC
  * file (write to <outdir>/.incoming/, fsync, rename into place).
- * flac_buf/flac_buf_samples: pre-allocated int32 conversion buffer.
+ * blocksize: from audiobuf_flac_blocksize(), 0 = libFLAC default.
+ * flac_buf/flac_buf_samples: int32 conversion buffer for one chunk, at least
+ * audiobuf_flac_chunk_frames(blocksize) * channels samples.
  * out: reusable output buffer, grown as needed.
  * peaks/meta (optional): when both are given, a ".peaks" sidecar is written
  * next to the FLAC after it has been published.
@@ -48,6 +59,7 @@ int64_t audiobuf_write_wav_ring(const uint8_t *ring, size_t ring_capacity,
 int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
                                  size_t ring_start, size_t nframes,
                                  unsigned channels, unsigned rate, int bytes_per_sample,
+                                 unsigned blocksize,
                                  int32_t *flac_buf, size_t flac_buf_samples,
                                  FlacOutBuf *out,
                                  const char *outdir, const char *prefix, time_t start_time,
@@ -58,6 +70,7 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
 int64_t audiobuf_write_ring(const uint8_t *ring, size_t ring_capacity,
                             size_t ring_start, size_t nframes,
                             unsigned channels, unsigned rate, int bytes_per_sample,
+                            unsigned blocksize,
                             int32_t *flac_buf, size_t flac_buf_samples,
                             FlacOutBuf *out,
                             const char *outdir, const char *prefix, const char *format,

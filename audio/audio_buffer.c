@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #ifdef HAVE_FLAC
+#include <FLAC/metadata.h>
 #include <FLAC/stream_encoder.h>
 #endif
 
@@ -459,9 +460,83 @@ static FLAC__StreamEncoderTellStatus flac_mem_tell(const FLAC__StreamEncoder *en
     return FLAC__STREAM_ENCODER_TELL_STATUS_OK;
 }
 
+unsigned audiobuf_flac_blocksize(size_t segment_frames) {
+    /* 4608 divides 120 s at both 48 and 96 kHz; 4096 is libFLAC's default. */
+    static const unsigned candidates[] = { 4608, 4096 };
+    if (segment_frames == 0) return 0;
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        if (segment_frames % candidates[i] == 0) return candidates[i];
+    }
+    return 0;
+}
+
+size_t audiobuf_flac_chunk_frames(unsigned blocksize) {
+    return blocksize ? blocksize : 4096;
+}
+
+/* Convert nframes frames starting at *rpos in the ring to int32, advancing *rpos. */
+static void ring_to_int32(const uint8_t *ring, size_t ring_capacity, size_t *rpos,
+                          size_t nframes, unsigned channels, int bytes_per_sample,
+                          int32_t *dst) {
+    size_t frame_bytes = channels * bytes_per_sample;
+    size_t r = *rpos;
+    if (bytes_per_sample == 2) {
+        for (size_t f = 0; f < nframes; f++) {
+            const int16_t *s16 = (const int16_t *)(ring + r * frame_bytes);
+            for (unsigned ch = 0; ch < channels; ch++)
+                dst[f * channels + ch] = s16[ch];
+            if (++r >= ring_capacity) r = 0;
+        }
+    } else if (bytes_per_sample == 3) {
+        for (size_t f = 0; f < nframes; f++) {
+            const uint8_t *src = ring + r * frame_bytes;
+            for (unsigned ch = 0; ch < channels; ch++) {
+                const uint8_t *s = src + ch * 3;
+                int32_t v = ((int32_t)s[2] << 16) | ((int32_t)s[1] << 8) | (int32_t)s[0];
+                if (v & 0x800000) v |= (int32_t)0xFF000000;
+                dst[f * channels + ch] = v;
+            }
+            if (++r >= ring_capacity) r = 0;
+        }
+    }
+    *rpos = r;
+}
+
+/* VORBIS_COMMENT with the segment's provenance, so the information in the
+ * filename and the sidecar also travels inside the file (and into exports). */
+static FLAC__StreamMetadata *segment_tags(const SegmentMeta *meta) {
+    FLAC__StreamMetadata *vc = FLAC__metadata_object_new(FLAC__METADATA_TYPE_VORBIS_COMMENT);
+    if (!vc) {
+        logmsg("flac", "metadata_object_new failed");
+        return NULL;
+    }
+    char start_ms[32], cursor[32], run_id[32];
+    snprintf(start_ms, sizeof(start_ms), "%lld", (long long)meta->start_unix_ms);
+    snprintf(cursor, sizeof(cursor), "%llu", (unsigned long long)meta->cursor);
+    snprintf(run_id, sizeof(run_id), "%u", meta->run_id);
+    const char *names[4];
+    const char *values[4];
+    int n = 0;
+    if (meta->channel[0]) { names[n] = "CLUBTAGGER_CHANNEL"; values[n++] = meta->channel; }
+    names[n] = "CLUBTAGGER_START_MS"; values[n++] = start_ms;
+    names[n] = "CLUBTAGGER_CURSOR";   values[n++] = cursor;
+    names[n] = "CLUBTAGGER_RUN_ID";   values[n++] = run_id;
+    for (int i = 0; i < n; i++) {
+        FLAC__StreamMetadata_VorbisComment_Entry e;
+        if (!FLAC__metadata_object_vorbiscomment_entry_from_name_value_pair(&e, names[i], values[i]) ||
+            !FLAC__metadata_object_vorbiscomment_append_comment(vc, e, /*copy=*/false)) {
+            logmsg("flac", "vorbis comment %s failed", names[i]);
+            FLAC__metadata_object_delete(vc);
+            return NULL;
+        }
+    }
+    return vc;
+}
+
 int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
                                  size_t ring_start, size_t nframes,
                                  unsigned channels, unsigned rate, int bytes_per_sample,
+                                 unsigned blocksize,
                                  int32_t *flac_buf, size_t flac_buf_samples,
                                  FlacOutBuf *out,
                                  const char *outdir, const char *prefix, time_t start_time,
@@ -472,15 +547,13 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
         return -EINVAL;
     }
 
-    size_t total_samples = nframes * channels;
-    if (!flac_buf || flac_buf_samples < total_samples) {
-        logmsg("flac", "flac_buf too small: need %zu, have %zu", total_samples, flac_buf_samples);
+    const size_t chunk_frames = audiobuf_flac_chunk_frames(blocksize);
+    if (!flac_buf || flac_buf_samples < chunk_frames * channels) {
+        logmsg("flac", "flac_buf too small: need %zu, have %zu", chunk_frames * channels, flac_buf_samples);
         return -EINVAL;
     }
 
     ensure_dir(outdir);
-
-    size_t frame_bytes = channels * bytes_per_sample;
 
     char final_name[512];
     build_audio_filename(final_name, sizeof(final_name), outdir, prefix, NULL, "flac", start_time);
@@ -496,7 +569,11 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
     FLAC__stream_encoder_set_bits_per_sample(encoder, bits);
     FLAC__stream_encoder_set_sample_rate(encoder, rate);
     FLAC__stream_encoder_set_compression_level(encoder, 5);
+    if (blocksize) FLAC__stream_encoder_set_blocksize(encoder, blocksize);
     FLAC__stream_encoder_set_total_samples_estimate(encoder, nframes);
+
+    FLAC__StreamMetadata *tags = meta ? segment_tags(meta) : NULL;
+    if (tags) FLAC__stream_encoder_set_metadata(encoder, &tags, 1);
 
     out->len = 0;
     out->pos = 0;
@@ -506,52 +583,31 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
     if (init_status != FLAC__STREAM_ENCODER_INIT_STATUS_OK) {
         logmsg("flac", "init failed: %s", FLAC__StreamEncoderInitStatusString[init_status]);
         FLAC__stream_encoder_delete(encoder);
+        if (tags) FLAC__metadata_object_delete(tags);
         return -EIO;
     }
 
-    /* Convert ring samples to int32 — one pass, handling wrap */
+    /* Convert, measure and encode one chunk at a time straight from the ring;
+     * no whole-segment int32 copy (that was ~90 MB per channel at 96 kHz). */
+    if (peaks) peaks_reset(peaks);
     size_t rpos = ring_start;
-    if (bytes_per_sample == 2) {
-        for (size_t f = 0; f < nframes; f++) {
-            const int16_t *s16 = (const int16_t *)(ring + rpos * frame_bytes);
-            for (unsigned ch = 0; ch < channels; ch++)
-                flac_buf[f * channels + ch] = s16[ch];
-            if (++rpos >= ring_capacity) rpos = 0;
-        }
-    } else if (bytes_per_sample == 3) {
-        for (size_t f = 0; f < nframes; f++) {
-            const uint8_t *src = ring + rpos * frame_bytes;
-            for (unsigned ch = 0; ch < channels; ch++) {
-                const uint8_t *s = src + ch * 3;
-                int32_t v = ((int32_t)s[2] << 16) | ((int32_t)s[1] << 8) | (int32_t)s[0];
-                if (v & 0x800000) v |= (int32_t)0xFF000000;
-                flac_buf[f * channels + ch] = v;
-            }
-            if (++rpos >= ring_capacity) rpos = 0;
-        }
-    }
-
-    /* Waveform peaks for the sidecar, from the same samples */
-    if (peaks) {
-        peaks_reset(peaks);
-        peaks_feed(peaks, flac_buf, nframes);
-    }
-
-    /* Encode in chunks */
-    const size_t chunk_frames = 4096;
     FLAC__bool ok = true;
     for (size_t pos = 0; pos < nframes && ok; pos += chunk_frames) {
         size_t n = (nframes - pos < chunk_frames) ? (nframes - pos) : chunk_frames;
-        ok = FLAC__stream_encoder_process_interleaved(encoder, flac_buf + pos * channels, (unsigned)n);
+        ring_to_int32(ring, ring_capacity, &rpos, n, channels, bytes_per_sample, flac_buf);
+        if (peaks) peaks_feed(peaks, flac_buf, n);
+        ok = FLAC__stream_encoder_process_interleaved(encoder, flac_buf, (unsigned)n);
     }
     if (ok) ok = FLAC__stream_encoder_finish(encoder);
 
     if (!ok) {
         logmsg("flac", "encode failed: %s", FLAC__StreamEncoderStateString[FLAC__stream_encoder_get_state(encoder)]);
         FLAC__stream_encoder_delete(encoder);
+        if (tags) FLAC__metadata_object_delete(tags);
         return -EIO;
     }
     FLAC__stream_encoder_delete(encoder);
+    if (tags) FLAC__metadata_object_delete(tags);
 
     int rc = publish_file("flac", outdir, final_name, out->buf, out->len);
     if (rc < 0) return rc;
@@ -573,6 +629,7 @@ int64_t audiobuf_write_flac_ring(const uint8_t *ring, size_t ring_capacity,
 int64_t audiobuf_write_ring(const uint8_t *ring, size_t ring_capacity,
                             size_t ring_start, size_t nframes,
                             unsigned channels, unsigned rate, int bytes_per_sample,
+                            unsigned blocksize,
                             int32_t *flac_buf, size_t flac_buf_samples,
                             FlacOutBuf *out,
                             const char *outdir, const char *prefix, const char *format,
@@ -580,12 +637,12 @@ int64_t audiobuf_write_ring(const uint8_t *ring, size_t ring_capacity,
 #ifdef HAVE_FLAC
     if (format && strcmp(format, "flac") == 0) {
         return audiobuf_write_flac_ring(ring, ring_capacity, ring_start, nframes,
-                                        channels, rate, bytes_per_sample,
+                                        channels, rate, bytes_per_sample, blocksize,
                                         flac_buf, flac_buf_samples, out,
                                         outdir, prefix, start_time, peaks, meta);
     }
 #else
-    (void)flac_buf; (void)flac_buf_samples; (void)out; (void)peaks; (void)meta;
+    (void)blocksize; (void)flac_buf; (void)flac_buf_samples; (void)out; (void)peaks; (void)meta;
     if (format && strcmp(format, "flac") == 0) {
         logmsg("wrt", "FLAC not available, falling back to WAV");
     }
