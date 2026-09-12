@@ -5,7 +5,8 @@
 //   /recordings-json/  -> nginx-style JSON autoindex of that directory
 // Usage: node tests/dev-server.mjs <recordings-dir> [port]
 import { createServer } from 'node:http';
-import { stat, readdir, open } from 'node:fs/promises';
+import { stat, readdir } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { join, extname, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,10 +38,11 @@ async function serveFile(req, res, path) {
         ...(status === 206 ? { 'Content-Range': `bytes ${start}-${end}/${st.size}` } : {}),
     });
     if (req.method === 'HEAD') { res.end(); return; }
-    const fh = await open(path, 'r');
-    const stream = fh.createReadStream({ start, end });
+    // path-based stream: owns and closes its descriptor, also when the client aborts
+    const stream = createReadStream(path, { start, end });
+    stream.on('error', () => res.destroy());
+    res.on('close', () => stream.destroy());
     stream.pipe(res);
-    stream.on('close', () => fh.close().catch(() => {}));
 }
 
 createServer(async (req, res) => {
