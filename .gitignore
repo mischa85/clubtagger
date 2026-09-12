@@ -35,3 +35,4 @@ LIVE-ISSUES-*.md
 
 # waveform sidecars
 *.peaks
+/peaksgen
