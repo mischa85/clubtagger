@@ -28,8 +28,9 @@ size_t asyncwr_position(AsyncWriter *aw);
 size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes);
 
 /* Write frames [from, to) to disk asynchronously.
+ * start_ms: wall clock of frame `from` in unix milliseconds (filename + sidecar)
  * channel: SLink channel name for filename (NULL = no channel suffix) */
-void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time,
+void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, int64_t start_ms,
                          const char *channel);
 
 /* Wait for any pending async write to complete */

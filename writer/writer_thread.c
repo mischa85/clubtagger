@@ -53,12 +53,29 @@ typedef struct {
     bool     recording;
     unsigned below_cnt;
     size_t   write_cursor;
-    time_t   segment_start_time;
+    /* Wall clock of the first frame of the current burst and its cursor.
+     * Every segment start inside the burst is derived from these two by
+     * sample arithmetic, so filenames and sidecars stay sample-exact even
+     * when the writer runs behind real time. */
+    int64_t  burst_start_ms;
+    size_t   burst_start_cursor;
+    int64_t  segment_start_ms;
     unsigned window_pos;
     unsigned window_above;
     bool     window_full;
     unsigned last_trigger_pct;
 } WriterChState;
+
+static int64_t now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Wall clock of frame `cursor`, derived from the burst start. */
+static int64_t cursor_ms(const WriterChState *ws, size_t cursor, unsigned rate) {
+    return ws->burst_start_ms + (int64_t)((cursor - ws->burst_start_cursor) * 1000 / rate);
+}
 
 void *writer_main(void *arg) {
     App *app = (App *)arg;
@@ -146,13 +163,15 @@ void *writer_main(void *arg) {
                     }
 
                     size_t prebuffer_frames = current_pos - ws->write_cursor;
-                    ws->segment_start_time = time(NULL) - (time_t)(prebuffer_frames / cfg->rate);
+                    ws->burst_start_cursor = ws->write_cursor;
+                    ws->burst_start_ms = now_ms() - (int64_t)(prebuffer_frames * 1000 / cfg->rate);
+                    ws->segment_start_ms = ws->burst_start_ms;
                     pthread_mutex_unlock(&cs->aw.mu);
 
                     const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
                     build_audio_filename(cs->current_wav, sizeof(cs->current_wav),
                                          cfg->outdir, cfg->prefix, ch_name, ext,
-                                         ws->segment_start_time);
+                                         (time_t)(ws->segment_start_ms / 1000));
 
                     ws->recording = true;
                     ws->below_cnt = 0;
@@ -182,15 +201,18 @@ void *writer_main(void *arg) {
                            (double)max_file_frames / cfg->rate / 60.0);
 
                     asyncwr_write_range(&cs->aw, ws->write_cursor, split_end,
-                                        ws->segment_start_time, ch_name);
+                                        ws->segment_start_ms, ch_name);
 
                     ws->write_cursor = split_end;
-                    ws->segment_start_time = time(NULL);
+                    /* Not time(NULL): the cursor runs up to ring_sec - max_file_sec
+                     * behind real time right after a trigger, which used to name
+                     * the second file of every burst up to 60 s too late. */
+                    ws->segment_start_ms = cursor_ms(ws, split_end, cfg->rate);
 
                     const char *ext = (cfg->format && strcmp(cfg->format, "flac") == 0) ? "flac" : "wav";
                     build_audio_filename(cs->current_wav, sizeof(cs->current_wav),
                                          cfg->outdir, cfg->prefix, ch_name, ext,
-                                         ws->segment_start_time);
+                                         (time_t)(ws->segment_start_ms / 1000));
                 }
 
                 /* Check for silence */
@@ -210,7 +232,7 @@ void *writer_main(void *arg) {
                         logmsg("wrt", "[%s] STOP: writing frames %zu-%zu",
                                ch_name, ws->write_cursor, final_pos);
                         asyncwr_write_range(&cs->aw, ws->write_cursor, final_pos,
-                                            ws->segment_start_time, ch_name);
+                                            ws->segment_start_ms, ch_name);
                         ws->write_cursor = final_pos;
                     }
                     ws->recording = false;
@@ -238,7 +260,7 @@ void *writer_main(void *arg) {
             logmsg("wrt", "[%s] SHUTDOWN: writing frames %zu-%zu",
                    ch_name, ws->write_cursor, final_pos);
             asyncwr_write_range(&cs->aw, ws->write_cursor, final_pos,
-                                ws->segment_start_time, ch_name);
+                                ws->segment_start_ms, ch_name);
         }
         asyncwr_wait_pending(&cs->aw);
     }

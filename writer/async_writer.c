@@ -17,7 +17,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 static int64_t asyncwr_do_write(AsyncWriter *aw, size_t from, size_t to,
-                                time_t start_time, const char *channel) {
+                                int64_t start_ms, const char *channel) {
     size_t nframes = to - from;
     size_t ring_start = from % aw->capacity;
 
@@ -31,9 +31,10 @@ static int64_t asyncwr_do_write(AsyncWriter *aw, size_t from, size_t to,
 
     SegmentMeta meta = {
         .cursor = (uint64_t)from,
-        .start_unix_ms = (int64_t)start_time * 1000,
+        .start_unix_ms = start_ms,
         .run_id = aw->run_id,
     };
+    time_t start_time = (time_t)(start_ms / 1000);
 
     int64_t file_size = audiobuf_write_ring(
         aw->data, aw->capacity, ring_start, nframes,
@@ -59,7 +60,7 @@ static void *asyncwr_thread_main(void *arg) {
 
         size_t from = aw->write_from;
         size_t to = aw->write_to;
-        time_t start_time = aw->write_start_time;
+        int64_t start_ms = aw->write_start_ms;
         char channel[32];
         memcpy(channel, aw->write_channel, sizeof(channel));
         pthread_mutex_unlock(&aw->mu);
@@ -70,7 +71,7 @@ static void *asyncwr_thread_main(void *arg) {
             size_t tw = atomic_load_explicit(&aw->total_written, memory_order_acquire);
             size_t oldest = (tw > aw->capacity) ? (tw - aw->capacity) : 0;
             if (from >= oldest) {
-                int64_t written = asyncwr_do_write(aw, from, to, start_time, channel);
+                int64_t written = asyncwr_do_write(aw, from, to, start_ms, channel);
                 atomic_fetch_add_explicit(&aw->bytes_on_disk, (uint64_t)written, memory_order_relaxed);
             } else {
                 logmsg("wrt", "ERROR: ring overwritten before encode (from=%zu oldest=%zu, lost %.1f sec)",
@@ -233,7 +234,7 @@ size_t asyncwr_copy_last(AsyncWriter *aw, void *dst, size_t nframes) {
     return take;
 }
 
-void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_time,
+void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, int64_t start_ms,
                          const char *channel) {
     /* Read total_written atomically first */
     size_t tw = atomic_load_explicit(&aw->total_written, memory_order_acquire);
@@ -266,7 +267,7 @@ void asyncwr_write_range(AsyncWriter *aw, size_t from, size_t to, time_t start_t
     /* Store range for writer thread — no data copy */
     aw->write_from = from;
     aw->write_to = to;
-    aw->write_start_time = start_time;
+    aw->write_start_ms = start_ms;
     if (channel && channel[0]) {
         strncpy(aw->write_channel, channel, sizeof(aw->write_channel) - 1);
         aw->write_channel[sizeof(aw->write_channel) - 1] = '\0';

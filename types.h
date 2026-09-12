@@ -168,7 +168,7 @@ typedef struct {
     /* Async write state (writer thread reads directly from ring) */
     size_t          write_from;
     size_t          write_to;
-    time_t          write_start_time;
+    int64_t         write_start_ms;    /* wall clock of write_from, unix ms */
     char            write_channel[32]; /* SLink channel name for filename */
     int             write_pending;
 
