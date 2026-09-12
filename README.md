@@ -279,6 +279,43 @@ location / {
 }
 ```
 
+### Recordings browser and set export
+
+`recordings.html` (linked from the main page) shows the recordings of a date as
+waveform timelines per channel and exports any range as one lossless FLAC.
+Everything runs in the browser; the recorder only serves static files.
+
+- **Date window**: picking a date shows 00:00 of that date until 12:00 the next
+  day, so an evening that runs past midnight stays together and day events show
+  up too. Contiguous recordings form a *session*; gaps between sessions are
+  drawn empty.
+- **Waveforms** come from the `.peaks` sidecar the recorder writes next to every
+  FLAC segment (10 min/max points per second, 16-bit, ~10 kB per 2-minute
+  segment). Recordings made before sidecars existed can be backfilled once:
+  `nice -n 19 peaksgen /data/recordings` (about 1 s per segment; skips files
+  that already have a sidecar).
+- **Selection**: drag on a waveform; the edges snap to segment boundaries.
+  Scroll to zoom, shift-scroll or drag the ruler to pan, double-click a session
+  to fit it, click a segment to listen to it.
+- **Export** splices the selected segments without decoding: frame headers are
+  renumbered and their CRCs recomputed, the audio payload is copied byte for
+  byte, and a new STREAMINFO, SEEKTABLE and tags are written in front. Segments
+  recorded with a blocksize that divides the segment length (the default since
+  the blocksize change) give an ordinary fixed-blocksize FLAC; older 4096-block
+  recordings give a spec-legal variable-blocksize FLAC. Because the file is
+  streamed to disk while it is built (a 2-hour set is ~2 GB), the export needs
+  Chrome or Edge (File System Access API). Any CRC failure aborts the export;
+  no partial file is left behind.
+- **nginx**: `recordings.html` reads the directory through a JSON autoindex at
+  `/recordings-json/` and fetches files from `/recordings/`; see
+  `nginx.conf.example`.
+
+Development without the recorder: `node tests/dev-server.mjs <dir-with-flac-and-peaks>`
+serves `www/` with the same two locations. `npm test` runs the splicer unit
+tests, `node tests/splice-cli.mjs out.flac seg1.flac seg2.flac ...` splices
+from the command line and `tests/verify-splice.sh` checks a result against its
+sources with `flac`, `metaflac` and `ffmpeg` (byte-identical PCM, seeking).
+
 ### Features
 - **VU meters** — 60 Hz audio levels with peak hold and decay
 - **CDJ deck status** — real-time from raw Pro DJ Link packets:
@@ -348,6 +385,19 @@ clubtagger/
 ├── db/               # SQLite integration
 └── www/              # Web UI (HTML/JS)
 ```
+
+### Segment files
+
+Each channel is written as consecutive FLAC segments of `--max-file-sec`
+(default 120 s), named `YYYYMMDD_HHMMSS_<prefix>_<channel>.flac` in local time.
+Consecutive segments of one recording are sample-continuous. A segment is
+encoded in memory, written to `<outdir>/.incoming/`, fsync'd and renamed into
+place, then its `.peaks` sidecar is written; a sidecar therefore always belongs
+to a complete FLAC. The encoder blocksize is chosen to divide the segment
+length (4608 at 48 and 96 kHz) so full segments have no short tail frame. Each
+file carries `CLUBTAGGER_CHANNEL`, `CLUBTAGGER_START_MS`, `CLUBTAGGER_CURSOR`
+and `CLUBTAGGER_RUN_ID` Vorbis comments; cursor + run id let readers prove that
+two segments are contiguous.
 
 ### Ring Buffer
 

@@ -42,6 +42,29 @@ server {
         try_files $uri $uri/ =404;
     }
 
+    # Recordings: FLAC segments and their .peaks waveform sidecars, written by
+    # clubtagger to /data/recordings (--outdir). The recorder stages files in
+    # /data/recordings/.incoming/ (a dot-directory autoindex never lists) and
+    # renames them into place, so every listed file is complete.
+    #   /recordings/       human-readable listing + the files themselves
+    #                      (Range requests let recordings.html audition and export)
+    #   /recordings-json/  the same directory as JSON, read by recordings.html
+    location /recordings/ {
+        root /data;
+        autoindex on;
+        location ~ \.peaks$ {
+            add_header Cache-Control "public, max-age=2592000, immutable";
+        }
+    }
+    location /recordings-json/ {
+        alias /data/recordings/;
+        autoindex on;
+        autoindex_format json;
+        autoindex_exact_size on;
+        gzip on;
+        gzip_types application/json;
+    }
+
     # WebSocket proxy to clubtagger Unix socket.
     #
     # auth_basic is off here because browsers don't reliably attach Basic Auth
