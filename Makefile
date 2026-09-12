@@ -163,7 +163,7 @@ all: peaksgen
 endif
 
 peaksgen: tools/peaksgen.o audio/peaks.o common.o
-	$(CC) $^ -o $@ $(THREAD) $(FLAC_LIBS) $(MATH_LIBS)
+	$(CC) $^ -o $@ $(THREAD) $(FLAC_LIBS) $(MATH_LIBS) $(LDFLAGS_EXTRA)
 
 tools/%.o: tools/%.c
 	$(CC) $(CFLAGS) -I. -c $< -o $@
