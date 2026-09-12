@@ -15,7 +15,7 @@
 export class Timeline {
     constructor(root, opts = {}) {
         this.root = root;
-        this.opts = opts;                      // { formatTime(ms, withSeconds), onSelect(sel), onAudition(channelId, seg), onViewChange(view) }
+        this.opts = opts;                      // { formatTime(ms, withSeconds), onSelect(sel), onSelecting(sel), onAudition(channelId, seg), onViewChange(view) }
         this.channels = [];
         this.view = { startMs: 0, endMs: 1 };
         this.limits = { startMs: 0, endMs: 1 };
@@ -157,6 +157,7 @@ export class Timeline {
         if (which === 'start') this.selection = { channel: ch.id, i0: Math.min(idx, sel.i1), i1: sel.i1 };
         else this.selection = { channel: ch.id, i0: sel.i0, i1: Math.max(idx, sel.i0) };
         this.render();
+        if (this.opts.onSelecting) this.opts.onSelecting(this.selection);   // live summary while dragging
     }
 
     bindRow(row) {
@@ -193,7 +194,11 @@ export class Timeline {
             if (!this.drag.moved && Math.abs(x - this.drag.x0) < 4) return;
             this.drag.moved = true;
             const sel = this.snap(ch, this.drag.t0, this.t(x));
-            if (sel) { this.selection = sel; this.render(); }
+            if (sel) {
+                this.selection = sel;
+                this.render();
+                if (this.opts.onSelecting) this.opts.onSelecting(sel);   // live summary while dragging
+            }
         });
         const finish = (e) => {
             if (!this.drag || (this.drag.kind !== 'select' && this.drag.kind !== 'edge')) return;

@@ -257,6 +257,7 @@ const timeline = new Timeline(el.timeline, {
     formatTime: fmtTime,
     tzOffsetMs,
     onSelect: (sel) => { state.selection = sel; renderSummary(); },
+    onSelecting: (sel) => { state.selection = sel; renderSummary(); },
     onAudition: audition,
 });
 
