@@ -310,6 +310,27 @@ Everything runs in the browser; the recorder only serves static files.
   `/recordings-json/` and fetches files from `/recordings/`; see
   `nginx.conf.example`.
 
+**Running the browser from a backup NAS.** The recorder exposes
+`/data/recordings` (FLAC + `.peaks`, minus the staging directory) as a
+read-only rsync module `recordings`, plain rsync protocol on port 873 with
+challenge-response login (user `nas`, password in `/etc/rsyncd.secrets` on the
+recorder), so a weak NAS can pull without any TLS or ssh cost:
+
+```
+RSYNC_PASSWORD=... rsync -rt --exclude '.incoming/' rsync://nas@<recorder>/recordings/ /srv/recordings/
+```
+
+Serve `www/` and that directory from the NAS's nginx with the same two
+locations as `nginx.conf.example` (`/recordings/` and `/recordings-json/`);
+if its nginx predates `autoindex_format json`, the page falls back to reading
+the HTML directory index. The export needs the page in a secure context
+(HTTPS on the NAS, or Chrome started with
+`--unsafely-treat-insecure-origin-as-secure=http://<nas>`), and FLAC bytes then
+flow through the NAS's TLS, which is slow on an ARMv6. For a PC-class box,
+`tools/recordings-proxy.mjs` is an alternative that serves the page on
+localhost and proxies to the recorder (FLAC over plain HTTP from port 80,
+the rest over HTTPS).
+
 Development without the recorder: `node tests/dev-server.mjs <dir-with-flac-and-peaks>`
 serves `www/` with the same two locations. `npm test` runs the splicer unit
 tests, `node tests/splice-cli.mjs out.flac seg1.flac seg2.flac ...` splices

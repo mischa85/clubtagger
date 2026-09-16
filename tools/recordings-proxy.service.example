@@ -1,0 +1,22 @@
+# systemd unit for the machine that runs the recordings browser.
+# Copy to /etc/systemd/system/recordings-proxy.service, fill in the
+# environment, then: systemctl enable --now recordings-proxy
+[Unit]
+Description=Clubtagger recordings browser (proxy to the recorder)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Path of a clubtagger checkout on this machine (www/ and tools/ are used)
+WorkingDirectory=/opt/clubtagger
+Environment=CLUBTAGGER_HTTPS=https://antia.duckdns.org:20124
+Environment=CLUBTAGGER_HTTP=http://antia.duckdns.org:20180
+# Dedicated low-value user: its password crosses the wire in clear on the HTTP path
+Environment=CLUBTAGGER_AUTH=robbie:CHANGE_ME
+ExecStart=/usr/bin/node tools/recordings-proxy.mjs 8080
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

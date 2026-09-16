@@ -17,11 +17,25 @@ upstream clubtagger {
     server unix:/run/clubtagger.sock;
 }
 
-# Redirect HTTP to HTTPS
+# Port 80: only the FLAC files, unencrypted (TLS for gigabytes of audio was
+# the recorder's largest CPU cost; the recordings are not secret). Everything
+# else is redirected to HTTPS. Basic auth still applies; use a dedicated
+# low-value user here since its password crosses the wire in clear.
 server {
     listen 80;
     server_name _;
-    return 301 https://$host$request_uri;
+
+    auth_basic "Clubtagger";
+    auth_basic_user_file /etc/nginx/clubtagger.htpasswd;
+
+    location ~ ^/recordings/(?<file>[^/]+\.flac)$ {
+        alias /data/recordings/$file;
+        limit_rate 60m;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {

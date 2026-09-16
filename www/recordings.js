@@ -73,8 +73,34 @@ function parseName(name) {
 async function fetchListing() {
     if (MOCK) return mockListing();
     const r = await fetch(LISTING_URL, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`listing failed: HTTP ${r.status}`);
-    return r.json();
+    if (r.ok) return r.json();
+    // No JSON listing (older nginx, or the location is missing): fall back to
+    // the HTML autoindex of /recordings/ and read the anchors. Sizes there are
+    // humanized unless autoindex_exact_size is on, so they are approximate.
+    const h = await fetch(FILE_BASE, { cache: 'no-store' });
+    if (!h.ok) throw new Error(`listing failed: HTTP ${r.status} (json) / ${h.status} (html)`);
+    return parseHtmlIndex(await h.text());
+}
+
+function parseHtmlIndex(html) {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    const out = [];
+    for (const a of doc.querySelectorAll('a[href]')) {
+        const name = decodeURIComponent(a.getAttribute('href'));
+        if (!/\.(flac|peaks)$/.test(name) || name.includes('/')) continue;
+        // nginx: "<a href="x">x</a>   10-Sep-2026 18:19   20M" — the text after the anchor
+        const tail = (a.nextSibling && a.nextSibling.textContent) || '';
+        const m = /(\S+ \S+)\s+(\S+)\s*$/.exec(tail.trim());
+        let size = 0;
+        if (m) {
+            const s = m[2];
+            const num = parseFloat(s);
+            const unit = s.replace(/[0-9.]/g, '');
+            size = Math.round(num * ({ '': 1, K: 1e3, M: 1e6, G: 1e9 }[unit] || 1));
+        }
+        out.push({ name, type: 'file', size });
+    }
+    return out;
 }
 
 /* ─────────────────── sidecars ─────────────────── */
