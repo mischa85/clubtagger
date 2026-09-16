@@ -499,7 +499,13 @@ async function startExport() {
     const sel = state.selection;
     const ch = sel && state.channels.get(sel.channel);
     if (!ch) return;
-    const streaming = !!window.showSaveFilePicker;   // secure context in Chrome/Edge
+    if (!window.showSaveFilePicker) {
+        showResult(window.isSecureContext
+            ? 'This browser has no File System Access API; the export needs Chrome or Edge.'
+            : `The export streams gigabytes to disk, which browsers only allow on a secure context. Start Chrome with --unsafely-treat-insecure-origin-as-secure=${location.origin} (chrome://flags, "Insecure origins treated as secure") or open the page over HTTPS.`,
+            'error');
+        return;
+    }
     const segs = ch.segments.slice(sel.i0, sel.i1 + 1);
     const fmts = new Set(segs.filter((s) => s.peaks).map((s) => `${s.peaks.rate}/${s.peaks.channels}/${s.peaks.bps}`));
     if (fmts.size > 1) {
@@ -508,23 +514,19 @@ async function startExport() {
     }
     const startMs = segs[0].startMs, endMs = segs[segs.length - 1].startMs + segs[segs.length - 1].durMs;
     const suggested = `clubtagger_${ch.id}_${dateKey(startMs)}_${fmtTime(startMs).replace(':', '')}-${fmtTime(endMs).replace(':', '')}.flac`;
-    let handle = null;
-    if (streaming) {
-        try {
-            handle = await window.showSaveFilePicker({
-                suggestedName: suggested, id: 'clubtagger-export',
-                types: [{ description: 'FLAC audio', accept: { 'audio/flac': ['.flac'] } }],
-            });
-        } catch (e) {
-            if (e.name === 'AbortError') return;     // user closed the dialog
-            showResult('Could not open the save dialog: ' + e.message, 'error');
-            return;
-        }
+    let handle;
+    try {
+        handle = await window.showSaveFilePicker({
+            suggestedName: suggested, id: 'clubtagger-export',
+            types: [{ description: 'FLAC audio', accept: { 'audio/flac': ['.flac'] } }],
+        });
+    } catch (e) {
+        if (e.name === 'AbortError') return;     // user closed the dialog
+        showResult('Could not open the save dialog: ' + e.message, 'error');
+        return;
     }
-    // Without the File System Access API (plain-HTTP page, Firefox, Safari) the
-    // file is assembled as a Blob and offered as a download when finished.
     const totalBytes = segs.reduce((x, s) => x + (s.size || 0), 0);
-    state.exporting = { startedAt: Date.now(), totalBytes, segs: segs.length, name: handle ? handle.name : suggested, blobMode: !handle };
+    state.exporting = { startedAt: Date.now(), totalBytes, segs: segs.length, name: handle.name };
     el.exportBtn.disabled = true;
     el.cancelBtn.hidden = false;
     el.progress.hidden = false;
@@ -575,18 +577,7 @@ function finishExport(m) {
     renderSummary();
     if (m.type === 'done') {
         const s = m.summary;
-        if (m.blob) {
-            // Blob mode: hand the finished file to the browser as a download.
-            const url = URL.createObjectURL(m.blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = ex ? ex.name : 'export.flac';
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 60000);
-        }
-        showResult(`${m.blob ? 'Download started for' : 'Saved'} ${ex ? ex.name : 'file'}: ${fmtDur(s.totalSamples / s.rate * 1000)}, ${fmtBytes(s.bytesOut)}, ${s.frames} frames, ` +
+        showResult(`Saved ${ex ? ex.name : 'file'}: ${fmtDur(s.totalSamples / s.rate * 1000)}, ${fmtBytes(s.bytesOut)}, ${s.frames} frames, ` +
                    `${s.mode === 'fixed' ? 'fixed' : 'variable'} blocksize (${s.minBlock}–${s.maxBlock}), ${s.seekPoints} seek points.`, 'ok');
     } else if (m.type === 'cancelled') {
         showResult('Export cancelled; nothing was written.', 'warn');

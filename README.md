@@ -304,7 +304,8 @@ Everything runs in the browser; the recorder only serves static files.
   the blocksize change) give an ordinary fixed-blocksize FLAC; older 4096-block
   recordings give a spec-legal variable-blocksize FLAC. Because the file is
   streamed to disk while it is built (a 2-hour set is ~2 GB), the export needs
-  Chrome or Edge (File System Access API). Any CRC failure aborts the export;
+  Chrome or Edge (File System Access API) on a secure context; see the NAS
+  section for the plain-HTTP case. Any CRC failure aborts the export;
   no partial file is left behind.
 - **Where it runs**: on the backup NAS the recorder pushes to (below), not on
   the recorder. `recordings.html` reads the directory through a JSON autoindex
@@ -333,12 +334,12 @@ plain URLs, so a basic-auth deployment works unchanged; a 403 from the listing
 opens the key prompt. If the nginx predates `autoindex_format json`, the page
 falls back to reading the HTML directory index.
 
-A plain-HTTP page is not a "secure context", so the streaming export via the
-File System Access API is unavailable there; the page then assembles the FLAC
-as a Blob and offers it as a normal download when finished (works in every
-browser, needs temporary space on the client). Chrome started with
-`--unsafely-treat-insecure-origin-as-secure=http://<nas>` gets the streaming
-export back. For a PC-class box,
+A plain-HTTP page is not a "secure context", and the export streams to disk
+through the File System Access API, which only exists there. Browsing and
+listening work everywhere; for exporting, Chrome must be started with
+`--unsafely-treat-insecure-origin-as-secure=http://<nas>` (or the same origin
+entered under chrome://flags "Insecure origins treated as secure"). The page
+says so when the export button is pressed without it. For a PC-class box,
 `tools/recordings-proxy.mjs` is an alternative that serves the page on
 localhost and proxies every request to the recorder over HTTPS.
 
