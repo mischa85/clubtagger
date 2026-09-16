@@ -321,13 +321,24 @@ sent in clear). On the recorder set `REMOTE` in
 `/etc/rsync.pass`, and enable the timer; on the NAS use
 `tools/nas-rsyncd.conf.example`. Nothing is deleted on the recorder yet.
 
-Serve `www/` and the pushed directory from the NAS's nginx with the same two
-locations as `nginx.conf.example` (`/recordings/` and `/recordings-json/`);
-if its nginx predates `autoindex_format json`, the page falls back to reading
-the HTML directory index. The export needs the page in a secure context
-(HTTPS on the NAS, or Chrome started with
-`--unsafely-treat-insecure-origin-as-secure=http://<nas>`), and FLAC bytes then
-flow through the NAS's TLS, which is slow on an ARMv6. For a PC-class box,
+Serve `www/` and the pushed directory from the NAS's nginx as in
+`tools/nas-nginx.conf.example`: **plain HTTP with signed URLs** (nginx
+`secure_link`). TLS on the NAS manages ~2 MB/s, so audio is served
+unencrypted; instead of a password, every request carries
+`?md5=…&expires=…` computed from a secret the user enters once in the page
+(key button, kept in the browser's localStorage). The secret never crosses
+the wire; an eavesdropper sees the audio and can replay a URL until it expires
+(1 h for browsing, 12 h for an export). Without a stored key the page sends
+plain URLs, so a basic-auth deployment works unchanged; a 403 from the listing
+opens the key prompt. If the nginx predates `autoindex_format json`, the page
+falls back to reading the HTML directory index.
+
+A plain-HTTP page is not a "secure context", so the streaming export via the
+File System Access API is unavailable there; the page then assembles the FLAC
+as a Blob and offers it as a normal download when finished (works in every
+browser, needs temporary space on the client). Chrome started with
+`--unsafely-treat-insecure-origin-as-secure=http://<nas>` gets the streaming
+export back. For a PC-class box,
 `tools/recordings-proxy.mjs` is an alternative that serves the page on
 localhost and proxies every request to the recorder over HTTPS.
 

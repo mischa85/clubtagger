@@ -7,6 +7,7 @@
  * a file the user picks (File System Access API, Chrome/Edge).
  */
 import { Timeline, fmtDur } from './timeline.js';
+import { signUrl } from './md5.js';
 
 const TZ = 'Europe/Amsterdam';           // the recorder's zone: filenames are local time there
 const LISTING_URL = '/recordings-json/';
@@ -14,6 +15,27 @@ const FILE_BASE = '/recordings/';
 const HIDDEN_BY_DEFAULT = new Set(['master']);
 const SEGMENT_SEC = 120;                  // recorder default --max-file-sec, used when no sidecar
 const MOCK = new URLSearchParams(location.search).has('mock');
+const SIGN_TTL_SEC = 3600;               // signed URL lifetime for listing, sidecars, audition
+const EXPORT_TTL_SEC = 12 * 3600;        // an export must outlive slow links
+
+/* ─────────────────── request signing (nginx secure_link) ───────────────────
+ * When the server checks signed URLs instead of a password (see
+ * tools/nas-nginx.conf.example), every data request carries
+ * ?md5=…&expires=… computed from a secret that stays in this browser.
+ * Without a stored key, URLs are used as-is (basic-auth deployments). */
+let accessKey = '';
+try {
+    const fromUrl = new URLSearchParams(location.search).get('key');
+    if (fromUrl) { localStorage.setItem('recordings-key', fromUrl); history.replaceState(null, '', location.pathname + location.search.replace(/[?&]key=[^&]*/, '').replace(/^&/, '?')); }
+    accessKey = localStorage.getItem('recordings-key') || '';
+} catch (e) { /* storage unavailable */ }
+function sign(path, ttl = SIGN_TTL_SEC) {
+    return accessKey ? signUrl(path, accessKey, ttl) : path;
+}
+function setAccessKey(k) {
+    accessKey = k.trim();
+    try { if (accessKey) localStorage.setItem('recordings-key', accessKey); else localStorage.removeItem('recordings-key'); } catch (e) { /* ignore */ }
+}
 const DEBUG = new URLSearchParams(location.search).has('debug');   // logs every chaining decision
 
 /* ─────────────────── time zone helpers ─────────────────── */
@@ -72,12 +94,17 @@ function parseName(name) {
 
 async function fetchListing() {
     if (MOCK) return mockListing();
-    const r = await fetch(LISTING_URL, { cache: 'no-store' });
+    const r = await fetch(sign(LISTING_URL), { cache: 'no-store' });
     if (r.ok) return r.json();
+    if (r.status === 403 || r.status === 410) {
+        const e = new Error(accessKey ? 'the access key was rejected' : 'this server needs an access key');
+        e.needKey = true;
+        throw e;
+    }
     // No JSON listing (older nginx, or the location is missing): fall back to
     // the HTML autoindex of /recordings/ and read the anchors. Sizes there are
     // humanized unless autoindex_exact_size is on, so they are approximate.
-    const h = await fetch(FILE_BASE, { cache: 'no-store' });
+    const h = await fetch(sign(FILE_BASE), { cache: 'no-store' });
     if (!h.ok) throw new Error(`listing failed: HTTP ${r.status} (json) / ${h.status} (html)`);
     return parseHtmlIndex(await h.text());
 }
@@ -144,7 +171,7 @@ async function loadPeaks(seg) {
     let p;
     if (MOCK) p = mockPeaks(seg);
     else {
-        const r = await fetch(FILE_BASE + seg.base + '.peaks');
+        const r = await fetch(sign(FILE_BASE + seg.base + '.peaks'));
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         p = parsePeaks(await r.arrayBuffer());
     }
@@ -277,6 +304,7 @@ const el = {
     exportBtn: $('export'), cancelBtn: $('cancel'), progress: $('progress'),
     progressFill: $('progress-fill'), progressText: $('progress-text'), result: $('result'),
     audio: $('audio'), auditionLabel: $('audition-label'), timeline: $('timeline'),
+    keyBtn: $('key-btn'), keyRow: $('key-row'), keyInput: $('key-input'), keySave: $('key-save'),
 };
 
 const timeline = new Timeline(el.timeline, {
@@ -402,6 +430,7 @@ async function loadDate(dateStr, { keepView = false } = {}) {
         listing = await fetchListing();
     } catch (e) {
         setStatus(`Could not load the recordings listing: ${e.message}`, 'error');
+        if (e.needKey) showKeyEntry();
         return;
     }
     buildModel(listing);
@@ -436,7 +465,7 @@ function audition(channelId, seg, atMs) {
     el.auditionLabel.textContent = `${channelId} · ${fmtTime(seg.startMs, true)} · ${seg.name}`;
     if (MOCK) { el.auditionLabel.textContent += ' (mock: no audio)'; return; }
     const offset = Math.max(0, (atMs - seg.startMs) / 1000);
-    el.audio.src = FILE_BASE + seg.name;
+    el.audio.src = sign(FILE_BASE + seg.name);
     el.audio.currentTime = offset;
     el.audio.play().catch(() => {});
 }
@@ -470,10 +499,7 @@ async function startExport() {
     const sel = state.selection;
     const ch = sel && state.channels.get(sel.channel);
     if (!ch) return;
-    if (!window.showSaveFilePicker) {
-        showResult('This browser cannot stream a large file to disk. Use Chrome or Edge for the export.', 'error');
-        return;
-    }
+    const streaming = !!window.showSaveFilePicker;   // secure context in Chrome/Edge
     const segs = ch.segments.slice(sel.i0, sel.i1 + 1);
     const fmts = new Set(segs.filter((s) => s.peaks).map((s) => `${s.peaks.rate}/${s.peaks.channels}/${s.peaks.bps}`));
     if (fmts.size > 1) {
@@ -482,19 +508,23 @@ async function startExport() {
     }
     const startMs = segs[0].startMs, endMs = segs[segs.length - 1].startMs + segs[segs.length - 1].durMs;
     const suggested = `clubtagger_${ch.id}_${dateKey(startMs)}_${fmtTime(startMs).replace(':', '')}-${fmtTime(endMs).replace(':', '')}.flac`;
-    let handle;
-    try {
-        handle = await window.showSaveFilePicker({
-            suggestedName: suggested, id: 'clubtagger-export',
-            types: [{ description: 'FLAC audio', accept: { 'audio/flac': ['.flac'] } }],
-        });
-    } catch (e) {
-        if (e.name === 'AbortError') return;     // user closed the dialog
-        showResult('Could not open the save dialog: ' + e.message, 'error');
-        return;
+    let handle = null;
+    if (streaming) {
+        try {
+            handle = await window.showSaveFilePicker({
+                suggestedName: suggested, id: 'clubtagger-export',
+                types: [{ description: 'FLAC audio', accept: { 'audio/flac': ['.flac'] } }],
+            });
+        } catch (e) {
+            if (e.name === 'AbortError') return;     // user closed the dialog
+            showResult('Could not open the save dialog: ' + e.message, 'error');
+            return;
+        }
     }
+    // Without the File System Access API (plain-HTTP page, Firefox, Safari) the
+    // file is assembled as a Blob and offered as a download when finished.
     const totalBytes = segs.reduce((x, s) => x + (s.size || 0), 0);
-    state.exporting = { startedAt: Date.now(), totalBytes, segs: segs.length, name: handle.name };
+    state.exporting = { startedAt: Date.now(), totalBytes, segs: segs.length, name: handle ? handle.name : suggested, blobMode: !handle };
     el.exportBtn.disabled = true;
     el.cancelBtn.hidden = false;
     el.progress.hidden = false;
@@ -503,7 +533,7 @@ async function startExport() {
     el.progressText.textContent = 'Starting…';
     getWorker().postMessage({
         type: 'start', handle, mode: 'auto',
-        segments: segs.map((s) => ({ name: s.name, url: FILE_BASE + s.name, totalSamples: s.peaks ? s.peaks.total : undefined, size: s.size })),
+        segments: segs.map((s) => ({ name: s.name, url: sign(FILE_BASE + s.name, EXPORT_TTL_SEC), totalSamples: s.peaks ? s.peaks.total : undefined, size: s.size })),
         tags: [
             ['TITLE', `${ch.id} ${dateKey(startMs)} ${fmtTime(startMs)}-${fmtTime(endMs)}`],
             ['DATE', dateKey(startMs)],
@@ -545,7 +575,18 @@ function finishExport(m) {
     renderSummary();
     if (m.type === 'done') {
         const s = m.summary;
-        showResult(`Saved ${ex ? ex.name : 'file'}: ${fmtDur(s.totalSamples / s.rate * 1000)}, ${fmtBytes(s.bytesOut)}, ${s.frames} frames, ` +
+        if (m.blob) {
+            // Blob mode: hand the finished file to the browser as a download.
+            const url = URL.createObjectURL(m.blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = ex ? ex.name : 'export.flac';
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        }
+        showResult(`${m.blob ? 'Download started for' : 'Saved'} ${ex ? ex.name : 'file'}: ${fmtDur(s.totalSamples / s.rate * 1000)}, ${fmtBytes(s.bytesOut)}, ${s.frames} frames, ` +
                    `${s.mode === 'fixed' ? 'fixed' : 'variable'} blocksize (${s.minBlock}–${s.maxBlock}), ${s.seekPoints} seek points.`, 'ok');
     } else if (m.type === 'cancelled') {
         showResult('Export cancelled; nothing was written.', 'warn');
@@ -579,6 +620,16 @@ el.cancelBtn.addEventListener('click', () => { if (worker) worker.postMessage({ 
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !state.exporting) { state.selection = null; timeline.setSelection(null); renderSummary(); }
 });
+
+/* Access key entry (only needed on servers that check signed URLs) */
+function showKeyEntry() {
+    el.keyRow.hidden = false;
+    el.keyInput.value = accessKey;
+    el.keyInput.focus();
+}
+el.keyBtn.addEventListener('click', () => { el.keyRow.hidden = !el.keyRow.hidden; if (!el.keyRow.hidden) { el.keyInput.value = accessKey; el.keyInput.focus(); } });
+el.keySave.addEventListener('click', () => { setAccessKey(el.keyInput.value); el.keyRow.hidden = true; peaksCache.clear(); loadDate(state.date); });
+el.keyInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') el.keySave.click(); if (e.key === 'Escape') el.keyRow.hidden = true; });
 
 /* Theme switcher, same as index.html */
 const THEMES = ['default', 'mono', 'stage'];

@@ -4,11 +4,27 @@
 //   /recordings/<f>    -> files from a recordings directory (Range supported)
 //   /recordings-json/  -> nginx-style JSON autoindex of that directory
 // Usage: node tests/dev-server.mjs <recordings-dir> [port]
+// Set SECURE_LINK_SECRET=... to require nginx-style signed URLs (?md5=&expires=)
+// on /recordings/ and /recordings-json/, exactly like tools/nas-nginx.conf.example.
 import { createServer } from 'node:http';
 import { stat, readdir } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { join, extname, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
+
+const SECRET = process.env.SECURE_LINK_SECRET || '';
+/* nginx secure_link check: md5 = base64url(md5(expires + uri + " " + secret)); returns 200/403/410 */
+function secureLinkStatus(url) {
+    if (!SECRET) return 200;
+    const md5 = url.searchParams.get('md5'), expires = url.searchParams.get('expires');
+    if (!md5 || !expires) return 403;
+    const ref = createHash('md5').update(`${expires}${decodeURIComponent(url.pathname)} ${SECRET}`).digest('base64')
+        .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    if (ref !== md5) return 403;
+    if (+expires < Date.now() / 1000) return 410;
+    return 200;
+}
 
 const recDir = resolve(process.argv[2] || '.');
 const port = +(process.argv[3] || 8080);
@@ -48,6 +64,10 @@ async function serveFile(req, res, path) {
 createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = decodeURIComponent(url.pathname);
+    if (p.startsWith('/recordings/') || p.startsWith('/recordings-json')) {
+        const st = secureLinkStatus(url);
+        if (st !== 200) { res.writeHead(st); res.end(st === 410 ? 'expired' : 'forbidden'); return; }
+    }
     if (p === '/recordings-json/' || p === '/recordings-json') {
         const names = await readdir(recDir);
         const out = [];

@@ -141,6 +141,9 @@
         .theme-switch button.active { color: var(--text); border-color: var(--border-soft); background: var(--bg-mute); }
 
         .hint { color: var(--text-faint); font-size: 12px; }
+        #key-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+        #key-row[hidden] { display: none; }
+        #key-row input { background: var(--bg-inset); color: var(--text); border: 1px solid var(--border-soft); border-radius: 5px; padding: 5px 8px; font: inherit; width: 22em; }
         @media (max-width: 700px) { body { padding: 8px; } .bar { gap: 8px 12px; } }
     </style>
 </head>
@@ -159,6 +162,7 @@
             <button id="whole" title="Show the whole window: 00:00 until noon the next day">Whole window</button>
         </div>
         <div class="spacer"></div>
+        <button id="key-btn" title="Access key for servers that check signed URLs instead of a password">🔑</button>
         <div class="theme-switch" id="theme-switch">
             <button data-theme="default" title="Default (blue)">Blue</button>
             <button data-theme="mono" title="Mono (black/grey)">Mono</button>
@@ -166,6 +170,11 @@
         </div>
     </header>
 
+    <div id="key-row" class="notice" hidden>
+        <label>Access key <input type="password" id="key-input" autocomplete="off" spellcheck="false"></label>
+        <button id="key-save">Use</button>
+        <span class="hint">Stays in this browser; every request is signed with it, it is never sent.</span>
+    </div>
     <div id="status" class="notice" hidden></div>
     <div id="timeline"></div>
 
