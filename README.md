@@ -306,9 +306,10 @@ Everything runs in the browser; the recorder only serves static files.
   streamed to disk while it is built (a 2-hour set is ~2 GB), the export needs
   Chrome or Edge (File System Access API). Any CRC failure aborts the export;
   no partial file is left behind.
-- **nginx**: `recordings.html` reads the directory through a JSON autoindex at
-  `/recordings-json/` and fetches files from `/recordings/`; see
-  `nginx.conf.example`.
+- **Where it runs**: on the backup NAS the recorder pushes to (below), not on
+  the recorder. `recordings.html` reads the directory through a JSON autoindex
+  at `/recordings-json/` and fetches files from `/recordings/`; the nginx
+  locations are in `nginx.conf.example` (commented out for the recorder).
 
 **Running the browser from a backup NAS.** The recorder pushes
 `/data/recordings` (FLAC + `.peaks`, minus the staging directory) every five
