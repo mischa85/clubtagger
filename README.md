@@ -328,8 +328,7 @@ the HTML directory index. The export needs the page in a secure context
 `--unsafely-treat-insecure-origin-as-secure=http://<nas>`), and FLAC bytes then
 flow through the NAS's TLS, which is slow on an ARMv6. For a PC-class box,
 `tools/recordings-proxy.mjs` is an alternative that serves the page on
-localhost and proxies to the recorder (FLAC over plain HTTP from port 80,
-the rest over HTTPS).
+localhost and proxies every request to the recorder over HTTPS.
 
 Development without the recorder: `node tests/dev-server.mjs <dir-with-flac-and-peaks>`
 serves `www/` with the same two locations. `npm test` runs the splicer unit

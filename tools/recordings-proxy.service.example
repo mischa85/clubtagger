@@ -11,7 +11,6 @@ Type=simple
 # Path of a clubtagger checkout on this machine (www/ and tools/ are used)
 WorkingDirectory=/opt/clubtagger
 Environment=CLUBTAGGER_HTTPS=https://antia.duckdns.org:20124
-Environment=CLUBTAGGER_HTTP=http://antia.duckdns.org:20180
 # Dedicated low-value user: its password crosses the wire in clear on the HTTP path
 Environment=CLUBTAGGER_AUTH=robbie:CHANGE_ME
 ExecStart=/usr/bin/node tools/recordings-proxy.mjs 8080

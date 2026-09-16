@@ -3,14 +3,15 @@
  * recordings-proxy.mjs - run the recordings browser on another machine
  *
  * Serves www/ on http://localhost and forwards the data requests to the
- * clubtagger device: FLAC files over plain HTTP (no TLS work for the Atom or
- * for this machine), the directory listing and the .peaks sidecars over HTTPS.
+ * clubtagger device over HTTPS. (CLUBTAGGER_HTTP can point FLAC downloads at
+ * a plain-HTTP server instead, if one is ever configured; the recorder's
+ * nginx does not offer one by default, since basic auth would then cross the
+ * wire in clear.)
  * The browser sees a single localhost origin, which is a secure context, so
  * the File System Access API used by the export works and nothing is
  * cross-origin or mixed content.
  *
  *   CLUBTAGGER_HTTPS=https://antia.duckdns.org:20124 \
- *   CLUBTAGGER_HTTP=http://antia.duckdns.org:20180 \
  *   CLUBTAGGER_AUTH=robbie:secret \
  *   node tools/recordings-proxy.mjs [port]            # default 8080, binds 127.0.0.1
  *
