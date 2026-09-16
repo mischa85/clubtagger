@@ -310,17 +310,17 @@ Everything runs in the browser; the recorder only serves static files.
   `/recordings-json/` and fetches files from `/recordings/`; see
   `nginx.conf.example`.
 
-**Running the browser from a backup NAS.** The recorder exposes
-`/data/recordings` (FLAC + `.peaks`, minus the staging directory) as a
-read-only rsync module `recordings`, plain rsync protocol on port 873 with
-challenge-response login (user `nas`, password in `/etc/rsyncd.secrets` on the
-recorder), so a weak NAS can pull without any TLS or ssh cost:
+**Running the browser from a backup NAS.** The recorder pushes
+`/data/recordings` (FLAC + `.peaks`, minus the staging directory) every five
+minutes to an rsync daemon module on the NAS (`clubtagger-sync.timer`; plain
+rsync protocol on port 873, so neither box spends CPU on ssh or TLS for
+gigabytes of audio; the login is challenge-response, the password is never
+sent in clear). On the recorder set `REMOTE` in
+`/etc/systemd/system/clubtagger-sync.service`, the password in
+`/etc/rsync.pass`, and enable the timer; on the NAS use
+`tools/nas-rsyncd.conf.example`. Nothing is deleted on the recorder yet.
 
-```
-RSYNC_PASSWORD=... rsync -rt --exclude '.incoming/' rsync://nas@<recorder>/recordings/ /srv/recordings/
-```
-
-Serve `www/` and that directory from the NAS's nginx with the same two
+Serve `www/` and the pushed directory from the NAS's nginx with the same two
 locations as `nginx.conf.example` (`/recordings/` and `/recordings-json/`);
 if its nginx predates `autoindex_format json`, the page falls back to reading
 the HTML directory index. The export needs the page in a secure context

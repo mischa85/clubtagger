@@ -1,0 +1,22 @@
+# rsync daemon on the backup NAS that receives the recorder's pushes.
+# /etc/rsyncd.conf on the NAS; start with `rsync --daemon` (or the distro's
+# rsyncd service). Plain rsync protocol on port 873: no ssh, no TLS, so a
+# weak NAS receives gigabytes without crypto. The login is challenge-response,
+# the password itself never crosses the wire; the audio does.
+pid file = /var/run/rsyncd.pid
+use chroot = yes
+reverse lookup = no
+max connections = 2
+timeout = 600
+log file = /var/log/rsyncd.log
+
+[recordings]
+    path = /srv/recordings            # the directory nginx serves as /recordings/
+    comment = clubtagger FLAC segments and .peaks waveform sidecars
+    read only = no
+    list = yes
+    uid = www-data                    # the user nginx reads the files as
+    gid = www-data
+    auth users = clubtagger
+    secrets file = /etc/rsyncd.secrets   # "clubtagger:<password>", mode 0600
+    hosts allow = <recorder public or LAN address>
