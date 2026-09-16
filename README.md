@@ -312,41 +312,27 @@ Everything runs in the browser; the recorder only serves static files.
   at `/recordings-json/` and fetches files from `/recordings/`; the nginx
   locations are in `nginx.conf.example` (commented out for the recorder).
 
-**Running the browser from a backup NAS.** The recorder pushes
-`/data/recordings` (FLAC + `.peaks`, minus the staging directory) every five
-minutes to an rsync daemon module on the NAS (`clubtagger-sync.timer`; plain
-rsync protocol on port 873, so neither box spends CPU on ssh or TLS for
-gigabytes of audio; the login is challenge-response, the password is never
-sent in clear). On the recorder set `REMOTE` in
+**Where the recordings live and where the browser runs.** Not on the
+recorder. The recorder pushes `/data/recordings` (FLAC + `.peaks`, minus the
+staging directory) every five minutes with rsync to a router (OpenWrt on a
+MediaTek MT7986A) that has the recordings disk attached over USB 3
+(`clubtagger-sync.timer`; plain rsync protocol on port 873, so neither box
+spends CPU on ssh or TLS for gigabytes of audio; the login is
+challenge-response, the password is never sent in clear). That router also
+terminates HTTPS with hardware AES at line rate and serves `www/` plus the
+disk: `tools/router-rsyncd.conf.example` and `tools/router-nginx.conf.example`.
+One URL inside and outside the LAN, ordinary basic auth, the export streams in
+any Chrome/Edge without flags. On the recorder set `REMOTE` in
 `/etc/systemd/system/clubtagger-sync.service`, the password in
-`/etc/rsync.pass`, and enable the timer; on the NAS use
-`tools/nas-rsyncd.conf.example`. Nothing is deleted on the recorder yet.
+`/etc/rsync.pass`, and enable the timer. Nothing is deleted on the recorder
+yet; when that comes, delete a FLAC and its `.peaks` together.
 
-Serve `www/` and the pushed directory from the NAS's nginx over plain HTTP
-(TLS on the NAS manages ~2 MB/s) and let the router in front terminate HTTPS
-and basic auth: `tools/router-nginx.conf.example` (OpenWrt, `nginx-ssl`) plus
-`tools/nas-nginx.conf.example` variant A, where the NAS accepts only the
-router. The page is then an ordinary HTTPS site and the export needs no
-browser flags.
-
-Variant B, for browsers talking to the NAS directly over HTTP, uses
-**signed URLs** (nginx `secure_link`): instead of a password, every request carries
-`?md5=…&expires=…` computed from a secret the user enters once in the page
-(key button, kept in the browser's localStorage). The secret never crosses
-the wire; an eavesdropper sees the audio and can replay a URL until it expires
-(1 h for browsing, 12 h for an export). Without a stored key the page sends
-plain URLs, so a basic-auth deployment works unchanged; a 403 from the listing
-opens the key prompt. If the nginx predates `autoindex_format json`, the page
-falls back to reading the HTML directory index.
-
-A plain-HTTP page is not a "secure context", and the export streams to disk
-through the File System Access API, which only exists there. Browsing and
-listening work everywhere; for exporting, Chrome must be started with
-`--unsafely-treat-insecure-origin-as-secure=http://<nas>` (or the same origin
-entered under chrome://flags "Insecure origins treated as secure"). The page
-says so when the export button is pressed without it. For a PC-class box,
-`tools/recordings-proxy.mjs` is an alternative that serves the page on
-localhost and proxies every request to the recorder over HTTPS.
+The page also supports a server that checks nginx `secure_link` signed URLs
+instead of a password (key button in the header; the key stays in the
+browser's localStorage and signs every request). That was designed for a
+server too weak for TLS and is not needed in the router layout. For a
+PC-class box, `tools/recordings-proxy.mjs` serves the page on localhost and
+proxies every request to a recorder or router over HTTPS.
 
 Development without the recorder: `node tests/dev-server.mjs <dir-with-flac-and-peaks>`
 serves `www/` with the same two locations. `npm test` runs the splicer unit

@@ -1,16 +1,19 @@
-# nginx on the router in front of the NAS (OpenWrt on a MediaTek MT7986A:
-# Cortex-A53 with ARMv8 crypto, TLS at line rate). Terminates HTTPS and basic
-# auth, proxies to the NAS over plain HTTP on the internal segment. The NAS
-# then serves without any crypto and needs no signed URLs; the recordings page
-# is an ordinary HTTPS site, so the export works in any Chrome/Edge without
-# flags.
+# nginx on the router (OpenWrt on a MediaTek MT7986A) with the recordings disk
+# attached over USB 3. One box does it all: receives the recorder's rsync push
+# (tools/router-rsyncd.conf.example), stores the files, terminates HTTPS with
+# hardware AES at line rate, and serves the recordings browser. Same URL on the
+# LAN and from outside; no proxies, no browser flags, no signed URLs.
 #
-#   opkg install nginx-ssl              # uhttpd cannot reverse proxy
-#   /etc/nginx/conf.d/recordings.conf   # this file
-#   certificate: acme.sh with the duckdns DNS challenge, or a self-signed one
+#   opkg install nginx-ssl                        # uhttpd cannot do this
+#   /etc/nginx/conf.d/recordings.conf             # this file
+#   /www/clubtagger/  <- www/recordings.html, recordings.js, timeline.js,
+#                        flac-splice.js, flac-splice.worker.js, md5.js
+#   /mnt/recordings/  <- ext4 on the USB disk; mount it before nginx starts
+#   certificate: acme.sh with the duckdns DNS challenge, or self-signed
 #   htpasswd:    same format as the recorder's /etc/nginx/clubtagger.htpasswd
+#   forward the public port to this server's 443 in the firewall
 #
-# Forward the public port (e.g. 20125) to this server's 443 in the firewall.
+# Logs go to the disk (or /tmp), never to the router's flash.
 
 server {
     listen 443 ssl;
@@ -19,21 +22,44 @@ server {
     ssl_certificate     /etc/nginx/recordings.crt;
     ssl_certificate_key /etc/nginx/recordings.key;
 
+    access_log /mnt/recordings/.nginx-access.log;
+    error_log  /tmp/nginx-recordings-error.log;
+
     auth_basic "Recordings";
     auth_basic_user_file /etc/nginx/recordings.htpasswd;
 
-    location / {
-        proxy_pass http://192.168.2.20;        # the NAS, plain HTTP (its nginx allows only this router)
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-For $remote_addr;
-        proxy_set_header Authorization "";     # the NAS does no auth; do not leak the password to it
+    sendfile on;
+    tcp_nopush on;
 
-        # gigabyte downloads: stream, do not spool to disk on the router
-        proxy_buffering off;
-        proxy_request_buffering off;
-        proxy_max_temp_file_size 0;
-        proxy_read_timeout 1h;
-        proxy_send_timeout 1h;
+    root /www/clubtagger;
+    location = / { return 302 /recordings.html; }
+    location / {
+        try_files $uri =404;
     }
+
+    # Files as pushed by the recorder. Trailing slashes matter (see the
+    # recorder's nginx.conf.example).
+    location = /recordings { return 301 /recordings/; }
+    location /recordings/ {
+        alias /mnt/recordings/;
+        autoindex on;
+        autoindex_exact_size off;
+        autoindex_localtime on;
+    }
+
+    # Same directory as JSON, read by recordings.html.
+    location /recordings-json/ {
+        alias /mnt/recordings/;
+        autoindex on;
+        autoindex_format json;
+        autoindex_exact_size on;
+        gzip on;
+        gzip_types application/json;
+    }
+}
+
+server {
+    listen 80;
+    server_name _;
+    return 301 https://$host$request_uri;
 }

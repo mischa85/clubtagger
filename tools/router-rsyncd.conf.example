@@ -1,0 +1,22 @@
+# rsync daemon on the router (OpenWrt, MT7986A with a USB 3 disk) that
+# receives the recorder's pushes. /etc/rsyncd.conf; `opkg install rsync`,
+# run `rsync --daemon` from an init script. Plain rsync protocol on port 873:
+# no ssh, no TLS, the login is challenge-response so the password itself never
+# crosses the wire; the audio does, which is fine for recordings.
+pid file = /var/run/rsyncd.pid
+use chroot = yes
+reverse lookup = no
+max connections = 2
+timeout = 600
+log file = /mnt/recordings/.rsyncd.log   # keep logs off the router's flash
+
+[recordings]
+    path = /mnt/recordings              # the USB disk, also served by nginx as /recordings/
+    comment = clubtagger FLAC segments and .peaks waveform sidecars
+    read only = no
+    list = yes
+    uid = nobody                        # nginx must be able to read what lands here
+    gid = nogroup
+    auth users = clubtagger
+    secrets file = /etc/rsyncd.secrets  # "clubtagger:<password>", mode 0600
+    hosts allow = 192.168.2.3           # the recorder
