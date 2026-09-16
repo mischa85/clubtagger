@@ -322,10 +322,15 @@ sent in clear). On the recorder set `REMOTE` in
 `/etc/rsync.pass`, and enable the timer; on the NAS use
 `tools/nas-rsyncd.conf.example`. Nothing is deleted on the recorder yet.
 
-Serve `www/` and the pushed directory from the NAS's nginx as in
-`tools/nas-nginx.conf.example`: **plain HTTP with signed URLs** (nginx
-`secure_link`). TLS on the NAS manages ~2 MB/s, so audio is served
-unencrypted; instead of a password, every request carries
+Serve `www/` and the pushed directory from the NAS's nginx over plain HTTP
+(TLS on the NAS manages ~2 MB/s) and let the router in front terminate HTTPS
+and basic auth: `tools/router-nginx.conf.example` (OpenWrt, `nginx-ssl`) plus
+`tools/nas-nginx.conf.example` variant A, where the NAS accepts only the
+router. The page is then an ordinary HTTPS site and the export needs no
+browser flags.
+
+Variant B, for browsers talking to the NAS directly over HTTP, uses
+**signed URLs** (nginx `secure_link`): instead of a password, every request carries
 `?md5=…&expires=…` computed from a secret the user enters once in the page
 (key button, kept in the browser's localStorage). The secret never crosses
 the wire; an eavesdropper sees the audio and can replay a URL until it expires
